@@ -5,6 +5,8 @@ import {
   setManagedTransmitTot, submitManagedTransmit,
 } from '$lib/stores/managed-transmit.svelte';
 import { ManagedTransmitError } from '$lib/transport/managed-transmit-client';
+import { managedTxRefusalToastCode } from '$lib/types/managed-transmit';
+import { messageFromReasonCode } from '$lib/i18n';
 import { makeCommandId } from '$lib/types/protocol';
 import {
   emitLocalNotification, getControlSession, onCommandDelivery, onControlSessionTransition, onMessage, sendCommand,
@@ -30,6 +32,7 @@ export function createManagedBrowserDependencies() {
   const presentationListeners = new Set<() => void>();
   let presentationTimer: ReturnType<typeof setInterval> | null = null;
   let disposed = false;
+  let latchRefusal: ManagedTransmitError | undefined;
   const stopPresentationTicker = () => {
     if (presentationTimer === null) return;
     clearInterval(presentationTimer);
@@ -107,18 +110,24 @@ export function createManagedBrowserDependencies() {
     invalidate: invalidateManagedTransmit,
     snapshotRevision: managedTransmitAppliedRevision,
     sendPtt,
-    submit: submitManagedTransmit,
+    submit: async (operation) => {
+      if (operation === 'transmit_on') latchRefusal = undefined;
+      try { return await submitManagedTransmit(operation); }
+      catch (error) {
+        if (!(error instanceof ManagedTransmitError) || error.status !== 409) throw error;
+        if (operation === 'transmit_on') latchRefusal = error;
+        await refreshManagedTransmit().catch(() => invalidateManagedTransmit());
+        return 'rejected';
+      }
+    },
     onLatchRefusal: (error) => {
+      error ??= latchRefusal;
+      latchRefusal = undefined;
       const code = error instanceof ManagedTransmitError ? error.code
         : error === undefined ? 'tx_request_rejected' : 'tx_request_failed';
       console.warn(`[tx] Latch start refused: ${code}`);
-      if (code === 'controller_tx_unsupported') {
-        emitLocalNotification('error', 'Hold PTT to transmit on this connection.', 'txPressToTalkRequired');
-      } else if (code === 'read_only') {
-        emitLocalNotification('error', 'This station is in read-only mode.', 'txReadOnly');
-      } else {
-        emitLocalNotification('error', 'The station could not start transmission.', 'txStartRefused');
-      }
+      const toastCode = managedTxRefusalToastCode(code);
+      emitLocalNotification('error', messageFromReasonCode(toastCode), toastCode);
     },
     setTot: setManagedTransmitTot,
     onPresentationTick,

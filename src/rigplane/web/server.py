@@ -102,7 +102,11 @@ from ..runtime.controller_authority import (
     ControllerTicket,
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
-from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.managed_tx_state import (
+    ManagedTxIntentKind,
+    ManagedTxRefusalReason,
+    submission_refusal_reason,
+)
 from ..runtime.tx_gate import tx_gate_open
 from ..runtime.tx_interlock import (
     RfState,
@@ -150,6 +154,7 @@ from .api_contract import (  # noqa: TID251
     CivIngressPayload,
     ConnectionIdentityRecord,
     ConnectionSessionRecord,
+    ManagedTransmitCommandReply,
     ManagedTransmitDocument,
 )
 from .api_channel import ApiChannelHandler  # noqa: TID251
@@ -5906,6 +5911,7 @@ class WebServer:
             {
                 "error": "managed_tx_unavailable",
                 "message": "Managed transmit authority unavailable",
+                "code": ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE,
             },
         )
 
@@ -5947,7 +5953,13 @@ class WebServer:
                 return
             if operation == "transmit_on" and self._controller.mode == "remote":
                 await self._send_json(
-                    writer, 403, "Forbidden", {"error": "controller_tx_unsupported"}
+                    writer,
+                    403,
+                    "Forbidden",
+                    {
+                        "error": "controller_tx_unsupported",
+                        "code": ManagedTxRefusalReason.CONTROLLER_REFUSED,
+                    },
                 )
                 return
             if operation == "transmit_on" and self._config.read_only:
@@ -5958,9 +5970,12 @@ class WebServer:
                     {
                         "error": "read_only",
                         "message": "Server is in read-only mode",
+                        "code": ManagedTxRefusalReason.READ_ONLY,
                     },
                 )
                 return
+            pending_submission: asyncio.Task[Any] | None = None
+            refusal_reason = ManagedTxRefusalReason.OTHER
             try:
                 if operation == "transmit_on":
                     loop = asyncio.get_running_loop()
@@ -5969,13 +5984,13 @@ class WebServer:
                     connection_generation = (
                         self._command_queue.capture_connection_generation()
                     )
-                    pending = authority.start_transmit_on_submission(
+                    pending_submission = authority.start_transmit_on_submission(
                         ready=ready,
                         expires_at_monotonic=expires_at,
                     )
                     submission = await self.enqueue_managed_positive_tx(
                         ready=ready,
-                        submission=pending,
+                        submission=pending_submission,
                         source="http",
                         session_id=None,
                         expires_at_monotonic=expires_at,
@@ -5989,33 +6004,59 @@ class WebServer:
             except ControllerError as exc:
                 # Controller currency failed after routing (MOR-3534): e.g. ended.
                 await self._send_json(
-                    writer, exc.status, "Forbidden", {"error": exc.code}
+                    writer,
+                    exc.status,
+                    "Forbidden",
+                    {
+                        "error": exc.code,
+                        "code": ManagedTxRefusalReason.CONTROLLER_REFUSED
+                        if exc.code.startswith("controller_")
+                        else ManagedTxRefusalReason.OTHER,
+                    },
                 )
                 return
-            except CommandError:
+            except CommandError as exc:
                 # The queue reports a refused or no-longer-current transmit_on
                 # (another owner holds TX, MOR-3534) as a command error.
                 submission = None
+                if (
+                    type(exc) is CommandError
+                    and str(exc) == "positive TX admission was rejected"
+                    and pending_submission is not None
+                    and pending_submission.done()
+                    and not pending_submission.cancelled()
+                    and pending_submission.exception() is None
+                ):
+                    refusal_reason = submission_refusal_reason(
+                        pending_submission.result()
+                    )
             accepted = submission is not None and submission.outcome.value == "accepted"
+            if not accepted and submission is not None:
+                refusal_reason = submission_refusal_reason(submission)
             # An offline release is retained for provider rearm, not settled.
             pending = (
                 accepted
                 and operation == "force_off"
                 and getattr(submission, "pending_release", False)
             )
+            reply: ManagedTransmitCommandReply = {
+                "ok": accepted,
+                "operation": "transmit_on"
+                if operation == "transmit_on"
+                else "force_off",
+                "result": "pending"
+                if pending
+                else "accepted"
+                if accepted
+                else "rejected",
+            }
+            if not accepted:
+                reply["code"] = refusal_reason
             await self._send_json(
                 writer,
                 202 if accepted else 409,
                 "Accepted" if accepted else "Conflict",
-                {
-                    "ok": accepted,
-                    "operation": operation,
-                    "result": "pending"
-                    if pending
-                    else "accepted"
-                    if accepted
-                    else "rejected",
-                },
+                reply,
             )
             return
 

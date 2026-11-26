@@ -26,8 +26,10 @@ export class ManagedTransmitClient {
       body: JSON.stringify({ operation }),
     });
     if (response.status === 202) return 'accepted';
-    if (response.status === 409) return 'rejected';
     const body: unknown = await response.json().catch(() => null);
+    const reason = (body as { code?: unknown } | null)?.code;
+    if (typeof reason === 'string') throw new ManagedTransmitError(reason, response.status);
+    if (response.status === 409) return 'rejected';
     const error = (body as { error?: unknown } | null)?.error;
     const code = typeof error === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(error)
       ? error : 'tx_request_failed';

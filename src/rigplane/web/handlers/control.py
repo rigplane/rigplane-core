@@ -68,6 +68,8 @@ from ...runtime.managed_tx_state import (
     ActuationOperation,
     ManagedTxIntentKind,
     ManagedTxOutcome,
+    ManagedTxRefusalReason,
+    submission_refusal_reason,
     submission_refused_for_release_debt,
 )
 from ..protocol import (  # noqa: TID251
@@ -237,6 +239,12 @@ _PTT_HOLDER_CONFLICT = "another client is transmitting"
 _QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
 # Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
 _PTT_RELEASING = "the previous transmission is still being released"
+
+
+class _ManagedPttRefused(CommandRejectedError):
+    def __init__(self, message: str, reason: ManagedTxRefusalReason) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ControlHello(TypedDict):
@@ -1738,6 +1746,11 @@ class ControlHandler:
                         "ok": False,
                         "error": "no_radio",
                         "message": "no radio connected",
+                        **(
+                            {"code": ManagedTxRefusalReason.OTHER}
+                            if name in self._MANAGED_PTT_COMMANDS
+                            else {}
+                        ),
                     }
                 ),
             )
@@ -1811,6 +1824,17 @@ class ControlHandler:
             error = "unsupported_command"
         else:
             error = "command_failed"
+        refusal: dict[str, object] = {}
+        if name in self._MANAGED_PTT_COMMANDS:
+            reason = ManagedTxRefusalReason.OTHER
+            if isinstance(exc, _ManagedPttRefused):
+                reason = exc.reason
+            elif isinstance(exc, ControllerError):
+                if exc.code.startswith("controller_"):
+                    reason = ManagedTxRefusalReason.CONTROLLER_REFUSED
+            elif isinstance(exc, PermissionError) and self._read_only:
+                reason = ManagedTxRefusalReason.READ_ONLY
+            refusal["code"] = reason
         await self._send_direct(
             encode_json(
                 {
@@ -1819,6 +1843,7 @@ class ControlHandler:
                     "ok": False,
                     "error": error,
                     "message": message,
+                    **refusal,
                 }
             ),
         )
@@ -2010,7 +2035,10 @@ class ControlHandler:
             )
         authority = self._managed_tx_authority
         if authority is None:
-            raise CommandRejectedError("managed transmit authority unavailable")
+            raise _ManagedPttRefused(
+                "managed transmit authority unavailable",
+                ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE,
+            )
         if name == "ptt":
             on = params.get("state")
             if type(on) is not bool:
@@ -2049,18 +2077,43 @@ class ControlHandler:
                 submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
             if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
-                raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc
+                raise _ManagedPttRefused(
+                    _PTT_HOLDER_CONFLICT, ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                ) from exc
             if _queue_refused_for_release_debt(exc, pending):
-                raise CommandRejectedError(_PTT_RELEASING) from exc
-            raise CommandRejectedError(
-                "managed transmit authority unavailable"
+                raise _ManagedPttRefused(
+                    _PTT_RELEASING, ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                ) from exc
+            reason = (
+                ManagedTxRefusalReason.OTHER
+                if isinstance(exc, CommandError)
+                else ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE
+            )
+            if (
+                type(exc) is CommandError
+                and str(exc) == _QUEUE_ADMISSION_REJECTED
+                and pending is not None
+                and pending.done()
+                and not pending.cancelled()
+                and pending.exception() is None
+            ):
+                reason = submission_refusal_reason(pending.result(), self._tx_owner)
+            raise _ManagedPttRefused(
+                "managed transmit authority unavailable", reason
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
             if _ptt_refusal_names_holder(submission, self._tx_owner):
-                raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
+                raise _ManagedPttRefused(
+                    _PTT_HOLDER_CONFLICT, ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                )
             if submission_refused_for_release_debt(submission):
-                raise CommandRejectedError(_PTT_RELEASING)
-            raise CommandRejectedError("managed PTT admission rejected")
+                raise _ManagedPttRefused(
+                    _PTT_RELEASING, ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                )
+            raise _ManagedPttRefused(
+                "managed PTT admission rejected",
+                submission_refusal_reason(submission, self._tx_owner),
+            )
         server, radio = self._server, self._radio
         if (
             on

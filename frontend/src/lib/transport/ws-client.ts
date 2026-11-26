@@ -1,5 +1,7 @@
 import type { WsCommand, WsIncoming } from '../types/protocol';
 import { makeCommandId } from '../types/protocol';
+import { managedTxRefusalToastCode } from '../types/managed-transmit';
+import { messageFromReasonCode } from '../i18n';
 import { refusalBlockedReason, type KeyBlockedReason } from '../../semantic/rx-tx-surface';
 import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting, setRadioStatus } from '../stores/connection.svelte';
 import { setRxSilent } from '../stores/rx-silence.svelte';
@@ -371,11 +373,18 @@ export class WsChannel {
             return;
           }
           this._emitCommandResult(raw, socketEpoch);
+          const refusalCode = typeof raw.code === 'string' ? raw.code : null;
+          const refusalToast = refusalCode === null ? null : managedTxRefusalToastCode(refusalCode);
+          const refusalFields = refusalToast === null ? {} : { code: refusalToast };
+          const refusalMessage = refusalToast === null ? null : messageFromReasonCode(refusalToast);
+          if (refusalCode !== null && (raw.ok === false || raw.type === 'error' || raw.status === 'error')) {
+            console.warn('[tx] Managed transmit refused:', refusalCode);
+          }
           // Handle status-based error responses ({"status":"error", ...})
           if (raw['status'] === 'error') {
-            const errorMsg = (raw['message'] as string) || (raw['error'] as string) || 'Command failed';
+            const errorMsg = refusalMessage ?? ((raw['message'] as string) || (raw['error'] as string) || 'Command failed');
             console.error(`[ws] error response:`, raw);
-            const errNote = { type: 'notification', level: 'error', message: errorMsg, category: 'command' } as any;
+            const errNote = { type: 'notification', level: 'error', message: errorMsg, ...refusalFields, category: 'command' } as any;
             this.messageHandlers.forEach((h) => h(errNote));
             return;
           }
@@ -383,12 +392,13 @@ export class WsChannel {
           this.messageHandlers.forEach((h) => h(msg));
           if (msg.type === 'error') {
             console.error(`[ws] error from server (id=${msg.id}): ${msg.message}`);
+            if (refusalMessage !== null) this.emitLocalNotification('error', refusalMessage, refusalToast!);
           } else if (msg.type === 'response') {
             if (msg.ok === false) {
-              const errorMsg = msg.message || msg.error || 'Command failed';
+              const errorMsg = refusalMessage ?? (msg.message || msg.error || 'Command failed');
               console.error(`[ws] command ${msg.id} failed (${msg.error ?? "command_failed"}): ${errorMsg}`);
               for (const h of this.messageHandlers) {
-                h({ type: 'notification', level: 'error', message: errorMsg, category: 'command' } as any);
+                h({ type: 'notification', level: 'error', message: errorMsg, ...refusalFields, category: 'command' } as any);
               }
             } else {
               console.debug(`[ws] command ${msg.id} ok`);
