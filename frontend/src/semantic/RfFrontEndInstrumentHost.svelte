@@ -59,6 +59,7 @@
     type ContinuousScalarInput,
     type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { formatKnownLevel } from './format-level';
   import { readingText, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, RfFrontEndField, DisabledReason, DisabledReasonCode } from './radio-view-model';
@@ -446,7 +447,8 @@
     presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp');
   const preampReasonText = (): string | undefined => {
     const reason = preampDisabledReason();
-    return reason === undefined ? undefined : reasonLabel(reason.code);
+    return reason === undefined ? disabledFieldReasonText(rf?.preamp)
+      : reason.code === 'field-not-observed' ? disabledFieldReasonText(rf?.preamp) ?? reasonLabel(reason.code) : reasonLabel(reason.code);
   };
 
   /** MOR-2511 B2: safe lookup of disabled reason label — returns undefined if code not in map. */
@@ -456,7 +458,7 @@
   const preampSeat = createChoiceRendererSeat<number>(() => {
     const reason = preampReasonText();
     return {
-      context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preampDisabledReason() !== undefined,
+      context: rendererContext ?? null, title: preampReasonText(), field: rf?.preamp, label: 'Preamp', blocked: preampDisabledReason() !== undefined,
       options: preampChoices().map((value) => ({
         value, label: preampChoiceText(value),
         ...(reason === undefined ? {} : { disabledReason: reason }),
@@ -473,12 +475,13 @@
     presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.attenuator');
   const attenuatorReasonText = (): string | undefined => {
     const reason = attenuatorDisabledReason();
-    return reason === undefined ? undefined : reasonLabel(reason.code);
+    return reason === undefined ? disabledFieldReasonText(rf?.attenuator)
+      : reason.code === 'field-not-observed' ? disabledFieldReasonText(rf?.attenuator) ?? reasonLabel(reason.code) : reasonLabel(reason.code);
   };
   const attenuatorSeat = createChoiceRendererSeat<number>(() => {
     const reason = attenuatorReasonText();
     return {
-      context: rendererContext ?? null, field: rf?.attenuator, label: 'Attenuator', blocked: attenuatorDisabledReason() !== undefined,
+      context: rendererContext ?? null, title: attenuatorReasonText(), field: rf?.attenuator, label: 'Attenuator', blocked: attenuatorDisabledReason() !== undefined,
       options: attenuatorChoices().map((value) => ({
         value, label: attenuatorChoiceText(value),
         ...(reason === undefined ? {} : { disabledReason: reason }),
@@ -490,11 +493,11 @@
     };
   });
   const digiSelSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: rf?.digiSel, label: RF_FRONT_END_TOGGLES[0][1],
+    context: rendererContext ?? null, title: disabledFieldReasonText(rf?.digiSel), field: rf?.digiSel, label: RF_FRONT_END_TOGGLES[0][1],
     invoke: (next) => onDigiSelToggle?.(next),
   }));
   const ipPlusSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: rf?.ipPlus, label: RF_FRONT_END_TOGGLES[1][1],
+    context: rendererContext ?? null, title: disabledFieldReasonText(rf?.ipPlus), field: rf?.ipPlus, label: RF_FRONT_END_TOGGLES[1][1],
     invoke: (next) => onIpPlusToggle?.(next),
   }));
 
@@ -548,7 +551,8 @@
       {#key rendererEpoch}
         <DualParamRenderer binding={pair} showValues={false}
           variant={hardware ? 'hardware-illuminated' : 'modern'}
-          issuedStatusPresentation={pairIssuedStatus} />
+          issuedStatusPresentation={pairIssuedStatus}
+          title={disabledFieldReasonText(rf?.rfGain) ?? disabledFieldReasonText(rf?.squelch)} />
       {/key}
     </div>
     {#each PAIR_LANES as lane (lane)}
@@ -586,7 +590,8 @@
             accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
             displayFn={(value) => valueText(value, (v) => rawToPercent(field, v))} issuedStatusPresentation={scalarIssuedStatuses[field]}
             shortcutHint={field === 'rfGain' ? rfGainShortcut() : undefined}
-            title={field === 'rfGain' ? rfGainShortcut() ?? undefined : undefined}
+            title={disabledFieldReasonText(current) ?? (field === 'rfGain' ? rfGainShortcut() ?? undefined : undefined)}
+            accessibility={{ description: disabledFieldReasonText(current) ?? null }}
           />
         {/key}
       </div>
@@ -610,7 +615,7 @@
       <div
         class="rf-front-end-row" role="radiogroup" aria-label="Preamp"
         data-testid="rf-front-end-preamp"
-        data-shortcut-hint={preShortcut() ?? undefined} title={preShortcut() ?? undefined}
+        data-shortcut-hint={preShortcut() ?? undefined} title={preampReasonText() ?? preShortcut() ?? undefined}
         data-observed={usable(rf.preamp)}
         data-disabled-reason={preampDisabledReason()?.code}
         data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
@@ -626,7 +631,7 @@
               type="button" role="radio" class="rf-front-end-choice"
               data-testid={`rf-front-end-preamp-${value}`}
               data-shortcut-hint={preShortcut() ?? undefined}
-              aria-checked={preampBehavior.isSelected(value)}
+              aria-checked={preampBehavior.isSelected(value)} title={preampReasonText()}
               data-pending={pendingPreamp === value}
               disabled={!preampBehavior.available}
               onclick={() => preampBehavior.invoke(value)}
@@ -669,7 +674,7 @@
         class="rf-front-end-row" role={compact ? undefined : 'radiogroup'} aria-label="Attenuator"
         data-testid="rf-front-end-attenuator"
         data-observed={usable(rf.attenuator)}
-        data-shortcut-hint={attShortcut() ?? undefined} title={attShortcut() ?? undefined}
+        data-shortcut-hint={attShortcut() ?? undefined} title={attenuatorReasonText() ?? attShortcut() ?? undefined}
         data-disabled-reason={attenuatorDisabledReason()?.code}
         data-att-status={pendingAtt !== null ? 'pending' : 'confirmed'}
         aria-describedby={[
@@ -688,7 +693,7 @@
               testIdPrefix="rf-front-end-attenuator"
               ariaLabel="Attenuator"
               shortcutHint={attShortcut()}
-              title={attShortcut()}
+              title={attenuatorReasonText() ?? attShortcut()}
             />
           </fieldset>
         {:else}
@@ -698,7 +703,7 @@
                 type="button" role="radio" class="rf-front-end-choice"
                 data-testid={`rf-front-end-attenuator-${value}`}
                 data-shortcut-hint={attShortcut() ?? undefined}
-                aria-checked={attenuatorBehavior.isSelected(value)}
+                aria-checked={attenuatorBehavior.isSelected(value)} title={attenuatorReasonText()}
                 disabled={!attenuatorBehavior.available || attenuatorDisabledReason() !== undefined}
                 onclick={() => attenuatorBehavior.invoke(value)}
               >{attenuatorChoiceText(value)}</button>
@@ -748,6 +753,7 @@
       <button
         type="button" class="rf-front-end-toggle"
         data-testid={`rf-front-end-${field}`} data-observed={usable(current)}
+        title={disabledFieldReasonText(current)}
         aria-pressed={behavior.confirmed}
         disabled={!behavior.available}
         onclick={() => behavior.invoke()}

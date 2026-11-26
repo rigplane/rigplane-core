@@ -37,6 +37,7 @@ import { editState } from '../../../transport/__tests__/support/state-edit';
 import { PROFILES } from './conformance/profiles';
 import { FTX1_STATE_FULLY_UNOBSERVED } from './fixtures/ftx1-profile';
 import strictProjectionGolden from './fixtures/strict-projection.golden.json';
+import stateWireGoldens from '../../../transport/__tests__/fixtures/state-wire-goldens.json';
 
 const DUAL = ['scope', 'audio', 'tx', 'dual_rx'];
 const SINGLE = ['scope', 'audio', 'tx'];
@@ -101,6 +102,38 @@ function observedState(overrides: Partial<ServerState> = {}): ServerState {
 const unobservedState = (): ServerState => ({
   ...observedState(), fieldStatus: {},
 } as ServerState);
+
+describe('MOR-4829 producer explanations', () => {
+  it('carries the exact FTX-1 refusal through the validated model and removes it on recovery', () => {
+    const golden = stateWireGoldens['FTX-1'];
+    const project = (state: unknown) => validateRadioViewModel(toRadioViewModel(
+      state as ServerState, golden.micGainCapabilities as unknown as Capabilities,
+    ));
+    const refused = project(golden.micGainRefused.data);
+    expect(refused.txAux!.micGain.availability).toEqual({ structural: true, operational: false,
+      message: golden.refusedMicGainFieldStatus.message });
+    expect(refused.txAux!.rfPower.availability.message).toBeUndefined();
+    const recovered = project(golden.micGainRecovered.data);
+    expect(recovered.txAux!.micGain.availability.operational).toBe(true);
+    expect(recovered.txAux!.micGain.availability.message).toBeUndefined();
+  });
+
+  it.each(Object.entries(PROFILES))('keeps %s receiver reasons scoped to their existing public paths', (_id, profile) => {
+    const state = structuredClone(profile.state);
+    state.active = 'MAIN';
+    const message = 'The provider refused this receiver noise reduction reading.';
+    state.fieldStatus = { ...state.fieldStatus,
+      'main.nr': { storePath: 'receiver.MAIN.dsp.nr', observed: false, freshness: 'unknown',
+        availability: 'unavailable', message },
+    };
+    const view = toRadioViewModel(state, profile.caps)!;
+    expect(view.dsp!.nrActive.availability.message).toBe(message);
+    expect(view.dsp!.nbActive.availability.message).toBeUndefined();
+    expect(view.receiverIndicators?.find(rx => rx.receiver === 'MAIN')?.nrActive.availability.message).toBe(message);
+    expect(view.receiverIndicators?.find(rx => rx.receiver === 'SUB')?.nrActive.availability.message).toBeUndefined();
+    expect(toRadioViewModel({ ...state, active: 'SUB' }, profile.caps)!.dsp!.nrActive.availability.message).toBeUndefined();
+  });
+});
 
 describe('qualified VFO display observations', () => {
   it.each(['topology-2-main-sub', 'topology-1-single', 'topology-2-ab-shared',

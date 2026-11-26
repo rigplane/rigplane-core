@@ -41,6 +41,7 @@
     type CommandScalarFeedback,
     type ContinuousScalarInput,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { CwKeyerField, RadioViewModel } from './radio-view-model';
 
@@ -197,7 +198,7 @@
     {@const form = presentation?.form ?? 'hbar'}
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
-    {@const disabledReason = usable(current) ? undefined : 'Not yet observed'}
+    {@const disabledReason = disabledFieldReasonText(current)}
     {@const accessibility = {
       description: disabledReason ?? null,
       valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,

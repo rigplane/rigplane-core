@@ -216,6 +216,12 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
 });
 
 describe('unread leaves render honestly, never fabricated (MOR-2545 owner rules)', () => {
+  it.each(['The provider refused the scope hold state.', undefined])('explains unavailable scope hold %j', (message) => {
+    const r = render(withSc({ hold: unread({ structural: true, operational: false, message }) }));
+    expect(r.el('scope-hold')?.hasAttribute('disabled')).toBe(true);
+    expect(r.el('scope-hold')?.title).toBe(message ?? 'Not yet observed');
+    r.dispose();
+  });
   // `centerType` has no mode-applicability gate (unlike `mode` itself), so
   // it isolates the choice-leaf honesty story from carry-forward 3 above.
   it('an unread choice leaf shows no aria-checked="true" option and stays disabled', () => {
