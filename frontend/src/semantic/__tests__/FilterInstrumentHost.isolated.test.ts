@@ -37,6 +37,17 @@ function reading(
 }
 
 describe('FilterInstrumentHost finite ownership', () => {
+  it.each(['The provider refused this receiver mode.', undefined])('explains disabled receiver mode %j', (message) => {
+    const view = base();
+    view.modeFilter!.currentMode = { reading: { status: 'unknown' },
+      availability: { structural: true, operational: false, message } };
+    const component = mount(FilterInstrumentHostFixture, { target, props: { view, presentation: 'independent' } });
+    flushSync();
+    const button = target.querySelector<HTMLButtonElement>('[data-testid^="filter-mode-"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(message ?? 'Not yet observed');
+    unmount(component);
+  });
   it('renders Standard MOD IN from confirmed truth while pending stays distinct', () => {
     const onModInputChange = vi.fn();
     const props = proxy({ view: base(), presentation: 'standard' as const,

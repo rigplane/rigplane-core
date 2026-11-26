@@ -71,6 +71,10 @@ it('replays the FTX-1 mic-gain refusal and recovery into the desktop controls', 
     await tick();
     const slider = () => target.querySelector('[data-testid="tx-aux-micGain"] [role="slider"]');
     expect(slider()?.getAttribute('aria-disabled')).toBe('true');
+    expect(target.querySelector<HTMLElement>('[data-testid="tx-aux-micGain"]')?.title).toBe(refusal.message);
+    const description = slider()?.getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(description.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ')).toContain(refusal.message);
 
     // An extra public alias for the same store path still contributes one line.
     replay({
@@ -86,6 +90,7 @@ it('replays the FTX-1 mic-gain refusal and recovery into the desktop controls', 
     replay(micGainRecovered);
     expect(title()).toBe(summary);
     expect(slider()?.getAttribute('aria-disabled')).toBe('false');
+    expect(target.querySelector<HTMLElement>('[data-testid="tx-aux-micGain"]')?.title).not.toContain(refusal.message);
   } finally {
     if (component) await unmount(component);
     disconnect();

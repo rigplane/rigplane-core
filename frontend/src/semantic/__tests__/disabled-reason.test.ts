@@ -43,6 +43,21 @@ describe('disabledReasonText (MOR-1422)', () => {
     expect(disabledReasonText(availability)).toBe('Not yet observed');
   });
 
+  it('prefers the producer message for an unavailable field', () => {
+    expect(disabledReasonText({ structural: true, operational: false,
+      message: 'The radio refused to report mic gain.' })).toBe('The radio refused to report mic gain.');
+  });
+
+  it.each([undefined, null, '', '  '])('keeps the unobserved fallback for message %j', (message) => {
+    expect(disabledReasonText({ structural: true, operational: false, message })).toBe('Not yet observed');
+  });
+
+  it('does not expose a refusal on an absent or usable control', () => {
+    const message = 'A refusal from an earlier observation';
+    expect(disabledReasonText({ structural: false, operational: false, message })).toBe('Not supported by this radio');
+    expect(disabledReasonText({ structural: true, operational: true, message })).toBeUndefined();
+  });
+
   it('returns undefined once both structural and operational are true — a usable control gets no reason', () => {
     const availability: Availability = { structural: true, operational: true };
     expect(disabledReasonText(availability)).toBeUndefined();
