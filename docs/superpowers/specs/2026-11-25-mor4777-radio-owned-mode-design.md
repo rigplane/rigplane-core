@@ -51,16 +51,16 @@ Code references were inspected at baseline `5c7947953657`.
 
 Search preceded the model proposal. Reuse these seams rather than a radio branch:
 
-| Current seam (file:line, symbol) | Consequence for this design |
+| Current seam (file, symbol) | Consequence for this design |
 |---|---|
-| `src/rigplane/core/radio_state.py:49` `ReceiverState`, `:255` `RadioState` | Modulation/VFO and global dial-lock/TX state exist; add context separately, never overload `mode` or `dial_lock`. |
-| `src/rigplane/core/state_pipeline_contracts.py:235` `FieldPath`, `:887` `Observation`; `src/rigplane/core/state_store.py:253` `StateStore` | Reuse scope, source, timestamp, quality, max-age and provider-generation handling. |
-| `src/rigplane/core/acquisition_scheduler.py:3275` `RadioStateModelService` | Extend the existing freshness/acquisition path, not an independent polling/cache service. |
-| `src/rigplane/runtime/_civ_rx.py:2829` `CivRuntime._record_refused_reads`; `src/rigplane/core/acquisition_scheduler.py:1862` `AcquisitionScheduler.record_read_refusal`, `:1829` `end_refusals` | Refused-read attribution is exact-request/path based; preserve it and its recovery semantics. It identifies the refused read, not the physical cause. |
-| `tests/test_refused_read_attribution.py:102` `test_a_refused_menu_read_refuses_only_its_own_menu_item` | Preserve menu-address and receiver isolation; a bare NAK cannot implicate a sibling path. |
-| `src/rigplane/backends/yaesu_cat/radio.py:1544` `YaesuCatRadio._write`, `:1687` `_status_mode_name`, `:1752` `_set_mode_verified`; `src/rigplane/core/state_diagnostics.py:52` `StateDiagnosticsRecorder.status_name` | Keep typed rejection distinct from timeout/readback mismatch; retain UNKNOWN for unassigned modulation. |
-| `src/rigplane/backends/yaesu_cat/observations.py:401` `YaesuObservationAdapter.poll_medium` | Add profile-selected observations through the same MAIN/SUB path. |
-| `src/rigplane/web/server.py:540` `_command_error_code`; `src/rigplane/rigctld/handler.py:1718` rejection handler | Preserve `radio_nak` and Hamlib ERJCTED (`RPRT -9`); add structured explanation without changing wire contracts. |
+| `src/rigplane/core/radio_state.py`: `ReceiverState`, `RadioState` | Modulation/VFO and global dial-lock/TX state exist; add context separately, never overload `mode` or `dial_lock`. |
+| `src/rigplane/core/state_pipeline_contracts.py`: `FieldPath`, `Observation`; `src/rigplane/core/state_store.py`: `StateStore` | Reuse scope, source, timestamp, quality, max-age and provider-generation handling. |
+| `src/rigplane/core/acquisition_scheduler.py`: `RadioStateModelService` | Extend the existing freshness/acquisition path, not an independent polling/cache service. |
+| `src/rigplane/runtime/_civ_rx.py`: `CivRuntime._record_refused_reads`; `src/rigplane/core/acquisition_scheduler.py`: `AcquisitionScheduler.record_read_refusal`, `end_refusals` | Refused-read attribution is exact-request/path based; preserve it and its recovery semantics. It identifies the refused read, not the physical cause. |
+| `tests/test_refused_read_attribution.py`: `test_a_refused_menu_read_refuses_only_its_own_menu_item` | Preserve menu-address and receiver isolation; a bare NAK cannot implicate a sibling path. |
+| `src/rigplane/backends/yaesu_cat/radio.py`: `YaesuCatRadio._write`, `_status_mode_name`, `_set_mode_verified`; `src/rigplane/core/state_diagnostics.py`: `StateDiagnosticsRecorder.status_name` | Keep typed rejection distinct from timeout/readback mismatch; retain UNKNOWN for unassigned modulation. |
+| `src/rigplane/backends/yaesu_cat/observations.py`: `YaesuObservationAdapter.poll_medium` | Add profile-selected observations through the same MAIN/SUB path. |
+| `src/rigplane/web/server.py`: `_command_error_code`; `src/rigplane/rigctld/handler.py`: the `CommandRejectedError` branch in `execute` | Preserve `radio_nak` and Hamlib ERJCTED (`RPRT -9`); add structured explanation without changing wire contracts. |
 
 Pro #2263 already names refused CAT mode writes to the user. Extend that
 consumer's explanation using Core evidence; do not duplicate detection in its
