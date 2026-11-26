@@ -187,6 +187,45 @@ async def carrier(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+@pytest.mark.parametrize("close_origin", ["server", "peer"])
+async def test_only_peer_close_cancels_session_retirement(
+    carrier: _Carrier,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    close_origin: str,
+) -> None:
+    path = carrier
+    close_started = asyncio.Event()
+    finish_close = asyncio.Event()
+    close = path.connection.close
+
+    async def held_close(code: int = 1000, reason: str = "") -> None:
+        await close(code, reason)
+        close_started.set()
+        await finish_close.wait()
+
+    monkeypatch.setattr(path.connection, "close", held_close)
+    try:
+        path.channel.deliver("f\nq\n" if close_origin == "server" else "f\n")
+        await virtual_clock.elapse(0)
+        if close_origin == "peer":
+            path.channel.close()
+            await virtual_clock.elapse(0)
+        assert close_started.is_set()
+        session = next(iter(path.server._client_tasks))
+        assert bool(session.cancelling()) == (close_origin == "peer")
+        assert not path.run.done()
+        assert path.channel.sent[1:] == ["14074000\n"]
+        finish_close.set()
+        await virtual_clock.elapse(0)
+        assert path.run.done()
+        await path.run
+        assert not path.server._client_tasks
+        assert not path.server._channel_owners
+    finally:
+        finish_close.set()
+
+
 async def test_thousands_of_mixed_lines_use_real_parser_scheduler_and_carrier(
     carrier: _Carrier, virtual_clock: VirtualClock
 ) -> None:

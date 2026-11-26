@@ -219,7 +219,13 @@ class RigctlChannelHandler:
         except (EOFError, OSError, WebSocketError):
             pass
         finally:
+            server_closed = reader._eof
             reader.feed_eof()
-            if self._datachannel and not session.done() and not session.cancelling():
+            if (
+                self._datachannel
+                and not server_closed
+                and not session.done()
+                and not session.cancelling()
+            ):
                 # End queued execution even if rigctld is waiting for replies.
                 session.cancel()

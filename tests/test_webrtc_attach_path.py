@@ -2737,11 +2737,19 @@ async def test_rigctl_served_frame_queue_overflow(
 
 
 async def test_rigctl_command_queue_waits_then_resumes(
-    cat_limit_path: _CatLimitPath,
+    cat_limit_path: _CatLimitPath, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = cat_limit_path
     await path.key_cat()
     path.commands.clear()
+    readline = path.server._readline  # noqa: SLF001
+
+    async def read_one(reader: asyncio.StreamReader) -> bytes | None:
+        raw = await readline(reader)
+        path.commands.clear()
+        return raw
+
+    monkeypatch.setattr(path.server, "_readline", read_one)
     # Wake the already-parked read once, then park it before the test batch.
     path.cat.deliver("f\n")
     await path.clock.elapse(0)
@@ -2754,8 +2762,11 @@ async def test_rigctl_command_queue_waits_then_resumes(
     assert path.cat.readyState == "open"
     assert path.cat.sent[3:] == []
     assert path.tx.tx_holder_nowait() == path.owner
-    path.commands.set()
-    await path.clock.elapse(0)
+    # Retire each reply before admitting another line to the bounded scheduler.
+    for received in range(1, 2 * rigctl._MAX_QUEUED_LINES + 1):  # noqa: SLF001
+        path.commands.set()
+        await path.clock.elapse(0)
+        assert len(path.cat.sent[3:]) == received
     assert path.cat.sent[3:] == [path.reply] * (2 * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
     assert path.cat.readyState == "open"
     path.cat.close()
