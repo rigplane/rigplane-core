@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from _helpers import wrap_civ_in_udp
 from _perf_helpers import fast_connect
 from rigplane.cli import _ManagedTxRadioSession
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.commands.commander import IcomCommander
+from rigplane.core import civ as civ_module
+from rigplane.core.civ import PttReplyLedger
 from rigplane.core.exceptions import CommandError
 from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
@@ -34,13 +39,21 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxRefusalReason,
 )
 from rigplane.runtime.managed_tx_submission import ManagedPttTracker
-from rigplane.runtime.radio import IcomRadio
-from rigplane.testing.timing import await_until
+from rigplane.runtime import (
+    _civ_rx,
+    managed_tx_authority as authority_module,
+    managed_tx_effect_lane as effect_lane_module,
+    radio as radio_module,
+)
+from rigplane.runtime.radio import CoreRadio, IcomRadio
+from rigplane.testing.timing import virtual_clock
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.protocol import decode_json, encode_json
 from rigplane.web.web_startup import attach_managed_tx_composition
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
+from test_radio import MockTransport
 from test_managed_tx_http_route import _Writer, _reader
 
 
@@ -55,31 +68,19 @@ async def simulated_key(monkeypatch, tmp_path):
         password="testpass",
         model="IC-7610",
     )
-    script = {"answer": "ack", "keys": 0, "offs": 0}
-    script["key_sent"] = asyncio.Event()
-    script["off_sent"] = asyncio.Event()
+    script = {"answer": "ack", "keys": 0}
     dispatch = sim._dispatch_civ
 
     def injected_reply(command, payload, from_addr):
         if command == 0x1C and payload == b"\x00\x01":
             script["keys"] += 1
-            script["key_sent"].set()
             if script["answer"] == "nak":
                 return build_civ_frame(from_addr, sim._radio_addr, 0xFA)
             if script["answer"] == "silence":
                 return None
-            if script["answer"] in ("lost-ack", "held-ack"):
+            if script["answer"] == "lost-ack":
                 dispatch(command, payload, from_addr)
                 return None
-        if command == 0x1C and payload == b"\x00\x00":
-            reply = dispatch(command, payload, from_addr)
-            script["offs"] += 1
-            script["off_sent"].set()
-            return (
-                None
-                if script["answer"] == "held-ack" and script["offs"] == 1
-                else reply
-            )
         return dispatch(command, payload, from_addr)
 
     monkeypatch.setattr(sim, "_dispatch_civ", injected_reply)
@@ -325,217 +326,203 @@ async def test_simulator_reply_reaches_ingress_and_managed_document(
         await composition.shutdown(asyncio.Event())
 
 
-@pytest.mark.parametrize("release", ["ptt_up", "force_off"])
-@pytest.mark.parametrize("late_reply", [0xFB, 0xFA])
-async def test_release_preempts_held_key_reply_without_late_reply_state_change(
-    simulated_key, release, late_reply
-):
-    radio, sim, script, composition = simulated_key
-    script["answer"] = "held-ack"
+class _LostKeyAckTransport(MockTransport):
+    def __init__(self, clock):
+        super().__init__()
+        self.clock = clock
+        self.ptt_on = False
+        self.emitted = []
+
+    async def send_tracked(self, data, **kwargs):
+        await super().send_tracked(data, **kwargs)
+        frame = parse_civ_frame(data[0x15:])
+        self.emitted.append((self.clock(), frame))
+        if frame.command == 0x1C and frame.sub == 0:
+            if frame.data == b"\x01":
+                self.ptt_on = True
+                return  # Apply the key, but lose its ACK.
+            if frame.data == b"\x00":
+                self.ptt_on = False
+            else:
+                self.queue_response(
+                    wrap_civ_in_udp(
+                        build_civ_frame(
+                            CONTROLLER_ADDR,
+                            frame.to_addr,
+                            0x1C,
+                            sub=0,
+                            data=bytes([self.ptt_on]),
+                        ),
+                        seq=self.send_seq,
+                    )
+                )
+                return
+        self.queue_response(
+            wrap_civ_in_udp(
+                build_civ_frame(CONTROLLER_ADDR, frame.to_addr, 0xFB),
+                seq=self.send_seq,
+            )
+        )
+
+
+@asynccontextmanager
+async def _lost_key_ack_radio(clock, monkeypatch):
+    for module in (
+        _civ_rx,
+        radio_module,
+        civ_module,
+        authority_module,
+        effect_lane_module,
+    ):
+        clock.scope_to(monkeypatch, module)
+        # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+        monkeypatch.setattr(module, "asyncio", asyncio)
+    radio = IcomRadio("", model="IC-7610")
+    transport = _LostKeyAckTransport(clock)
+    transport.connected = True
+    radio._civ_transport = transport
+    radio._civ_min_interval = 0
     radio._civ_get_timeout = 2.0
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
-    await composition.transport_ready(radio)
-    await composition.bind_state_store(server.command_state_store)
-    await composition.authority._stop_scheduler(composition.authority._scheduler_task)
-    script["off_sent"].clear()
-    script["offs"] = 0
+    radio._civ_runtime._ptt_ledger = PttReplyLedger(clock=clock, answer_window=2.0)
+    radio._commander = IcomCommander(radio._execute_civ_raw)
+    radio._commander.start()
     try:
-        key = await composition.authority.submit_ptt(True, "slow-client")
-        await await_until(
-            script["key_sent"].is_set, timeout=1.0, description="key frame dispatched"
-        )
-        assert sim.ptt_on
-        assert not key.settlement_done
-        off = await (
-            composition.authority.submit_ptt(False, "slow-client")
-            if release == "ptt_up"
-            else composition.authority.submit_force_off()
-        )
-        # Key-off must reach the simulator while the key reply is still withheld.
-        await await_until(
-            script["off_sent"].is_set,
-            timeout=1.0,
-            description="release dispatched before key reply timeout",
-        )
-        assert not sim.ptt_on
-        frame = parse_civ_frame(
-            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, late_reply)
-        )
-        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
-        await asyncio.wait_for(off.wait_settlement(), 3.0)
-        await key.wait_settlement()
-        state = (await composition.authority.snapshot()).state
-        assert state.intent.kind is ManagedTxIntentKind.RX
-        assert state.last_actuation.operation is ActuationOperation.FORCE_RECEIVE
-        assert state.last_actuation.result is ActuationResult.ACCEPTED
-        assert not state.release_required
-        assert state.last_error is None
-        assert not sim.ptt_on
-        assert radio._civ_request_tracker.pending_count == 0
-        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
-        assert (await composition.authority.snapshot()).state == state
+        yield radio, transport
     finally:
-        await composition.shutdown(asyncio.Event())
+        try:
+            await radio._commander.stop()
+        finally:
+            await radio._civ_runtime.stop_pump()
+            await transport.disconnect()
+            radio._connected = False
 
 
 @pytest.mark.parametrize(
-    "key_name,key_params", [("ptt_on", {}), ("ptt", {"state": True})]
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
 )
-async def test_ws_release_before_queue_dispatch_answers_revoked_key(
-    simulated_key, key_name, key_params
+@virtual_clock
+async def test_lost_key_ack_waits_only_the_explicit_bound_and_stays_accepted(
+    clock, monkeypatch, operation
 ):
-    radio, sim, script, composition = simulated_key
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
-    server.command_queue.bind_connection_generation(lambda: radio)
-    await composition.bind_state_store(server.command_state_store)
-    attach_managed_tx_composition(server, composition)
-    await composition.authority._stop_scheduler(composition.authority._scheduler_task)
-    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
-    handler = ControlHandler(
-        ws,
-        radio,
-        "test",
-        radio.model,
-        server=server,
-        session_id="early-release-client",
-        managed_tx_authority=composition.authority,
-    )
-    handler._publish_session_liveness(live=True)
-    drain = None
-    try:
-        key_task = asyncio.create_task(
-            handler._handle_text(
+    bound = CoreRadio.ICOM_PTT_ON_ACK_TIMEOUT_S
+    assert bound == 0.15
+    assert 0 < bound <= 0.5
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        fake_connected(radio)
+        task = asyncio.create_task(
+            radio.actuate(
+                EffectToken(1, 1, "lost-ack"), operation, is_current=lambda: True
+            )
+        )
+        try:
+            await clock.elapse(0)
+            assert transport.ptt_on
+            assert not task.done()
+            started = transport.emitted[0][0]
+            await clock.elapse(bound - 0.000001)
+            assert not task.done()
+            await clock.elapse(0.000001)
+            assert task.done()
+            assert await task is ActuationResult.ACCEPTED
+            assert clock() - started == pytest.approx(bound)
+            assert len(transport.emitted) == 1
+            assert radio._civ_request_tracker.pending_count == 0
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@virtual_clock
+async def test_release_after_a_lost_key_ack_goes_out_within_the_ack_bound(
+    clock, monkeypatch, tmp_path
+):
+    # The fallback lets this same measurement run on main, before the constant.
+    bound = getattr(CoreRadio, "ICOM_PTT_ON_ACK_TIMEOUT_S", 0.15)
+    scheduling_tick = 0.000001
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        composition = ManagedTxComposition(radio, config_path=tmp_path / "tx.json")
+        install_managed_tx_composition(radio, composition)
+        fake_connected(radio)
+        server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        server.command_queue.bind_connection_generation(lambda: radio)
+        await composition.transport_ready(radio)
+        binding = asyncio.create_task(
+            composition.bind_state_store(server.command_state_store)
+        )
+        await clock.elapse(radio._PTT_READBACK_SETTLE_S)
+        assert binding.done()
+        await binding
+        attach_managed_tx_composition(server, composition)
+        await composition.authority._stop_scheduler(
+            composition.authority._scheduler_task
+        )
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
+        handler = ControlHandler(
+            ws,
+            radio,
+            "test",
+            radio.model,
+            server=server,
+            managed_tx_authority=composition.authority,
+            session_id="lost-ack-client",
+            clock=clock,
+        )
+        handler._publish_session_liveness(live=True)
+        requests = asyncio.Queue()
+
+        async def read_commands():
+            for _ in range(2):
+                await handler._handle_text(await requests.get())
+
+        drain = asyncio.create_task(_drain_queue(server))
+        reader = asyncio.create_task(read_commands())
+        try:
+            transport.emitted.clear()
+            requests.put_nowait(
                 encode_json(
-                    {
-                        "type": "cmd",
-                        "id": "key",
-                        "name": key_name,
-                        "params": key_params,
-                    }
+                    {"type": "cmd", "id": "key", "name": "ptt_on", "params": {}}
                 )
             )
-        )
-        await await_until(key_task.done, description="key command handled")
-        await key_task
-        assert server.command_queue.has_commands
-        await handler._handle_text(
-            encode_json({"type": "cmd", "id": "off", "name": "ptt_off", "params": {}})
-        )
-        drain = asyncio.create_task(_drain_queue(server))
-        await await_until(
-            lambda: not handler._managed_ptt_responses,
-            timeout=1.0,
-            description="revoked key answered",
-        )
-        responses = {
-            body["id"]: body
-            for call in ws.send_text.await_args_list
-            for body in (decode_json(call.args[0]),)
-        }
-        assert set(responses) == {"key", "off"}
-        assert responses["key"]["ok"] is False
-        assert responses["key"]["code"] == ManagedTxRefusalReason.OTHER
-        assert script["keys"] == 0
-        assert not sim.ptt_on
-        state = (await composition.authority.snapshot()).state
-        assert state.intent.kind is ManagedTxIntentKind.RX
-        assert state.pending_effect is None
-        assert not state.release_required
-    finally:
-        response_tasks = tuple(handler._managed_ptt_responses)
-        handler._cancel_pending_command_flushes()
-        if drain is not None:
+            await clock.elapse(0)
+            assert transport.ptt_on
+            keyed_at = transport.emitted[0][0]
+            await clock.elapse(0.05)
+            released_at = clock()
+            requests.put_nowait(
+                encode_json(
+                    {"type": "cmd", "id": "off", "name": "ptt_off", "params": {}}
+                )
+            )
+            await clock.elapse(bound + scheduling_tick)
+            offs = [
+                emitted_at
+                for emitted_at, frame in transport.emitted
+                if (frame.command, frame.sub, frame.data) == (0x1C, 0, b"\x00")
+            ]
+            assert offs, "no release frame was emitted after the lost key ACK"
+            delay = offs[0] - released_at
+            print(
+                f"lost key ACK release delay: {delay:.6f} s; key-to-off: "
+                f"{offs[0] - keyed_at:.6f} s; ACK bound: {bound:.6f} s"
+            )
+            assert released_at - keyed_at == pytest.approx(0.05)
+            assert 0 <= delay <= bound + scheduling_tick
+            assert not transport.ptt_on
+            assert reader.done()
+            await reader
+            responses = [
+                decode_json(call.args[0]) for call in ws.send_text.await_args_list
+            ]
+            assert [body["id"] for body in responses] == ["key", "off"]
+            assert all(body["ok"] for body in responses)
+            assert (
+                await composition.authority.snapshot()
+            ).state.intent.kind is ManagedTxIntentKind.RX
+        finally:
+            reader.cancel()
             drain.cancel()
-            await asyncio.gather(drain, return_exceptions=True)
-        await asyncio.gather(*response_tasks, return_exceptions=True)
-        await composition.shutdown(asyncio.Event())
-
-
-@pytest.mark.parametrize(
-    "key_name,key_params", [("ptt_on", {}), ("ptt", {"state": True})]
-)
-async def test_ws_receive_path_accepts_release_while_key_reply_is_held(
-    simulated_key, key_name, key_params
-):
-    radio, sim, script, composition = simulated_key
-    script["answer"] = "held-ack"
-    radio._civ_get_timeout = 2.0
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
-    server.command_queue.bind_connection_generation(lambda: radio)
-    await composition.transport_ready(radio)
-    await composition.bind_state_store(server.command_state_store)
-    attach_managed_tx_composition(server, composition)
-    await composition.authority._stop_scheduler(composition.authority._scheduler_task)
-    script["off_sent"].clear()
-    script["offs"] = 0
-    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
-    handler = ControlHandler(
-        ws,
-        radio,
-        "test",
-        radio.model,
-        server=server,
-        session_id="slow-client",
-        managed_tx_authority=composition.authority,
-    )
-    handler._publish_session_liveness(live=True)
-    drain = asyncio.create_task(_drain_queue(server))
-    key_request = asyncio.create_task(
-        handler._handle_text(
-            encode_json(
-                {
-                    "type": "cmd",
-                    "id": "key",
-                    "name": key_name,
-                    "params": key_params,
-                }
-            )
-        )
-    )
-    try:
-        await await_until(
-            script["key_sent"].is_set, timeout=1.0, description="WS key dispatched"
-        )
-        await await_until(
-            key_request.done, timeout=1.0, description="WS reader free before key reply"
-        )
-        await key_request
-        assert sim.ptt_on
-        assert not ws.send_text.await_args_list
-        await handler._handle_text(
-            encode_json(
-                {
-                    "type": "cmd",
-                    "id": "off",
-                    "name": "ptt_off",
-                    "params": {},
-                }
-            )
-        )
-        await await_until(
-            script["off_sent"].is_set,
-            timeout=1.0,
-            description="same WS release dispatched",
-        )
-        assert not sim.ptt_on
-        frame = parse_civ_frame(
-            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
-        )
-        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
-        await await_until(
-            lambda: not handler._managed_ptt_responses,
-            timeout=3.0,
-            description="key response settled",
-        )
-        assert {
-            decode_json(call.args[0])["id"] for call in ws.send_text.await_args_list
-        } == {"key", "off"}
-        assert (
-            await composition.authority.snapshot()
-        ).state.intent.kind is ManagedTxIntentKind.RX
-    finally:
-        key_request.cancel()
-        handler._cancel_pending_command_flushes()
-        drain.cancel()
-        await asyncio.gather(key_request, drain, return_exceptions=True)
-        await composition.shutdown(asyncio.Event())
+            await asyncio.gather(reader, drain, return_exceptions=True)
+            shutdown = asyncio.create_task(composition.shutdown(asyncio.Event()))
+            await clock.elapse(10.0)
+            assert shutdown.done()
+            await shutdown

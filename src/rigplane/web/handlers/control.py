@@ -1105,7 +1105,6 @@ class ControlHandler:
         # coalesce_key -> the single deferred-flush task scheduled for it
         # (one handle per (session, key) — this session owns them all).
         self._cmd_flush_tasks: dict[str, asyncio.Task[None]] = {}
-        self._managed_ptt_responses: set[asyncio.Task[None]] = set()
         # coalesce_key -> count of frames coalesced (superseded before they
         # could flush) in the current burst — reset once that burst flushes.
         self._cmd_coalesced: dict[str, int] = {}
@@ -1185,7 +1184,6 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
-            self._cancel_pending_command_flushes()
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
                 controller.disconnect_control(self._session_id)
@@ -1209,6 +1207,7 @@ class ControlHandler:
                         exc_info=True,
                     )
             self._publish_session_liveness(live=False)
+            self._cancel_pending_command_flushes()
             event_task.cancel()
             teardown_error: Exception | None = None
             if self._server is not None:
@@ -1356,7 +1355,7 @@ class ControlHandler:
         elif msg_type == "unsubscribe":
             await self._handle_unsubscribe(msg)
         elif msg_type == "cmd":
-            await self._handle_command(msg, allow_pending_ptt=True)
+            await self._handle_command(msg)
         elif msg_type == "controller_heartbeat":
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1494,9 +1493,7 @@ class ControlHandler:
             if isinstance(exc, (asyncio.CancelledError, EOFError)):
                 raise
 
-    async def _handle_command(
-        self, msg: dict[str, Any], *, allow_pending_ptt: bool = False
-    ) -> None:
+    async def _handle_command(self, msg: dict[str, Any]) -> None:
         cmd_id = msg.get("id", "")
         name = msg.get("name", "")
         params = msg.get("params", {})
@@ -1565,34 +1562,7 @@ class ControlHandler:
                 return
             self._cmd_last[key] = now
 
-        if allow_pending_ptt and (
-            name == "ptt_on" or (name == "ptt" and params.get("state") is True)
-        ):
-            submitted = asyncio.Event()
-
-            def finished(task: asyncio.Task[None]) -> None:
-                submitted.set()
-                self._finish_managed_ptt_response(task)
-
-            response = asyncio.create_task(
-                self._dispatch_command(cmd_id, name, params, ptt_submitted=submitted)
-            )
-            self._managed_ptt_responses.add(response)
-            response.add_done_callback(finished)
-            try:
-                await submitted.wait()
-            except asyncio.CancelledError:
-                response.cancel()
-                raise
-            return
         await self._dispatch_command(cmd_id, name, params)
-
-    def _finish_managed_ptt_response(self, task: asyncio.Task[None]) -> None:
-        self._managed_ptt_responses.discard(task)
-        if not task.cancelled() and (error := task.exception()) is not None:
-            logger.warning(
-                "control: managed PTT response failed: %s", type(error).__name__
-            )
 
     def _coalesce_key(self, name: str, params: dict[str, Any]) -> str:
         """Coalescing-bucket key for a SET command (MOR-1499).
@@ -1740,21 +1710,20 @@ class ControlHandler:
             )
 
     def _cancel_pending_command_flushes(self) -> None:
-        """Cancel session-owned deferred commands and managed PTT responses."""
+        """Cancel in-flight coalesced-flush tasks on session teardown (MOR-1427).
+
+        A flush firing after the socket is gone would enqueue a stale
+        command on behalf of a session that no longer exists and try to
+        write an ack to a dead transport. Bookkeeping only — the command
+        queue and radio state are untouched; this never enqueues anything.
+        """
         for task in self._cmd_flush_tasks.values():
             task.cancel()
         self._cmd_flush_tasks.clear()
         self._cmd_pending.clear()
-        for response in self._managed_ptt_responses:
-            response.cancel()
 
     async def _dispatch_command(
-        self,
-        cmd_id: Any,
-        name: str,
-        params: dict[str, Any],
-        *,
-        ptt_submitted: asyncio.Event | None = None,
+        self, cmd_id: Any, name: str, params: dict[str, Any]
     ) -> None:
         """Validate, enqueue, and ACK a single command.
 
@@ -1791,11 +1760,6 @@ class ControlHandler:
                 params,
                 command_id=str(cmd_id),
                 source="websocket",
-                **(
-                    {"ptt_submitted": ptt_submitted}
-                    if ptt_submitted is not None
-                    else {}
-                ),
             )
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
@@ -1983,13 +1947,10 @@ class ControlHandler:
         *,
         command_id: str | None = None,
         source: CommandSource = "websocket",
-        ptt_submitted: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         tx_owner = self._validate_controller_command(name, params)
         if name in self._MANAGED_PTT_COMMANDS:
-            return await self._enqueue_managed_ptt(
-                name, params, source=source, ptt_submitted=ptt_submitted
-            )
+            return await self._enqueue_managed_ptt(name, params, source=source)
         intent_params = dict(params)
         # MOR-3537: the executor re-checks a TX start as this owner. Server
         # stamped only; a client-sent value never survives.
@@ -2062,7 +2023,6 @@ class ControlHandler:
         params: dict[str, Any],
         *,
         source: CommandSource,
-        ptt_submitted: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         if self._read_only:
             raise PermissionError(f"read-only mode: {name} rejected")
@@ -2103,8 +2063,6 @@ class ControlHandler:
                     ready=ready,
                     expires_at_monotonic=expires_at,
                 )
-                if ptt_submitted is not None:
-                    ptt_submitted.set()
                 submission = await self._server.enqueue_managed_positive_tx(
                     ready=ready,
                     submission=pending,

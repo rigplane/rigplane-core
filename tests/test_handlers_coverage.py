@@ -99,7 +99,6 @@ from rigplane.web.radio_poller import (
     VfoEqualize,
     VfoSwap,
 )
-from rigplane.testing.timing import virtual_clock
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebServer
 from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
@@ -3751,45 +3750,6 @@ def _degraded_server() -> SimpleNamespace:
         enqueue_managed_positive_tx=enqueue_managed_positive_tx,
         managed_tx_authority=authority,
     )
-
-
-@pytest.mark.parametrize("name,params", [("ptt_on", {}), ("ptt", {"state": True})])
-@virtual_clock
-async def test_direct_ptt_command_waits_for_its_response(clock, name, params) -> None:
-    sending = asyncio.Event()
-    resume = asyncio.Event()
-
-    async def send(_text: str) -> None:
-        sending.set()
-        await resume.wait()
-
-    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(side_effect=send))
-    server = _degraded_server()
-    handler = ControlHandler(
-        ws,
-        _capable_radio(),
-        "9.9.9",
-        "IC-7610",
-        server=server,
-        session_id=None,
-        managed_tx_authority=server.managed_tx_authority,
-    )
-    command = asyncio.create_task(
-        handler._handle_command({"id": "key", "name": name, "params": params})
-    )
-    try:
-        await sending.wait()
-        assert not command.done()
-        resume.set()
-        await command
-        assert decode_json(ws.send_text.await_args.args[0])["ok"] is True
-        assert not handler._managed_ptt_responses
-    finally:
-        resume.set()
-        command.cancel()
-        response_tasks = tuple(handler._managed_ptt_responses)
-        handler._cancel_pending_command_flushes()
-        await asyncio.gather(command, *response_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

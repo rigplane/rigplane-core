@@ -4449,6 +4449,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         abort = self._ABORT_COMMANDS.get(operation)
         return abort is not None and self.supports_command(abort[0])
 
+    # MOR-4846 adviser-provided IC-705 tx-smoke measurements with this PR:
+    # worst key HTTP reply 43.6 ms over USB and 22.8 ms over Wi-Fi/LAN.
+    # Each includes the ACK wait, so it upper-bounds the observed ACK latency.
+    # Three times 43.6 ms is 130.8 ms (~131 ms), rounded to 0.15 s, below
+    # the adviser's 0.5 s cap. A lost key ACK delays a following release by
+    # at most this wait; it mostly indicates a down link that cannot release.
+    ICOM_PTT_ON_ACK_TIMEOUT_S = 0.15
+
     async def actuate(
         self,
         token: EffectToken,
@@ -4482,6 +4490,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     civ,
                     priority=priority,
                     wait_response=True,
+                    timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
                     is_current=is_current,
                 )
             except CommandRejectedError:

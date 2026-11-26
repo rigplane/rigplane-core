@@ -207,6 +207,8 @@ def test_stalled_ack_unkeys_through_real_websocket_accept(
             writer.stall = blocked_write == "ack"
             unkey = _command("unkey", name, params)
             readers[-1].feed_data(_command("key", "ptt_on", {}))
+            if blocked_write == "ack":
+                readers[-1].feed_data(unkey)
             await clock.elapse(0)
             entry = srv.command_queue.take_entry()
             assert entry is not None
@@ -216,8 +218,6 @@ def test_stalled_ack_unkeys_through_real_websocket_accept(
             assert actuator.operations == [ActuationOperation.PTT_ON]
             assert authority.tx_holder_nowait() is not None
             assert b'"id":"key"' in writer.outbound.buffer
-            if blocked_write == "ack":
-                readers[-1].feed_data(unkey)
             if blocked_write != "ack":
                 assert not writer.drain_parked.is_set()
                 # The key-down ACK completed before the event sender filled

@@ -102,6 +102,7 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
         assert call.kwargs == {
             "priority": Priority.IMMEDIATE,
             "wait_response": True,
+            "timeout": 0.15,
             "is_current": current,
         }
 
@@ -115,6 +116,7 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
     [
         (0xFB, ActuationResult.ACCEPTED),
         (0xFA, ActuationResult.REJECTED),
+        (0x03, ActuationResult.ACCEPTED),
         (None, ActuationResult.ACCEPTED),
         ("timeout", ActuationResult.ACCEPTED),
     ],
