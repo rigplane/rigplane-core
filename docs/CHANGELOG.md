@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] — 2026-11-26
+
+Final release of 3.3.1: identical to 3.3.1rc2 apart from the version. See the 3.3.1rc2 and 3.3.1rc1 entries below for the changes.
+
 ## [3.3.1rc2] — 2026-11-25
 
 Second release candidate of 3.3.1: 3.3.1rc1 plus the rigctl channel over the Tower peer, cherry-picked from main (nothing else).
