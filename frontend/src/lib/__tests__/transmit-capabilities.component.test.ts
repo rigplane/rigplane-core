@@ -31,6 +31,7 @@ import TxPanel from '../../components-v2/panels/TxPanel.svelte';
 import RitXitPanel from '../../components-v2/panels/RitXitPanel.svelte';
 import VoxPanel from '../../components-v2/panels/VoxPanel.svelte';
 import type { RepeaterReceiverViewModel, TxAuxField } from '../../semantic/radio-view-model';
+import * as componentKitActivation from '../../component-kits/activation';
 
 vi.mock('../runtime', async () => {
   const fixture = await import('../../../fixtures/stubs/runtime');
@@ -131,11 +132,13 @@ afterEach(async () => {
   delete document.documentElement.dataset.designLanguage;
   delete document.documentElement.dataset.languageMode;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 async function render(skin: SkinId) {
-  const plan = resolveSurfacePlan(getLayout(skin)!, readWorkspace({ version: 1 }).workspace);
-  const context = new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
+  const manifest = getLayout(skin);
+  const plan = manifest && resolveSurfacePlan(manifest, readWorkspace({ version: 1 }).workspace);
+  const context = plan ? new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]) : new Map();
   if (skin === 'desktop-v2' || skin === 'sdr-test') {
     component = mount(HostedRadioLayoutFixture, { target, context, props: { skinId: skin } });
   } else {
@@ -164,16 +167,56 @@ function assertIdentifiers() {
   expect(target.querySelector(markerSelector)).not.toBeNull();
 }
 
+function assertLayoutIdentifiers(skin: SkinId) {
+  if (skin === 'dual-sdr-face') {
+    // This self-contained face supplies readonlyDisplay, with no TX callbacks.
+    expect(target.querySelector('[data-testid="dual-sdr-face"]')).not.toBeNull();
+    expect(target.querySelector(markerSelector)).toBeNull();
+    const txPlaceholders = target.querySelectorAll<HTMLButtonElement>('[data-control="vox"], [data-control="comp"]');
+    expect(txPlaceholders).toHaveLength(2);
+    for (const placeholder of txPlaceholders) expect(placeholder.disabled).toBe(true);
+    return;
+  }
+  assertIdentifiers();
+  // Select operations by their independent DOM identities, so removing their
+  // capability attribute cannot remove them from the assertions.
+  const operations = [
+    ['[data-vfo-split]', TRANSMIT_CAPABILITIES.split],
+    ['[data-vfo-swap], [data-vfo-equalize]', TRANSMIT_CAPABILITIES.vfoTransfer],
+    ['[data-testid="tx-aux-rfPower"]', TRANSMIT_CAPABILITIES.rfPower],
+    ['[data-testid="tx-aux-atu"]', TRANSMIT_CAPABILITIES.atu],
+    ['[data-testid="tx-aux-atu-tune"]', TRANSMIT_CAPABILITIES.tune],
+    ['[data-testid="tx-aux-vox"]', TRANSMIT_CAPABILITIES.vox],
+    ['[data-testid="tx-aux-compressor"], [data-testid="tx-aux-monitor"]', TRANSMIT_CAPABILITIES.txSettings],
+    ['[data-testid="cw-keyer-keyerSpeed"], [data-testid="cw-keyer-reverse-paddle"]', TRANSMIT_CAPABILITIES.txSettings],
+    ['[data-testid="cw-keyer-break-in"] button, [data-testid="cw-keyer-breakInDelay"]', TRANSMIT_CAPABILITIES.cwBreakIn],
+    ['[data-testid="ritxit-rit-toggle"], [data-testid="ritxit-xit-toggle"], [data-testid="ritxit-clear"], [data-testid="ritxit-offset"]', TRANSMIT_CAPABILITIES.ritXit],
+    ['[data-testid="mod-input-select"], [data-testid="rx-audio-mod-select"], [data-testid="rx-audio-mod-set-lan"]', TRANSMIT_CAPABILITIES.txSettings],
+    ['.repeater-surface button, .repeater-surface input, .repeater-surface select', TRANSMIT_CAPABILITIES.repeater],
+    ['[data-testid="filter-data-mode"] button, [data-testid="standard-data-mode"] button', TRANSMIT_CAPABILITIES.txSettings],
+  ] as const;
+  for (const [selector, capability] of operations) {
+    for (const control of target.querySelectorAll(selector)) assertCapability(control, capability);
+  }
+  for (const field of ['micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay', 'compressorLevel', 'monitorLevel']) {
+    for (const control of target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)) {
+      assertCapability(control, TRANSMIT_CAPABILITIES.txSettings);
+    }
+  }
+  assertCapability(target.querySelector(skin === 'mobile' ? '.ptt-fab' : '.rx-tx-key'),
+    skin === 'mobile' ? TRANSMIT_CAPABILITIES.txHold : TRANSMIT_CAPABILITIES.txKey);
+}
+
 describe('transmit capability DOM contract (MOR-4837)', () => {
   it.each(['auto', 'standard'] as const)('renders the %s layout preference', async (layoutPreference) => {
     const skin = resolveSkinId({ capabilities: harness.caps, layoutPreference, isMobile: false, hasAnyScope: true });
     await render(skin);
-    assertIdentifiers();
+    assertLayoutIdentifiers(skin);
   });
   it.each(Object.keys(layouts) as SkinId[])('%s uses registered IDs in fresh locale renders', async (skin) => {
     setLocale('en-US');
     await render(skin);
-    assertIdentifiers();
+    assertLayoutIdentifiers(skin);
     const identifiers = () => Array.from(target.querySelectorAll(markerSelector),
       (element) => element.getAttribute(CAPABILITY_ATTRIBUTE)).sort();
     const english = identifiers();
@@ -186,13 +229,13 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
       for (const theme of getAvailableThemes()) {
         setTheme(theme.id);
         flushSync();
-        assertIdentifiers();
+        assertLayoutIdentifiers(skin);
         expect(identifiers(), `${skin}/${theme.id}/${locale}`).toEqual(english);
       }
       for (const language of DESIGN_LANGUAGES) {
         await applyDesignLanguage(new URLSearchParams({ language }));
         flushSync();
-        assertIdentifiers();
+        assertLayoutIdentifiers(skin);
         expect(identifiers(), `${skin}/${language}/${locale}`).toEqual(english);
       }
     }
@@ -200,6 +243,16 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
 });
 
 describe('operation variants and composite renderers', () => {
+  it('marks the semantic RF-power control in the Standard settings editor', async () => {
+    await render('desktop-v2');
+    const opener = target.querySelector<HTMLButtonElement>('.standard-tx-disclosure[aria-label="RF POWER settings"]');
+    expect(opener).not.toBeNull();
+    opener!.click();
+    flushSync();
+    assertCapability(target.querySelector('[data-testid="tx-aux-rfPower"] [role="slider"]'),
+      TRANSMIT_CAPABILITIES.rfPower);
+    assertLayoutIdentifiers('desktop-v2');
+  });
   it.each([false, true])('only marks phone setup power-on (radio on=%s)', async (on) => {
     setRadioPowerOn(on);
     await render('mobile');
@@ -313,14 +366,20 @@ describe('operation variants and composite renderers', () => {
     } });
     flushSync();
     assertIdentifiers();
-    const expected = {
-      ATU: TRANSMIT_CAPABILITIES.atu, VOX: TRANSMIT_CAPABILITIES.vox,
-      COMP: TRANSMIT_CAPABILITIES.txSettings, MON: TRANSMIT_CAPABILITIES.txSettings,
-      TUNE: TRANSMIT_CAPABILITIES.tune,
-    };
-    if (custom) for (const [label, capability] of Object.entries(expected)) {
-      const control = target.querySelector(`[data-testid="external-${label}"]`);
-      expect(control).not.toBeNull();
+    for (const field of ['rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay', 'compressorLevel', 'monitorLevel']) {
+      const control = target.querySelector(`[data-testid="tx-aux-${field}"] [role="slider"]`);
+      assertCapability(control, field === 'rfPower' ? TRANSMIT_CAPABILITIES.rfPower : TRANSMIT_CAPABILITIES.txSettings);
+    }
+    const expected = [
+      ['ATU', 'atu', TRANSMIT_CAPABILITIES.atu],
+      ['VOX', 'vox', TRANSMIT_CAPABILITIES.vox],
+      ['COMP', 'compressor', TRANSMIT_CAPABILITIES.txSettings],
+      ['MON', 'monitor', TRANSMIT_CAPABILITIES.txSettings],
+      ['TUNE', 'atu-tune', TRANSMIT_CAPABILITIES.tune],
+    ] as const;
+    for (const [label, field, capability] of expected) {
+      const testId = custom ? `external-${label}` : `tx-aux-${field}`;
+      const control = target.querySelector(`[data-testid="${testId}"]`);
       assertCapability(control, capability);
     }
   });
@@ -464,6 +523,23 @@ describe('timeout, microphone path and emergency power-off', () => {
 
 
 describe('registry inventory harness cases', () => {
+  it('marks split, copy and swap with a custom VFO renderer', async () => {
+    vi.spyOn(componentKitActivation, 'getSelectedFiniteControlAppearance').mockReturnValue(finiteAppearance);
+    await render('desktop-v2');
+    for (const [field, capability] of [
+      ['split', TRANSMIT_CAPABILITIES.split],
+      ['equalize', TRANSMIT_CAPABILITIES.vfoTransfer],
+      ['swap', TRANSMIT_CAPABILITIES.vfoTransfer],
+    ] as const) {
+      assertCapability(target.querySelector(`.vfo-operation-instrument-seat[data-field="${field}"] button`), capability);
+    }
+    for (const field of ['dualWatch', 'activeReceiver']) {
+      for (const control of target.querySelectorAll(`.vfo-operation-instrument-seat[data-field="${field}"] button`)) {
+        expect(control.closest(markerSelector), field).toBeNull();
+      }
+    }
+  });
+
   it('exercises split and VFO transfer in the desktop layout', async () => {
     await render('desktop-v2');
     assertCapability(target.querySelector('[data-vfo-split]'), TRANSMIT_CAPABILITIES.split);

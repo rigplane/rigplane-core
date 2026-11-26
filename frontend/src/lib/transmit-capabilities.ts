@@ -40,6 +40,7 @@ export const NEVER_GUARDED = {
 // Shared panel handlers called by marked controls. The source scan derives
 // keyboard action aliases from dispatchKeyboardRadioAction using this mapping.
 export const MARKED_CONTROL_HANDLERS = {
+  'makeModeHandlers().onDataModeChange(': TRANSMIT_CAPABILITIES.txSettings.id,
   'makeVfoHandlers().onSplitToggle(': TRANSMIT_CAPABILITIES.split.id,
   'makeVfoHandlers().onSwap(': TRANSMIT_CAPABILITIES.vfoTransfer.id,
   'makeVfoHandlers().onEqual(': TRANSMIT_CAPABILITIES.vfoTransfer.id,
@@ -57,6 +58,9 @@ export const MARKED_CONTROL_HANDLERS = {
  * createPttHold on the focused control, outside the global shortcut map.
  */
 export const NON_DOM_TX_PATHS = {
+  cycle_data_mode: { reason: 'The d shortcut changes the DATA setting through the same handler as the marked DATA buttons.', triggers: [
+    { file: 'lib/runtime/commands/panel-commands.ts', symbol: "case 'cycle_data_mode':" },
+  ] },
   toggle_split: { reason: 'The s shortcut changes transmit VFO routing.', triggers: [
     { file: 'lib/runtime/commands/panel-commands.ts', symbol: "case 'toggle_split':" },
   ] },

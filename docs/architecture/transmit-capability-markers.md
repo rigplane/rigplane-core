@@ -39,7 +39,7 @@ button remains marked during a hold; a separate unkey control remains available
 (`frontend/src/semantic/RxTxSurface.svelte: pttButton`).
 
 `frontend/src/lib/transmit-capabilities.ts: NON_DOM_TX_PATHS` records paths that
-a DOM-only guard cannot cover: global split/VFO/RIT/XIT/monitor shortcuts,
+a DOM-only guard cannot cover: global DATA-mode/split/VFO/RIT/XIT/monitor shortcuts,
 Escape passing through an unarmed wheel control, focused Space/Enter PTT,
 managed double-tap TX latching, scalar wheel/key/drag/reset callbacks and host
 power requests. The Pro guard must handle these separately (it cannot disable
