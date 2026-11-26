@@ -43,7 +43,15 @@
   const surface = new CanvasSurface({
     stageScale: getStageScale(),
     applyBacking: (_target, backing) => {
-      try { renderer?.resize(backing.width, backing.height); } catch (error) { failed(error); }
+      if (!renderer) {
+        // MOR-4342: a size-limit failure destroyed the renderer; a later
+        // resize that fits the GPU limits must bring it back instead of
+        // waiting for a context restore that never comes. Before mount
+        // (failure unset) the mount path still owns initialization.
+        if (failure !== null) initializeRenderer();
+        return;
+      }
+      try { renderer.resize(backing.width, backing.height); } catch (error) { failed(error); }
     },
   });
   const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized && renderer !== null });
@@ -134,8 +142,18 @@
           initial.centerHz = frame.options.centerHz; initial.spanHz = frame.options.spanHz;
         }
       }
-      renderer = new WaterfallRenderer(canvas, initial);
+      // MOR-4342: the failed oversized resize left the canvas beyond the GPU
+      // limits (a real resize writes the canvas before checking them), and
+      // the constructor sizes itself from the CURRENT canvas -- so the
+      // recovered backing must reach the canvas before construction, or
+      // construction throws again and the waterfall stays failed instead of
+      // recovering.
       const facts = surface.facts;
+      if (facts.backingW > 0 && facts.backingH > 0) {
+        canvas.width = facts.backingW;
+        canvas.height = facts.backingH;
+      }
+      renderer = new WaterfallRenderer(canvas, initial);
       if (facts.backingW > 0 && facts.backingH > 0) renderer.resize(facts.backingW, facts.backingH);
       failure = null; restorationView = null;
       pending = frame.pixels !== null;

@@ -335,10 +335,20 @@ async def _restore(run: _Run, state: _Check) -> tuple[bool, bool, str | None, Wi
         accepted = (await _send(run, state, key, value))[1] is not None or (
             await _send(run, state, key, value)
         )[1] is not None
-        same = accepted and (await _send(run, state, key))[1] == value
+        readback = (await _send(run, state, key))[1]
+        same = accepted and readback == value
         if not accepted:
             restored = verified = False
             error = f"could not put {name} back to {text}"
+        elif readback is None:
+            # MOR-4542: a silent readback is missing evidence, not a
+            # different value -- say so instead of claiming the radio reads
+            # differently after the restore.
+            verified = False
+            error = error or (
+                f"the radio did not answer the {name} readback after the "
+                f"restore (was {text})"
+            )
         elif not same:
             verified = False
             error = error or f"{name} reads differently after the restore (was {text})"
