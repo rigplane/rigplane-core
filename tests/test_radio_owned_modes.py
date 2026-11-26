@@ -65,10 +65,62 @@ def test_radio_state_projection_does_not_mutate_cached_state() -> None:
         audio_driver=create_autospec(UsbAudioDriver, instance=True),
     )
     before = radio._state.to_dict()
-    projected = radio.radio_state
-    assert projected.radio_owned_modes[0].id == "wires_x_hri"
-    assert projected.diagnostics is radio._state.diagnostics
+    projected = _project_snapshot_state_dict(StateStore().snapshot(), radio=radio)
+    assert projected["radio_owned_modes"][0]["id"] == "wires_x_hri"
+    assert radio.radio_state is radio._state
+    assert radio.radio_state.diagnostics is radio._state.diagnostics
     assert radio._state.to_dict() == before
+
+
+@pytest.mark.parametrize("model", ["ftx1", "ft991a"])
+def test_radio_state_keeps_live_identity_and_scalar_writes(model: str) -> None:
+    radio = YaesuCatRadio(
+        "/dev/null",
+        profile=model,
+        audio_driver=create_autospec(UsbAudioDriver, instance=True),
+    )
+    state = radio.radio_state
+    assert state is radio._state
+    state.ptt = True
+    state.key_speed = 37
+    assert radio.radio_state is state
+    assert radio.radio_state.ptt is True
+    assert radio.radio_state.key_speed == 37
+
+
+@pytest.mark.asyncio
+async def test_refusal_projection_keeps_live_state_unchanged(
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rigplane.core.radio_owned_modes as modes
+    import rigplane.core.state_store as state_store
+
+    virtual_clock.scope_to(monkeypatch, modes)
+    virtual_clock.scope_to(monkeypatch, state_store)
+    radio = YaesuCatRadio(
+        "/dev/null",
+        profile="ftx1",
+        audio_driver=create_autospec(UsbAudioDriver, instance=True),
+    )
+    state = radio.radio_state
+    before = state.to_dict()
+    monkeypatch.setattr(
+        radio, "_write", AsyncMock(side_effect=CommandRejectedError("Refused"))
+    )
+    with pytest.raises(CommandRejectedError):
+        await radio.set_mode("FM")
+    snapshot = StateStore().snapshot()
+    projected = _project_snapshot_state_dict(snapshot, radio=radio)
+    assert projected["radio_owned_modes"][0]["evidence"]
+    assert not hasattr(radio, "_state_store")
+    assert radio.radio_state is state
+    assert state.to_dict() == before
+    virtual_clock.advance(31.0)
+    expired = _project_snapshot_state_dict(snapshot, radio=radio)
+    assert expired["radio_owned_modes"][0]["evidence"] == ()
+    assert expired["radio_owned_modes"][0]["message"] is None
+    assert radio.radio_state is state
+    assert state.to_dict() == before
 
 
 @pytest.mark.asyncio
@@ -111,14 +163,14 @@ async def test_successful_set_clears_refusal_before_failed_readback(
     monkeypatch.setattr(radio, "_write", write)
     with pytest.raises(CommandRejectedError):
         await radio.set_mode("FM")
-    assert radio.radio_state.radio_owned_modes[0].evidence
+    assert radio._mode_write_evidence.project()[0].evidence
     write.side_effect = None
     read_error = CatParseError("Readback failed")
     monkeypatch.setattr(radio, "get_mode", AsyncMock(side_effect=read_error))
     with pytest.raises(CatParseError) as caught:
         await radio.set_mode("FM")
     assert caught.value is read_error
-    assert radio.radio_state.radio_owned_modes[0].evidence == ()
+    assert radio._mode_write_evidence.project()[0].evidence == ()
 
 
 @pytest.mark.asyncio
@@ -238,7 +290,7 @@ async def test_simulator_refused_mode_write_has_scoped_explanation(model: str) -
                 f"Radio rejected command {wire_command!r} (returned '?;')"
             )
             assert fake.commands[before:] == (wire_command,)
-            states = radio.radio_state.radio_owned_modes
+            states = radio._mode_write_evidence.project()
             if model == "ftx1":
                 (state,) = states
                 assert "WIRES-X/HRI mode may be active" in state.message
@@ -263,20 +315,20 @@ async def test_simulator_refused_mode_write_has_scoped_explanation(model: str) -
                     == command.id
                 )
                 assert (
-                    radio.radio_state.radio_owned_modes[0].evidence[0].command_id
+                    radio._mode_write_evidence.project()[0].evidence[0].command_id
                     == command.id
                 )
                 assert state.observation["provider_generation"] == 1
                 assert store.snapshot().fields == ()
                 fake.accept_set("set_mode")
                 await radio.set_mode("FM")
-                assert radio.radio_state.radio_owned_modes[0].evidence == ()
+                assert radio._mode_write_evidence.project()[0].evidence == ()
                 fake.reject_set("set_mode")
                 with pytest.raises(CommandRejectedError):
                     await radio.set_mode("USB")
                 # A new provider generation cannot retain the old refusal.
                 radio._mode_write_evidence.reset()
-                (state,) = radio.radio_state.radio_owned_modes
+                (state,) = radio._mode_write_evidence.project()
                 assert state.evidence == ()
             else:
                 assert states == ()
@@ -285,7 +337,7 @@ async def test_simulator_refused_mode_write_has_scoped_explanation(model: str) -
         finally:
             await radio.disconnect()
             assert all(
-                not state.evidence for state in radio.radio_state.radio_owned_modes
+                not state.evidence for state in radio._mode_write_evidence.project()
             )
     finally:
         await fake.stop()
@@ -422,7 +474,7 @@ async def test_simulator_modulation_never_identifies_hri(code: str) -> None:
         name, _ = await radio.get_mode()
         if code in ("0", "G", "J"):
             assert name == "UNKNOWN"
-        (state,) = radio.radio_state.radio_owned_modes
+        (state,) = radio._mode_write_evidence.project()
         assert state.activity == "unknown"
         assert state.certainty is None
         assert state.evidence == ()
@@ -448,7 +500,7 @@ async def test_simulator_readback_parse_failure_keeps_its_original_error() -> No
         with pytest.raises(CatParseError) as caught:
             await radio.set_mode("FM")
         assert "HRI" not in str(caught.value)
-        assert radio.radio_state.radio_owned_modes[0].evidence == ()
+        assert radio._mode_write_evidence.project()[0].evidence == ()
     finally:
         try:
             await radio.disconnect()

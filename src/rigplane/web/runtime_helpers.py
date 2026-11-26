@@ -22,7 +22,7 @@ from ..core.state_store import (
 from ..core.radio_protocol import RadioIdentityStatus
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
-from ..core.radio_owned_modes import project_radio_owned_modes
+from ..core.radio_owned_modes import ModeWriteEvidence, project_radio_owned_modes
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -1615,9 +1615,9 @@ def _project_snapshot_state_dict(
     profile = getattr(radio, "profile", None)
     definitions = getattr(profile, "radio_owned_modes", ())
     contexts = project_radio_owned_modes(definitions, snapshot)
-    radio_state = getattr(radio, "radio_state", None)
-    if isinstance(radio_state, RadioState) and radio_state.radio_owned_modes:
-        contexts = radio_state.radio_owned_modes
+    evidence = getattr(radio, "_mode_write_evidence", None)
+    if isinstance(evidence, ModeWriteEvidence):
+        contexts = evidence.project()
     state["radio_owned_modes"] = [context.to_dict() for context in contexts]
     return cast(dict[str, Any], state)
 

@@ -11,7 +11,6 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Mapping
-from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -951,9 +950,7 @@ class YaesuCatRadio:
     @property
     def radio_state(self) -> RadioState:
         """Live radio state snapshot (updated by get_* calls)."""
-        state = copy(self._state)
-        state.radio_owned_modes = self._mode_write_evidence.project()
-        return state
+        return self._state
 
     @property
     def audio_codec(self) -> AudioCodec:
