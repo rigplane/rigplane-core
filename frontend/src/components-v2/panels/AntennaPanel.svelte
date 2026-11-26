@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { HardwareButton } from '$lib/Button';
   import { deriveAntennaProps, getAntennaHandlers } from '$lib/runtime/adapters/panel-adapters';
 
@@ -31,7 +31,7 @@
           indicator="edge-left"
           color="cyan"
           onclick={onSelectAnt1}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txAntenna.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txAntenna.id }}
         >
           ANT1
         </HardwareButton>
@@ -42,7 +42,7 @@
           indicator="edge-left"
           color="cyan"
           onclick={onSelectAnt2}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txAntenna.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txAntenna.id }}
         >
           ANT2
         </HardwareButton>

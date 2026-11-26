@@ -88,7 +88,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onMount } from 'svelte';
   import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, SlidersHorizontal, Bug } from 'lucide-svelte';
   import { bindHostRadioControls, getHostUi, getLayoutOptions, readHostDeclaration } from '$lib/local-extensions/host-ui';
@@ -542,7 +542,7 @@
       <button
         type="button"
         class="control-btn power-toggle-btn"
-        data-rp-capability={TRANSMIT_CAPABILITIES.power.id}
+        {...{ [CAPABILITY_ATTRIBUTE]: radioPowerOn === false ? TRANSMIT_CAPABILITIES.powerOn.id : undefined }}
         class:is-on={radioPowerOn === true}
         class:power-unknown={radioPowerOn === null}
         disabled={radioPowerOn === null}

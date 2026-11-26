@@ -18,6 +18,7 @@
    * stays enabled — cancelling cannot un-dispatch an in-flight action,
    * the parent just discards its late result.
    */
+  import { CAPABILITY_ATTRIBUTE } from '$lib/transmit-capabilities';
   import { t } from '$lib/i18n';
   import type { TransmitCapability } from '$lib/transmit-capabilities';
 
@@ -142,7 +143,7 @@
             onclick={() => void onConfirm()}
             disabled={busy}
             data-testid="confirm-dialog-confirm"
-            data-rp-capability={capability}
+            {...{ [CAPABILITY_ATTRIBUTE]: capability }}
           >
             {busy ? t('common.action.working') : confirmLabel}
           </button>

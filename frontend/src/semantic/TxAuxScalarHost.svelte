@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, type Snippet } from 'svelte';
   import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -232,7 +232,7 @@
     }}
     <div
       class="tx-aux-level"
-      data-rp-capability={field === 'rfPower' ? TRANSMIT_CAPABILITIES.rfPower.id : TRANSMIT_CAPABILITIES.txSettings.id}
+      {...{ [CAPABILITY_ATTRIBUTE]: field === 'rfPower' ? TRANSMIT_CAPABILITIES.rfPower.id : TRANSMIT_CAPABILITIES.txSettings.id }}
       class:tx-aux-level--presented={explicitPresentation}
       data-testid={`tx-aux-${field}`}
       data-field={field}

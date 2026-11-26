@@ -14,7 +14,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { bindActionInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
@@ -90,7 +90,7 @@
       />{/key}{/key}
     {:else}
       <button type="button" data-testid={`ritxit-${kind}-toggle`}
-        data-rp-capability={TRANSMIT_CAPABILITIES.ritXit.id}
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
         aria-pressed={behavior.confirmed} disabled={!behavior.available}
         data-shortcut-hint={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
         title={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
@@ -109,7 +109,7 @@
       />{/key}{/key}
     {:else}
       <button type="button" data-testid="ritxit-clear" disabled={!clearAction.available}
-        data-rp-capability={TRANSMIT_CAPABILITIES.ritXit.id}
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
         data-shortcut-hint={clearShortcut() ?? undefined} title={clearShortcut() ?? undefined}
         onclick={() => clearAction.invoke()}>CLEAR</button>
     {/if}

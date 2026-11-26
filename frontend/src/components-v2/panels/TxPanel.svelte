@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
@@ -304,7 +304,7 @@
     <!-- Unkey is never gated: the latched gesture releases the TX lock. -->
     <button
       class="ptt-button"
-      data-rp-capability={latched ? undefined : TRANSMIT_CAPABILITIES.txHold.id}
+      {...{ [CAPABILITY_ATTRIBUTE]: latched ? undefined : TRANSMIT_CAPABILITIES.txHold.id }}
       class:ptt-held={owned && !latched}
       class:ptt-latched={latched}
       aria-disabled={starting || busy}
@@ -334,7 +334,7 @@
           indicator="edge-left"
           color={atuActive ? 'green' : 'gray'}
           onclick={onAtuToggle}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.atu.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.atu.id }}
         >
           ATU
         </HardwareButton>
@@ -345,7 +345,7 @@
           indicator="edge-left"
           color={atuTuning ? 'red' : 'gray'}
           onclick={onAtuTune}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.tune.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.tune.id }}
         >
           {atuTuning ? 'TUNING…' : 'TUNE'}
         </HardwareButton>
@@ -359,7 +359,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onVoxToggle}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.vox.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vox.id }}
         >
           VOX
         </HardwareButton>
@@ -372,7 +372,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onCompToggle}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txSettings.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txSettings.id }}
         >
           COMP{compActive && compLevel > 0 ? ` ${Math.round(compLevel / 2.55)}%` : ''}
         </HardwareButton>
@@ -385,7 +385,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onMonToggle}
-          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txSettings.id }}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txSettings.id }}
         >
           MON{monActive && monLevel > 0 ? ` ${Math.round(monLevel / 2.55)}%` : ''}
         </HardwareButton>
@@ -412,8 +412,8 @@
       <span class="modal-title">TX LEVELS</span>
       <button class="modal-close" onclick={() => (settingsOpen = false)}>✕</button>
     </div>
-    <div class="modal-body" data-rp-capability={TRANSMIT_CAPABILITIES.txSettings.id}>
-      <div class="tx-level-slot" data-rp-capability={TRANSMIT_CAPABILITIES.rfPower.id}>
+    <div class="modal-body" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}>
+      <div class="tx-level-slot" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.rfPower.id }}>
         <ValueControl {...feedbackIntegratedControl} label="RF Power" binding={rfPowerBinding}
           renderer="hbar" displayFn={rfPowerLabel} accentColor="var(--v2-accent-red)"
           issuedStatusPresentation={rfPowerStatus} variant="hardware-illuminated" />

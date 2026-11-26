@@ -45,7 +45,7 @@
   }
   function requestPower(on: boolean, origin?: 'powered-off-overlay'): boolean {
     if (confirmOpen || !powerRequestAllowed(on, origin)) return false;
-    requestConfirm({ capability: TRANSMIT_CAPABILITIES.power.id,
+    requestConfirm({ capability: on ? TRANSMIT_CAPABILITIES.powerOn.id : undefined,
       message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
       action: () => !powerRequestAllowed(on, origin) ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
       formatError: err => t(on ? 'core.statusbar.power.failedTurnOn' : 'core.statusbar.power.failedTurnOff', { detail: String(err) }) });

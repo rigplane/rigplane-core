@@ -1,4 +1,5 @@
 <script lang="ts" generics="Lease extends { dispose(): void }, Seat extends FiniteRendererSeat<Lease>">
+  import { CAPABILITY_ATTRIBUTE } from '$lib/transmit-capabilities';
   import { onDestroy, untrack, type Component } from 'svelte';
   import type { TransmitCapability } from '$lib/transmit-capabilities';
   import type { FiniteRendererSeat } from './control-instrument-renderer.svelte';
@@ -16,7 +17,7 @@
 </script>
 
 {#if capability}
-  <div style="display: contents" data-rp-capability={capability}><Renderer {lease} /></div>
+  <div class="rp-capability-renderer" style="display: contents" {...{ [CAPABILITY_ATTRIBUTE]: capability }}><Renderer {lease} /></div>
 {:else}
   <Renderer {lease} />
 {/if}

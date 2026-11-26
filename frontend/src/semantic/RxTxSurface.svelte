@@ -11,7 +11,7 @@
   colors. Idle receiving and unknown states do not reserve an indicator row.
 -->
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import '../components-v2/controls/control-button.css';
   import { t } from '$lib/i18n';
@@ -189,7 +189,7 @@
     {#if momentary}
     {@const holdLabel = t('core.rxTx.holdToTalk')}
     <button
-      data-rp-capability={TRANSMIT_CAPABILITIES.txHold.id}
+      {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txHold.id }}
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={keyUnavailable && !held} aria-pressed={pressed}
@@ -199,7 +199,7 @@
     ><span class="rx-tx-hold-label">{holdLabel}</span></button>
     {:else}
     <button
-      data-rp-capability={TRANSMIT_CAPABILITIES.txKey.id}
+      {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txKey.id }}
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={keyUnavailable} aria-pressed={pressed}

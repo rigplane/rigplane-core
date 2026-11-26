@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
@@ -970,7 +970,7 @@
                 indicator="edge-left"
                 color={vfoOps.splitActive ? 'yellow' : 'gray'}
                 onclick={vfoHandlers.onSplitToggle}
-                data={{ 'rp-capability': TRANSMIT_CAPABILITIES.split.id }}
+                data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.split.id }}
               >
                 SPLIT
               </HardwareButton>
@@ -978,7 +978,7 @@
                 indicator="edge-left"
                 color="cyan"
                 onclick={vfoHandlers.onSwap}
-                data={{ 'rp-capability': TRANSMIT_CAPABILITIES.vfoTransfer.id }}
+                data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
               >
                 A↔B
               </HardwareButton>
@@ -986,7 +986,7 @@
                 indicator="edge-left"
                 color="cyan"
                 onclick={vfoHandlers.onEqual}
-                data={{ 'rp-capability': TRANSMIT_CAPABILITIES.vfoTransfer.id }}
+                data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
               >
                 A=B
               </HardwareButton>

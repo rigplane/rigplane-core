@@ -26,7 +26,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -206,7 +206,7 @@
       class="cw-keyer-level"
       class:cw-keyer-level--presented={explicitPresentation}
       data-testid={`cw-keyer-${field}`}
-      data-rp-capability={field === 'keyerSpeed' ? TRANSMIT_CAPABILITIES.txSettings.id : undefined}
+      {...{ [CAPABILITY_ATTRIBUTE]: field === 'keyerSpeed' ? TRANSMIT_CAPABILITIES.txSettings.id : undefined }}
       data-field={field}
       data-scalar-form={form}
       data-observed={usable(current) && canonical(field) !== null}

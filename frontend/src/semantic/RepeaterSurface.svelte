@@ -31,7 +31,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { ControlButton } from '$lib/Button';
   import { t } from '$lib/i18n';
   import { formatOffsetHz, formatToneHz, type RepeaterPending } from '$lib/radio/repeater-transitions';
@@ -84,7 +84,7 @@
 
 {#if receiver !== null && rx}
   <section class="repeater-surface" data-testid="repeater-surface" data-receiver={receiver}
-    data-rp-capability={TRANSMIT_CAPABILITIES.repeater.id}>
+    {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.repeater.id }}>
     <span class="repeater-receiver" data-testid="repeater-receiver">{receiver}</span>
     {#if rx.toneMode.availability.structural}
       <div class="repeater-keys" role="radiogroup" aria-label="Tone mode" data-testid="repeater-tone-mode">

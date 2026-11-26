@@ -21,7 +21,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, type Snippet } from 'svelte';
   import '../components-v2/controls/control-button.css';
   import {
@@ -145,7 +145,7 @@
       <button
         type="button" class="tx-aux-toggle v2-control-button v2-control-button--compact"
         data-testid={`tx-aux-${field}`} data-field={field}
-        data-rp-capability={capabilityOf(field)}
+        {...{ [CAPABILITY_ATTRIBUTE]: capabilityOf(field) }}
         data-surface="hardware" data-indicator-style="dot" data-indicator-color="cyan"
         data-active={behavior.confirmed} data-disabled-reason={reasonOf(source)}
         title={reasonTextOf(source) ?? tuningTitle(source)} aria-label={label}
@@ -178,7 +178,7 @@
       <button
         type="button" class="tx-aux-tune v2-control-button v2-control-button--compact"
         data-surface="hardware" data-testid="tx-aux-atu-tune"
-        data-rp-capability={TRANSMIT_CAPABILITIES.tune.id}
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.tune.id }}
         title={tuneReason} aria-describedby={tuneDescribedBy}
         disabled={!tuneBehavior.available} onclick={() => tuneBehavior.invoke()}
       >TUNE</button>

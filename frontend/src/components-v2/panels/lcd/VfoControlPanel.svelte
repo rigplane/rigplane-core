@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   /**
    * VfoControlPanel — sidebar soft-button panel for the LCD skin.
    *
@@ -49,20 +49,20 @@
 </script>
 
 <div class="vfo-ctrl-panel">
-  <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.vfoTransfer.id} onclick={vfoHandlers.onSwap}>A↔B</button>
-  <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.vfoTransfer.id} onclick={vfoHandlers.onEqual}>A=B</button>
+  <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.vfoTransfer.id }} onclick={vfoHandlers.onSwap}>A↔B</button>
+  <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.vfoTransfer.id }} onclick={vfoHandlers.onEqual}>A=B</button>
   {#if p.hasDualRx && !hideVfoFacts}
     <button class="lcd-btn" class:active={vfoOps.dualWatch} onclick={() => vfoHandlers.onDualWatchToggle(!vfoOps.dualWatch)}>DW</button>
   {/if}
   {#if p.hasSplit && !hideVfoFacts}
-    <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.split.id} class:active={vfoOps.splitActive} onclick={vfoHandlers.onSplitToggle}>SPLIT</button>
+    <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.split.id }} class:active={vfoOps.splitActive} onclick={vfoHandlers.onSplitToggle}>SPLIT</button>
   {/if}
   {#if p.hasRit}
-    <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.ritXit.id} class:active={ritXit.xitActive} onclick={ritXitHandlers.onXitToggle}>XIT</button>
-    <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.ritXit.id} onclick={ritXitHandlers.onClear}>CLR</button>
+    <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }} class:active={ritXit.xitActive} onclick={ritXitHandlers.onXitToggle}>XIT</button>
+    <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }} onclick={ritXitHandlers.onClear}>CLR</button>
   {/if}
   {#if p.hasTuner}
-    <button class="lcd-btn" data-rp-capability={TRANSMIT_CAPABILITIES.tune.id} onclick={requestAtuTune}>TUNE</button>
+    <button class="lcd-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.tune.id }} onclick={requestAtuTune}>TUNE</button>
   {/if}
   <!-- MOR-2729: the break-in key cycles to the NEXT published value from
        the current one; `[]` (X6100, X6200) renders no key at all — the
@@ -88,7 +88,7 @@
          exactly the visible text. -->
     <button
       class="lcd-btn lcd-btn-bk" class:active={current !== null && current > 0}
-      data-rp-capability={TRANSMIT_CAPABILITIES.cwBreakIn.id}
+      {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.cwBreakIn.id }}
       disabled={current === null}
       onclick={() => { if (next !== null) cwHandlers.onBreakInModeChange(next.value); }}
     >

@@ -11,7 +11,7 @@
   ("render safety/status overlays outside the selected layout").
 -->
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import Toast from './components/shared/Toast.svelte';
   import { getHostUi, powerRequestAllowed } from '$lib/local-extensions/host-ui';
@@ -145,7 +145,7 @@
           </span>
         {/if}
         {#if powerOnCommand && !radioNotConnected}
-          <button class="power-on-btn" data-rp-capability={TRANSMIT_CAPABILITIES.power.id} onclick={handlePowerOn}>
+          <button class="power-on-btn" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.powerOn.id }} onclick={handlePowerOn}>
             {t('core.overlay.poweredOff.powerOnButton')}
           </button>
         {:else if !radioNotConnected}

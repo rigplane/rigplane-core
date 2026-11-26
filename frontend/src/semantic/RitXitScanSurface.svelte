@@ -128,7 +128,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
@@ -272,7 +272,7 @@
 
 {#snippet offsetSlot()}
   <label class="offset" data-testid="ritxit-offset"
-    data-rp-capability={TRANSMIT_CAPABILITIES.ritXit.id}
+    {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
     data-observed={offset !== undefined && usable(offset)}>
     <span>Offset</span>
     <ValueControl

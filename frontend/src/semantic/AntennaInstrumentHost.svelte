@@ -86,7 +86,7 @@
 </script>
 
 <script lang="ts">
-  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
@@ -176,7 +176,7 @@
       {:else}
         {@const lease = untrack(() => txPortSeat.attachRenderer())}
         <div class="antenna-row" role="radiogroup" aria-label="Transmit antenna"
-          data-rp-capability={TRANSMIT_CAPABILITIES.txAntenna.id}
+          {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txAntenna.id }}
           data-testid="antenna-ports" data-observed={usable(ant.txAntenna)}
           {@attach () => () => lease.dispose()}>
           {#each ANTENNA_PORTS as port (port)}

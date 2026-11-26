@@ -199,7 +199,10 @@
 
 .desktop-control-face .semantic-control-panel :is(
   .rf-front-end-row, .filter-choice-group, .rx-audio-row, .dsp-row, .cw-keyer-row, .tx-aux-row, .antenna-row
-) > button {
+) > button,
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-row, .filter-choice-group, .rx-audio-row, .dsp-row, .cw-keyer-row, .tx-aux-row, .antenna-row
+) > .rp-capability-renderer > button {
   flex: 1 1 0;
 }
 

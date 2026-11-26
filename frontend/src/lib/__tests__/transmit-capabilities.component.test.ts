@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { TRANSMIT_CAPABILITIES, NEVER_GUARDED } from '../transmit-capabilities';
+import { TRANSMIT_CAPABILITIES, NEVER_GUARDED, CAPABILITY_ATTRIBUTE } from '../transmit-capabilities';
 import { setLocale } from '../i18n';
 import { fixtureById } from '../../../fixtures/catalog';
 import { harness, IDLE_TX } from '../../../fixtures/harness-state';
@@ -18,10 +18,14 @@ import TxAuxScalarHostFixture from '../../semantic/__tests__/fixtures/TxAuxScala
 import RitXitScanInstrumentHostFixture from '../../semantic/__tests__/fixtures/RitXitScanInstrumentHostFixture.svelte';
 import FiniteControlRendererFixture from '../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 import { createFiniteRendererContext, type FiniteControlAppearance } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
-import { topologyFixtures, withTxAux, withRitXit, withCwKeyer } from '../../semantic/fixtures/topologies';
+import { topologyFixtures, withTxAux, withRitXit, withCwKeyer, withAntenna } from '../../semantic/fixtures/topologies';
 import RxTxSurface from '../../semantic/RxTxSurface.svelte';
 import CwKeyerInstrumentHostFixture from '../../semantic/__tests__/fixtures/CwKeyerInstrumentHostFixture.svelte';
+import AntennaInstrumentHostFixture from '../../semantic/__tests__/fixtures/AntennaInstrumentHostFixture.svelte';
+import desktopControlsCss from '../../skins/desktop-v2/semantic-controls.css?raw';
 import RepeaterSurface from '../../semantic/RepeaterSurface.svelte';
+import ManagedTotControl from '../../components-v2/controls/ManagedTotControl.svelte';
+import TxMicProcessingControl from '../../components-v2/controls/TxMicProcessingControl.svelte';
 import PttFab from '../../components-v2/controls/PttFab.svelte';
 import TxPanel from '../../components-v2/panels/TxPanel.svelte';
 import RitXitPanel from '../../components-v2/panels/RitXitPanel.svelte';
@@ -63,25 +67,7 @@ vi.mock('../../components/spectrum/SpectrumPanel.svelte', async () =>
 vi.mock('../local-extensions/LocalExtensionsHost.svelte', async () =>
   import('../../components-v2/layout/__tests__/SpectrumPanelStub.svelte'));
 
-// Semantic hooks, not visible labels, identify the controls under test. The
-// capability vocabulary and expected attribute values come only from Core.
-const controls = {
-  txKey: '.rx-tx-key:not(:has(.rx-tx-hold-label))',
-  txHold: '.rx-tx-key:has(.rx-tx-hold-label), .ptt-button:not(.ptt-latched), .ptt-fab:not(.ptt-fab-latched), .m-ls-ptt',
-  tune: '[data-testid="tx-aux-atu-tune"], .m-atu-btn',
-  split: '[data-vfo-split], .m-vfo-ops > button:first-child',
-  vfoTransfer: '[data-vfo-swap], [data-vfo-equalize], .m-vfo-ops > button:nth-child(2), .m-vfo-ops > button:nth-child(3)',
-  ritXit: '[data-testid="ritxit-rit-toggle"], [data-testid="ritxit-xit-toggle"], [data-testid="ritxit-clear"], [data-testid="ritxit-offset"]',
-  power: '.power-toggle-btn, .power-on-btn',
-  rfPower: '[data-testid="tx-aux-rfPower"], .m-tx-info',
-  atu: '[data-testid="tx-aux-atu"]:not(.tx-aux-level), [data-vfo-tuner]',
-  vox: '[data-testid="tx-aux-vox"]:not(.tx-aux-level), [data-vfo-vox]',
-  txSettings: '.tx-aux-level:not([data-field="rfPower"]), [data-testid="tx-aux-compressor"], [data-testid="tx-aux-monitor"], [data-testid="cw-keyer-keyerSpeed"], [data-testid="cw-keyer-reverse-paddle"], [data-testid="rx-audio-mod-select"], [data-testid="rx-audio-mod-set-lan"], [data-testid="mod-input-select"], [data-testid="mod-input-set-lan"], [data-testid="filter-data-mode"] button, [data-testid="standard-data-mode"] button',
-  cwBreakIn: '[data-testid="cw-keyer-break-in"] button, [data-testid="cw-keyer-breakInDelay"], .lcd-btn-bk',
-  cwAutoTune: '[data-testid="cw-keyer-auto-tune"]',
-  txAntenna: '[data-testid="antenna-ports"] button',
-  repeater: '.repeater-surface button',
-} satisfies Record<keyof typeof TRANSMIT_CAPABILITIES, string>;
+const markerSelector = `[${CAPABILITY_ATTRIBUTE}]`;
 
 // Keep this total over the registry's type, including QA layouts and mobile.
 const layouts = {
@@ -91,9 +77,6 @@ const layouts = {
   mobile: true,
 } satisfies Record<SkinId, true>;
 
-const entries = Object.entries(TRANSMIT_CAPABILITIES) as Array<
-  [keyof typeof TRANSMIT_CAPABILITIES, (typeof TRANSMIT_CAPABILITIES)[keyof typeof TRANSMIT_CAPABILITIES]]
->;
 const seen = new Set<string>();
 const idleTx = { phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null } as const;
 const finiteAppearance = {
@@ -162,24 +145,23 @@ async function render(skin: SkinId) {
   flushSync();
 }
 
+function assertCapability(control: Element | null, capability: { readonly id: string }) {
+  expect(control, `harness case for ${capability.id}`).not.toBeNull();
+  expect(control!.closest(markerSelector)?.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(capability.id);
+  seen.add(capability.id);
+}
+
 function assertIdentifiers() {
   const allowed = Object.values(TRANSMIT_CAPABILITIES).map(({ id }) => id);
-  for (const [name, capability] of entries) {
-    for (const control of target.querySelectorAll(controls[name])) {
-      expect(control.closest('[data-rp-capability]')?.getAttribute('data-rp-capability'),
-        `${name}: ${control.outerHTML}`).toBe(capability.id);
-    }
-  }
-  for (const control of target.querySelectorAll('[data-rp-capability]')) {
-    const id = control.getAttribute('data-rp-capability')!;
+  for (const control of target.querySelectorAll(markerSelector)) {
+    const id = control.getAttribute(CAPABILITY_ATTRIBUTE)!;
     expect(allowed).toContain(id);
-    seen.add(id);
   }
   const unkeys = target.querySelectorAll('.rx-tx-unkey, .m-ls-unkey, .ptt-fab-latched, .ptt-latched');
   for (const unkey of unkeys) {
-    expect(unkey.closest('[data-rp-capability]'), NEVER_GUARDED.unkey.reason).toBeNull();
+    expect(unkey.closest(markerSelector), NEVER_GUARDED.unkey.reason).toBeNull();
   }
-  expect(target.querySelector('[data-rp-capability]')).not.toBeNull();
+  expect(target.querySelector(markerSelector)).not.toBeNull();
 }
 
 describe('transmit capability DOM contract (MOR-4837)', () => {
@@ -188,15 +170,19 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
     await render(skin);
     assertIdentifiers();
   });
-  it.each(Object.keys(layouts) as SkinId[])('%s uses registered IDs in both locales', async (skin) => {
+  it.each(Object.keys(layouts) as SkinId[])('%s uses registered IDs in fresh locale renders', async (skin) => {
     setLocale('en-US');
     await render(skin);
     assertIdentifiers();
-    const identifiers = () => Array.from(target.querySelectorAll('[data-rp-capability]'),
-      (element) => element.getAttribute('data-rp-capability')).sort();
+    const identifiers = () => Array.from(target.querySelectorAll(markerSelector),
+      (element) => element.getAttribute(CAPABILITY_ATTRIBUTE)).sort();
     const english = identifiers();
-    for (const locale of ['en-US', 'ru-RU'] as const) {
+    for (const locale of ['en-US', 'ru-RU', 'ja-JP'] as const) {
+      await unmount(component!);
+      component = undefined;
       setLocale(locale);
+      await render(skin);
+      expect(identifiers(), `${skin}/${locale}/fresh`).toEqual(english);
       for (const theme of getAvailableThemes()) {
         setTheme(theme.id);
         flushSync();
@@ -219,12 +205,14 @@ afterAll(() => {
 });
 
 describe('operation variants and composite renderers', () => {
-  it('marks the phone setup power control', async () => {
+  it.each([false, true])('only marks phone setup power-on (radio on=%s)', async (on) => {
+    setRadioPowerOn(on);
     await render('mobile');
     target.querySelector<HTMLButtonElement>('.m-settings-btn')!.click();
     flushSync();
-    expect(target.querySelector('.m-radio-power')?.getAttribute('data-rp-capability'))
-      .toBe(TRANSMIT_CAPABILITIES.power.id);
+    expect(target.querySelector('.m-radio-power')?.getAttribute(CAPABILITY_ATTRIBUTE))
+      .toBe(on ? null : TRANSMIT_CAPABILITIES.powerOn.id);
+    if (!on) assertCapability(target.querySelector('.m-radio-power'), TRANSMIT_CAPABILITIES.powerOn);
     assertIdentifiers();
   });
   it.each(['essentials', 'rit', 'tx'])('marks controls in the phone %s tab and its RF-power sheet', async (tab) => {
@@ -242,7 +230,7 @@ describe('operation variants and composite renderers', () => {
       flushSync();
       const slider = target.querySelector('[role="slider"]');
       expect(slider).not.toBeNull();
-      expect(slider!.closest('[data-rp-capability]')?.getAttribute('data-rp-capability'))
+      expect(slider!.closest(markerSelector)?.getAttribute(CAPABILITY_ATTRIBUTE))
         .toBe(TRANSMIT_CAPABILITIES.rfPower.id);
     }
   });
@@ -256,7 +244,7 @@ describe('operation variants and composite renderers', () => {
       TRANSMIT_CAPABILITIES.txSettings, TRANSMIT_CAPABILITIES.txSettings,
     ];
     for (const [index, capability] of expected.entries()) {
-      expect(buttons[index].getAttribute('data-rp-capability')).toBe(capability.id);
+      assertCapability(buttons[index], capability);
     }
     buttons.at(-1)!.click();
     flushSync();
@@ -265,7 +253,7 @@ describe('operation variants and composite renderers', () => {
     expect(slots.length).toBeGreaterThan(0);
     for (const [index, slot] of Array.from(slots).entries()) {
       const capability = index === 0 ? TRANSMIT_CAPABILITIES.rfPower : TRANSMIT_CAPABILITIES.txSettings;
-      expect(slot.closest('[data-rp-capability]')?.getAttribute('data-rp-capability')).toBe(capability.id);
+      assertCapability(slot, capability);
     }
     assertIdentifiers();
   });
@@ -276,7 +264,7 @@ describe('operation variants and composite renderers', () => {
     flushSync();
     const release = target.querySelector('.ptt-button.ptt-latched');
     expect(release).not.toBeNull();
-    expect(release!.closest('[data-rp-capability]'), NEVER_GUARDED.unkey.reason).toBeNull();
+    expect(release!.closest(markerSelector), NEVER_GUARDED.unkey.reason).toBeNull();
     assertIdentifiers();
   });
 
@@ -286,8 +274,7 @@ describe('operation variants and composite renderers', () => {
     const controls = target.querySelectorAll('button, [role="slider"]');
     expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {
-      expect(control.closest('[data-rp-capability]')?.getAttribute('data-rp-capability'))
-        .toBe(TRANSMIT_CAPABILITIES.ritXit.id);
+      assertCapability(control, TRANSMIT_CAPABILITIES.ritXit);
     }
     assertIdentifiers();
   });
@@ -298,11 +285,11 @@ describe('operation variants and composite renderers', () => {
       onVoxToggle() {}, onVoxGainChange() {}, onAntiVoxGainChange() {}, onVoxDelayChange() {},
     } });
     flushSync();
-    expect(target.querySelector('button')?.getAttribute('data-rp-capability')).toBe(TRANSMIT_CAPABILITIES.vox.id);
+    expect(target.querySelector('button')?.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(TRANSMIT_CAPABILITIES.vox.id);
     const settings = target.querySelectorAll('[role="slider"]');
     expect(settings.length).toBeGreaterThan(0);
     for (const control of settings) {
-      expect(control.closest('[data-rp-capability]')?.getAttribute('data-rp-capability'))
+      expect(control.closest(markerSelector)?.getAttribute(CAPABILITY_ATTRIBUTE))
         .toBe(TRANSMIT_CAPABILITIES.txSettings.id);
     }
     assertIdentifiers();
@@ -315,6 +302,7 @@ describe('operation variants and composite renderers', () => {
     } });
     flushSync();
     assertIdentifiers();
+    assertCapability(target.querySelector('.rx-tx-key'), momentary ? TRANSMIT_CAPABILITIES.txHold : TRANSMIT_CAPABILITIES.txKey);
     const release = target.querySelector<HTMLButtonElement>('.rx-tx-unkey')!;
     expect(release).not.toBeNull();
     expect(release.disabled).toBe(false);
@@ -337,7 +325,7 @@ describe('operation variants and composite renderers', () => {
     if (custom) for (const [label, capability] of Object.entries(expected)) {
       const control = target.querySelector(`[data-testid="external-${label}"]`);
       expect(control).not.toBeNull();
-      expect(control!.closest('[data-rp-capability]')?.getAttribute('data-rp-capability')).toBe(capability.id);
+      assertCapability(control, capability);
     }
   });
 
@@ -351,19 +339,22 @@ describe('operation variants and composite renderers', () => {
     if (custom) for (const label of ['RIT', 'XIT', 'CLEAR']) {
       const control = target.querySelector(`[data-testid="external-${label}"]`);
       expect(control).not.toBeNull();
-      expect(control!.closest('[data-rp-capability]')?.getAttribute('data-rp-capability'))
+      expect(control!.closest(markerSelector)?.getAttribute(CAPABILITY_ATTRIBUTE))
         .toBe(TRANSMIT_CAPABILITIES.ritXit.id);
     }
   });
 
-  it('marks CW break-in, delay and the AUTO TUNE action', () => {
+  it('marks CW break-in and delay but leaves RX AUTO TUNE unmarked', () => {
     component = mount(CwKeyerInstrumentHostFixture, { target, props: {
       view: withCwKeyer(topologyFixtures['1/single']), autoTuneAvailable: true,
       breakInChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'SEMI' }, { value: 2, label: 'FULL' }],
     } });
     flushSync();
     assertIdentifiers();
-    expect(target.querySelector('[data-testid="cw-keyer-auto-tune"]')).not.toBeNull();
+    assertCapability(target.querySelector('[data-testid="cw-keyer-break-in"] button'), TRANSMIT_CAPABILITIES.cwBreakIn);
+    const correction = target.querySelector('[data-testid="cw-keyer-auto-tune"]');
+    expect(correction).not.toBeNull();
+    expect(correction!.closest(markerSelector), NEVER_GUARDED.cwAutoTune.reason).toBeNull();
     expect(target.querySelector('[data-testid="cw-keyer-break-in"] button')).not.toBeNull();
   });
 
@@ -383,7 +374,7 @@ describe('operation variants and composite renderers', () => {
     } } });
     flushSync();
     assertIdentifiers();
-    expect(target.querySelector('.repeater-surface button')).not.toBeNull();
+    assertCapability(target.querySelector('.repeater-surface button'), TRANSMIT_CAPABILITIES.repeater);
   });
 
   it('keeps the phone TX-lock release unmarked', () => {
@@ -391,7 +382,7 @@ describe('operation variants and composite renderers', () => {
     component = mount(PttFab, { target, props: { mode: 'latched', hold } });
     flushSync();
     const release = target.querySelector('button')!;
-    expect(release.closest('[data-rp-capability]'), NEVER_GUARDED.unkey.reason).toBeNull();
+    expect(release.closest(markerSelector), NEVER_GUARDED.unkey.reason).toBeNull();
   });
 
   it('also marks the phone landscape PTT', async () => {
@@ -399,5 +390,122 @@ describe('operation variants and composite renderers', () => {
     await render('mobile');
     assertIdentifiers();
     expect(target.querySelector('.m-ls-ptt')).not.toBeNull();
+  });
+});
+
+
+describe('timeout, microphone path and emergency power-off', () => {
+  it('marks the timeout Save operation at its shared definition', () => {
+    component = mount(ManagedTotControl, { target });
+    flushSync();
+    assertCapability(target.querySelector('[data-testid="managed-tot-save"]'), TRANSMIT_CAPABILITIES.txTimeoutSave);
+    assertIdentifiers();
+  });
+
+  it('marks both microphone-path choices at their shared definition', () => {
+    component = mount(TxMicProcessingControl, { target });
+    flushSync();
+    const choices = target.querySelectorAll('input[type="radio"]');
+    expect(choices).toHaveLength(2);
+    for (const choice of choices) {
+      assertCapability(choice, TRANSMIT_CAPABILITIES.txMicPath);
+    }
+    assertIdentifiers();
+  });
+
+  it.each(['desktop', 'phone', 'nested'] as const)('marks the microphone path in its %s host', async (host) => {
+    if (host === 'nested') {
+      component = mount(TxPanel, { target });
+      flushSync();
+      target.querySelector<HTMLButtonElement>('.tx-button-grid > button:last-child')!.click();
+    } else {
+      await render(host === 'phone' ? 'mobile' : 'desktop-v2');
+      if (host === 'phone') {
+        target.querySelector<HTMLButtonElement>('[aria-controls="m-chip-panel-tx"]')!.click();
+        flushSync();
+        target.querySelector<HTMLButtonElement>('.m-tx-settings-btn')!.click();
+      } else {
+        target.querySelector<HTMLButtonElement>('.settings-btn')!.click();
+      }
+    }
+    flushSync();
+    const choices = target.querySelectorAll('[data-testid="tx-mic-processing"] input');
+    expect(choices).toHaveLength(2);
+    for (const choice of choices) assertCapability(choice, TRANSMIT_CAPABILITIES.txMicPath);
+  });
+
+  it.each(['status', 'phone'] as const)('marks timeout Save from the %s entry point', async (host) => {
+    await render(host === 'phone' ? 'mobile' : 'desktop-v2');
+    if (host === 'phone') {
+      target.querySelector<HTMLButtonElement>('[aria-controls="m-chip-panel-tx"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('.m-tx-settings-btn')!.click();
+    } else {
+      target.querySelector<HTMLButtonElement>('[data-testid="managed-tot-trigger"]')!.click();
+    }
+    flushSync();
+    assertCapability(target.querySelector('[data-testid="managed-tot-save"]'), TRANSMIT_CAPABILITIES.txTimeoutSave);
+  });
+
+  it.each([false, true])('a DOM guard leaves the power-off toggle usable (mobile=%s)', async (mobile) => {
+    // The actual toggle must have no marker while it means OFF.
+    setRadioPowerOn(true);
+    await render(mobile ? 'mobile' : 'desktop-v2');
+    if (mobile) {
+      target.querySelector<HTMLButtonElement>('.m-settings-btn')!.click();
+      flushSync();
+    }
+    const off = target.querySelector<HTMLButtonElement>('.power-toggle-btn')!;
+    expect(off).not.toBeNull();
+    for (const root of target.querySelectorAll(markerSelector)) {
+      if (root instanceof HTMLButtonElement) root.disabled = true;
+      for (const button of root.querySelectorAll<HTMLButtonElement>('button')) button.disabled = true;
+    }
+    expect(off.closest(markerSelector), NEVER_GUARDED.powerOff.reason).toBeNull();
+    expect(off.disabled).toBe(false);
+  });
+});
+
+
+describe('registry inventory harness cases', () => {
+  it('exercises split and VFO transfer in the desktop layout', async () => {
+    await render('desktop-v2');
+    assertCapability(target.querySelector('[data-vfo-split]'), TRANSMIT_CAPABILITIES.split);
+    assertCapability(target.querySelector('[data-vfo-swap]'), TRANSMIT_CAPABILITIES.vfoTransfer);
+  });
+});
+
+
+describe('antenna renderer and wrapper styling', () => {
+  it.each([false, true])('marks the TX antenna with either renderer (custom=%s)', (custom) => {
+    component = mount(AntennaInstrumentHostFixture, { target, props: {
+      view: withAntenna(topologyFixtures['1/single']), tx: idleTx,
+      ...(custom ? { finiteAppearance } : {}),
+    } });
+    flushSync();
+    const port = target.querySelector(custom ? '.rp-capability-renderer button' : '[data-testid="antenna-ports"] button');
+    assertCapability(port, TRANSMIT_CAPABILITIES.txAntenna);
+    assertIdentifiers();
+  });
+
+  it('preserves the desktop row flex rule for a wrapped renderer button', () => {
+    const face = document.createElement('div');
+    face.className = 'desktop-control-face';
+    target.append(face);
+    const panel = document.createElement('div');
+    panel.className = 'semantic-control-panel';
+    face.append(panel);
+    component = mount(TxAuxScalarHostFixture, { target: panel, props: {
+      view: withTxAux(topologyFixtures['1/single']), tx: idleTx, presentation: 'grouped',
+      finiteAppearance, rendererContext: createFiniteRendererContext(),
+    } });
+    flushSync();
+    const row = target.querySelector('.tx-aux-row')!;
+    expect(row).not.toBeNull();
+    const rule = desktopControlsCss.match(/([^{}]*\.rp-capability-renderer\s*>\s*button)\s*\{\s*flex:\s*1 1 0;/u);
+    expect(rule).not.toBeNull();
+    const button = row.querySelector('.rp-capability-renderer button');
+    expect(button).not.toBeNull();
+    expect(button!.matches(rule![1].trim())).toBe(true);
   });
 });

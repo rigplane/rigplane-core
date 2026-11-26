@@ -91,6 +91,7 @@ vi.mock('$lib/runtime', () => ({
   },
 }));
 
+import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES, NEVER_GUARDED } from '$lib/transmit-capabilities';
 import StatusBar from '../StatusBar.svelte';
 import LocalExtensionsHost from '$lib/local-extensions/LocalExtensionsHost.svelte';
 import { getHostUi, type LocalExtensionHostDeclaration } from '$lib/local-extensions/host-ui';
@@ -151,6 +152,31 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     expect(btn, `expected the dialog button ${testid} to render`).not.toBeNull();
     return btn!;
   }
+
+  it.each([false, true])('marks power-on only, through the real confirmation host (on=%s)', async (on) => {
+    power.powerControl = true;
+    power.radioPowerOn = on;
+    const host = render();
+    const marker = `[${CAPABILITY_ATTRIBUTE}]`;
+    const toggle = powerButton(host);
+    expect(toggle.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(on ? null : TRANSMIT_CAPABILITIES.powerOn.id);
+    if (on) {
+      // Model a consumer that blocks every marked operation at event capture.
+      host.addEventListener('click', (event) => {
+        if ((event.target as Element).closest(marker)) {
+          event.preventDefault(); event.stopImmediatePropagation();
+        }
+      }, { capture: true });
+      expect(toggle.closest(marker), NEVER_GUARDED.powerOff.reason).toBeNull();
+    }
+    toggle.click();
+    await tick();
+    const confirm = dialogButton(host, 'confirm-dialog-confirm');
+    expect(confirm.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(on ? null : TRANSMIT_CAPABILITIES.powerOn.id);
+    confirm.click();
+    await tick();
+    expect(on ? sys.powerOff : sys.powerOn).toHaveBeenCalledOnce();
+  });
 
   it('labels the sliders action Radio Controls', () => {
     const host = render(vi.fn());
