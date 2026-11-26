@@ -403,7 +403,7 @@ async def test_ws_release_before_queue_dispatch_answers_revoked_key(
     handler._publish_session_liveness(live=True)
     drain = None
     try:
-        await asyncio.wait_for(
+        key_task = asyncio.create_task(
             handler._handle_text(
                 encode_json(
                     {
@@ -413,9 +413,10 @@ async def test_ws_release_before_queue_dispatch_answers_revoked_key(
                         "params": key_params,
                     }
                 )
-            ),
-            1.0,
+            )
         )
+        await await_until(key_task.done, description="key command handled")
+        await key_task
         assert server.command_queue.has_commands
         await handler._handle_text(
             encode_json({"type": "cmd", "id": "off", "name": "ptt_off", "params": {}})
