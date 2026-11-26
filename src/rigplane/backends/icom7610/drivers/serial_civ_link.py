@@ -213,7 +213,12 @@ class SerialCivLink:
     @property
     def connected(self) -> bool:
         """Whether serial transport is currently connected."""
-        return self._connected and not self._link_health.io_failed
+        return self.io_available and not self._link_health.io_failed
+
+    @property
+    def io_available(self) -> bool:
+        """An open stream can carry recovery reads and safety releases."""
+        return self._connected
 
     @property
     def healthy(self) -> bool:

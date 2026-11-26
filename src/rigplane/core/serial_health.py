@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from .exceptions import CommandError
+
+
+def require_keying_control(control_connected: bool) -> None:
+    """Refuse new KEY admission without control connectivity."""
+    if not control_connected:
+        raise CommandError("Keying requires control connectivity")
+
 
 class SerialLinkHealth:
     """Keep an I/O failure visible until a reopen or a radio response.

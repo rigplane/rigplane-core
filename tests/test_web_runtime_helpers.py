@@ -79,7 +79,7 @@ class _FakeRadio:
         self.capabilities = caps  # may be None or a set
         self.connected = connected
         self.radio_ready = radio_ready_flag
-        self.control_connected = False
+        self.control_connected = connected is True
         # X6100: resolves (must not raise) but contributes zero VFO tags
         # (swap/equal codes all None), so it doesn't perturb capability
         # comparisons keyed off the fake's own declared .capabilities.
@@ -629,6 +629,16 @@ def test_radio_health_classifies_ready_radio() -> None:
     assert health["radioLink"] == "connected"
     assert health["readiness"] == "ready"
     assert health["likelyCause"] == "unknown"
+
+
+def test_radio_health_control_failure_overrides_stale_ready() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    radio.control_connected = False
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
 
 
 def test_radio_health_classifies_network_loss_separately_from_server_loss() -> None:

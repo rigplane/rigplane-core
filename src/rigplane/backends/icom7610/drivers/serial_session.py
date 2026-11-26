@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
+from ....core.serial_health import require_keying_control
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -151,6 +152,9 @@ class SerialCivTransport:
     def connected(self) -> bool:
         return bool(getattr(self._civ_link, "connected", False))
 
+    def require_keying_control(self) -> None:
+        require_keying_control(self.connected)
+
     @property
     def ready(self) -> bool:
         ready = getattr(self._civ_link, "ready", None)
@@ -206,7 +210,7 @@ class SerialCivTransport:
         if not self._packet_queue.empty():
             return self._packet_queue.get_nowait()
 
-        if not self.connected:
+        if not getattr(self._civ_link, "io_available", self.connected):
             # ``self._civ_link.receive`` returns ``None`` with no ``await``
             # at all once the link is disconnected, so calling into it here
             # would raise below without ever yielding to the event loop.

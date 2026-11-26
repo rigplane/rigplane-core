@@ -228,7 +228,12 @@ class YaesuCatTransport:
 
     @property
     def connected(self) -> bool:
-        return self._connected and not self._link_health.io_failed
+        return self.io_available and not self._link_health.io_failed
+
+    @property
+    def io_available(self) -> bool:
+        """An open stream can carry recovery reads and safety releases."""
+        return self._connected
 
     @property
     def baudrate(self) -> int:

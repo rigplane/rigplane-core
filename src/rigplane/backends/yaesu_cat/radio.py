@@ -22,6 +22,7 @@ from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.serial_open import serial_open_diagnostic
+from ...core.serial_health import require_keying_control
 from ...core.state_diagnostics import UNKNOWN_STATUS
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
@@ -1467,8 +1468,12 @@ class YaesuCatRadio:
             raise CommandError(f"Command {name!r} is not a CAT command spec")
         return spec
 
-    def _require_connected(self) -> None:
-        if not self.connected:
+    def _require_connected(self, *, allow_failed_io: bool = False) -> None:
+        if (
+            not self._transport.io_available
+            or not self._identity_permits_commands()
+            or (not allow_failed_io and not self.control_connected)
+        ):
             raise RadioConnectionError("Radio not connected — call connect() first")
 
     async def _query(
@@ -1494,7 +1499,7 @@ class YaesuCatRadio:
         a managed confirming read can ride its own write's admission tier
         and currency; ordinary callers leave both at their defaults.
         """
-        self._require_connected()
+        self._require_connected(allow_failed_io=True)
         spec = self._get_spec(cmd_name)
         if spec.read is None:
             raise CommandError(f"Command {cmd_name!r} has no read template")
@@ -1595,7 +1600,7 @@ class YaesuCatRadio:
                 sent — can identify it structurally, by type, instead of
                 re-deriving it from the exception's message text.
         """
-        self._require_connected()
+        self._require_connected(allow_failed_io=True)
         spec = self._get_spec(cmd_name)
         if spec.write is None:
             raise CommandError(f"Command {cmd_name!r} has no write template")
@@ -2126,6 +2131,9 @@ class YaesuCatRadio:
         Args:
             on: ``True`` to transmit, ``False`` to receive.
         """
+        if on:
+            self._require_connected(allow_failed_io=True)
+            require_keying_control(self.control_connected)
         await self._write("set_ptt", state="1" if on else "0")
 
     # The profile command each managed-release abort executes (MOR-4352).
@@ -2187,6 +2195,9 @@ class YaesuCatRadio:
             return ActuationResult.REJECTED
 
         try:
+            if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+                self._require_connected(allow_failed_io=True)
+                require_keying_control(self.control_connected)
             await self._write(
                 command,
                 is_current=is_current,
