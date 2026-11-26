@@ -617,6 +617,20 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/playwright-browser-env.test.py
 
+      - name: Workflow artifact hidden-files contract tests
+        if: needs.classify.outputs.ci == 'true'
+        # MOR-4609: this regression used to run only under the core class
+        # (``uv run pytest tests/``), so a ci-only PR could drop
+        # ``include-hidden-files`` undetected. It needs only pytest + pyyaml,
+        # so it runs from an ephemeral environment like the label check
+        # above -- no project sync for a workflow-only change, and
+        # --noconftest because tests/conftest.py imports the project (and
+        # its plugins), which --no-project does not provide: loading it
+        # would fail collection on a clean runner before this contract runs.
+        run: >-
+          uv run --no-project --with pytest --with 'pyyaml>=6'
+          pytest --noconftest tests/test_workflow_hidden_artifacts.py
+
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/check-doc-citations.test.py

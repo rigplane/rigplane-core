@@ -1,7 +1,7 @@
 """PII redaction utilities for diagnostic bundles.
 
 Module-level regex patterns for safety: pre-compiled, no per-call cost.
-Each redactor is a pure function: input string → scrubbed output string.
+Redactors are pure functions for text and structured configuration values.
 
 Used by built-in contributors and exported for Pro extensions.
 """
@@ -9,7 +9,9 @@ Used by built-in contributors and exported for Pro extensions.
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
+from typing import Any
 
 # --- Paths ----------------------------------------------------------
 
@@ -114,8 +116,9 @@ def redact_ips(text: str) -> str:
 
 # password=, pwd=, passwd= (case-insensitive). Match value up to whitespace or end.
 _PASSWORD_KV = re.compile(r"\b(passw(?:ord|d)?|pwd)\s*[=:]\s*\S+", re.IGNORECASE)
-# Authorization: Bearer <token>
-_BEARER = re.compile(r"\b(Authorization\s*:\s*Bearer)\s+\S+", re.IGNORECASE)
+# Also match quoted Authorization headers in exception reprs. Stop at enclosing
+# quotes/delimiters so scrubbing a value cannot consume the surrounding text.
+_BEARER = re.compile(r"\b(Bearer)\s+[^\s\"',;<>}\]]+", re.IGNORECASE)
 # AWS keys
 _AWS_KEY = re.compile(
     r"\b(aws_(?:access_key_id|secret_access_key))\s*[=:]\s*\S+",
@@ -129,18 +132,92 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"[\s\S]*?"
     r"-----END (?:RSA |EC |OPENSSH |PGP |DSA |ENCRYPTED )?PRIVATE KEY-----",
 )
+_ENCODED_CONFIG_VALUE = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
 
 
 def redact_credentials(text: str) -> str:
-    """Redact passwords, AWS keys, Bearer tokens, activation codes, PEM keys."""
+    """Redact credentials and standalone encoded strings over 200 characters."""
     if not text:
         return ""
+    if len(text) > 200 and _ENCODED_CONFIG_VALUE.fullmatch(text):
+        return "<REDACTED>"
     text = _PASSWORD_KV.sub(r"\1=<REDACTED>", text)
     text = _BEARER.sub(r"\1 <REDACTED>", text)
     text = _AWS_KEY.sub(r"\1=<REDACTED>", text)
     text = _ACTIVATION_CODE.sub("<ACTIVATION_CODE>", text)
     text = _PRIVATE_KEY_BLOCK.sub("<PRIVATE KEY REDACTED>", text)
     return text
+
+
+# --- Structured configuration ---------------------------------------
+
+# Preserve the config contributor's existing exact-key removal contract.
+_DROPPED_CONFIG_KEYS = frozenset({"password", "pwd", "secret", "token"})
+_SENSITIVE_CONFIG_KEY_PARTS = (
+    "password",
+    "pwd",
+    "passwd",
+    "secret",
+    "token",
+    "bearer",
+    "entitlement",
+    "signature",
+    "credential",
+    "apikey",
+    "privatekey",
+)
+_CONFIG_KEY_SEPARATORS = re.compile(r"[^a-z0-9]")
+_CONFIG_KEY_WORDS = re.compile(r"[a-z0-9]+")
+
+
+def redact_config(value: Any) -> Any:
+    """Sanitise nested TOML values before diagnostic JSON serialisation.
+
+    Drop the four historically omitted keys; mask other credential-named
+    fields using case/separator-insensitive substring matching. A standalone
+    ``key`` or first/last separator-delimited ``key`` component is also masked
+    (including benign ``key_id``, ``key_repeat`` and ``ptt_key``). Names such as
+    ``keyboard_layout``, ``monkey`` and ``hotkey`` are preserved. Long encoded
+    values are masked even under neutral keys, protecting support exports
+    against signed envelopes whose field names are unknown to the denylist.
+    """
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if key.lower() in _DROPPED_CONFIG_KEYS:
+                continue
+            normalised = _CONFIG_KEY_SEPARATORS.sub("", key.lower())
+            words = _CONFIG_KEY_WORDS.findall(key.lower())
+            result[key] = (
+                "<REDACTED>"
+                if (
+                    any(part in normalised for part in _SENSITIVE_CONFIG_KEY_PARTS)
+                    or (words and (words[0] == "key" or words[-1] == "key"))
+                )
+                else redact_config(item)
+            )
+        return result
+    if isinstance(value, list):
+        return [redact_config(item) for item in value]
+    if isinstance(value, str):
+        return redact_tokens(redact_credentials(value))
+    return value
+
+
+def redact_diagnostic_text(text: str) -> str:
+    """Scrub contributor text, preserving JSON structure through value redaction.
+
+    Plain logs use the existing credential/token redactors; JSON uses the nested
+    key/value policy as TOML summaries. Leave unchanged text byte-for-byte intact.
+    """
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return redact_tokens(redact_credentials(text))
+    redacted = redact_config(parsed)
+    if redacted == parsed:
+        return text
+    return json.dumps(redacted, indent=2, sort_keys=True) + "\n"
 
 
 # --- Tokens (high-entropy near trigger keywords) --------------------
