@@ -108,6 +108,7 @@ def _gated_web(radio, model: str) -> WebServer:
 
 
 @pytest.mark.parametrize("link", ["usb", "lan"])
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_ic705_refused_tuner_read_does_not_hold_the_startup_gate(
     link: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -134,7 +135,11 @@ async def test_ic705_refused_tuner_read_does_not_hold_the_startup_gate(
             for m in messages
             if m.startswith("acquisition:")
         ), "the refused path is named once at INFO"
-        assert radio._acquisition_scheduler.consecutive_refusals(TUNER_STATUS) > 0
+        scheduler = radio._acquisition_scheduler
+        assert scheduler.startup_defect is None
+        assert scheduler.consecutive_refusals(TUNER_STATUS) > 0
+        refusal = scheduler.diagnostics()["readRefusals"][str(TUNER_STATUS)]
+        assert "The radio refused to report tuner status." in refusal["message"]
     finally:
         await web.stop()
         await radio.disconnect()

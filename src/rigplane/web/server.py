@@ -271,6 +271,7 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         receiver_count: int,
         availability: Mapping[FieldPath, bool | None] | None = None,
         declared: Collection[FieldPath] | None = None,
+        read_refusals: Mapping[FieldPath, str] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
@@ -2506,6 +2507,12 @@ class WebServer:
                 snapshot.freshness_revision,
                 snapshot.provider_generation,
                 health_revision,
+                tuple(
+                    sorted(
+                        (str(path), message)
+                        for path, message in self._declared_read_refusals().items()
+                    )
+                ),
                 liveness_declaration,
                 len(self._scope_handlers),
                 len(self._control_event_queues),
@@ -2608,6 +2615,7 @@ class WebServer:
             receiver_count=receiver_count,
             availability=availability,
             declared=declared,
+            read_refusals=self._declared_read_refusals(),
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),
@@ -4644,6 +4652,14 @@ class WebServer:
             "attempt": 0,
             "next_retry_seconds": None,
         }
+
+    def _declared_read_refusals(self) -> dict[FieldPath, str]:
+        scheduler = getattr(self._radio, "_acquisition_scheduler", None)
+        return (
+            scheduler.declared_read_refusals()
+            if isinstance(scheduler, AcquisitionScheduler)
+            else {}
+        )
 
     def _state_acquisition_diagnostics_payload(self) -> dict[str, Any]:
         radio = self._radio

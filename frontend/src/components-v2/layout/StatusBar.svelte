@@ -236,6 +236,21 @@
   let radioHealthLabel = $derived(
     deriveRadioHealthLabel({ health: radioHealth, rigConnected, radioReady, radioState }),
   );
+  let radioTooltip = $derived.by(() => {
+    const summary = radioHealthLabel
+      ? t('core.statusbar.indicator.radioWithReason', {
+          state: radioHealth?.likelyCause === 'operator_disconnected' ? radioIndicatorState : radioState,
+          reason: radioHealthLabel,
+        })
+      : t('core.statusbar.indicator.radio', { state: radioState });
+    const unavailable = new Map<string, string>();
+    if (rigConnected) {
+      for (const field of Object.values(runtime.state?.fieldStatus ?? {})) {
+        if (field.message) unavailable.set(field.storePath, field.message);
+      }
+    }
+    return [summary, ...unavailable.values()].join('\n');
+  });
 
   let connectionTooltip = $derived(
     controlState === 'connected'
@@ -375,7 +390,7 @@
 <div class="status-bar" bind:this={barEl}>
   <div class="status-indicators">
     {#if !hostDeclaration.health}
-    <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioHealth?.likelyCause === 'operator_disconnected' ? radioIndicatorState : radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
+    <span class="indicator" role="status" title={radioTooltip} aria-label={radioTooltip} style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
       <Radio size={12} color="currentColor" strokeWidth={2.5} />
     </span>

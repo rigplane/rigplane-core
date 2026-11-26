@@ -26,8 +26,10 @@ import serial
 
 import rigplane.core.serial_open as serial_open
 from rigplane.backends.discovery import probe_serial_civ, probe_xiegu_model_id
+from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
-from rigplane.backends.yaesu_cat import YaesuCatTransport
+from rigplane.backends.yaesu_cat import YaesuCatRadio, YaesuCatTransport
+from rigplane.core.exceptions import ConnectionError as RadioConnectionError
 from rigplane.core.serial_open import open_serial_port
 
 
@@ -120,10 +122,51 @@ def test_windows_serial_open_diagnostic_rejects_unrelated_messages(message):
     )
 
 
+@pytest.fixture
+def missing_windows_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    error = serial.SerialException(
+        "could not open port 'COM3': FileNotFoundError(2, 'File not found.', None, 2)"
+    )
+    monkeypatch.setattr(
+        serial_open, "_open_with_idle_lines", AsyncMock(side_effect=error)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("missing_windows_port")
+@pytest.mark.parametrize("backend", [Icom7610SerialRadio, YaesuCatRadio])
+async def test_missing_windows_port_publishes_canonical_serial_open_error(
+    backend: type[Icom7610SerialRadio] | type[YaesuCatRadio],
+) -> None:
+    radio = backend(device="COM3")
+
+    with pytest.raises(RadioConnectionError):
+        await radio.connect()
+    if isinstance(radio, YaesuCatRadio):
+        radio.start_reconnect_recovery()
+
+    assert radio.serial_open_error == "serial_not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("missing_windows_port")
+async def test_yaesu_missing_windows_port_reaches_public_snapshot() -> None:
+    from rigplane.web.server import WebConfig, WebServer
+
+    radio = YaesuCatRadio(device="COM3", profile="ftx1")
+    with pytest.raises(RadioConnectionError):
+        await radio.connect()
+    radio.start_reconnect_recovery()
+
+    health = WebServer(radio, WebConfig()).build_public_state()["radioHealth"]
+    assert health["likelyCause"] == "radio_not_connected"
+    assert health["radioLink"] == "reconnecting"
+    assert health["lastError"] == "serial_not_found"
+
+
 @pytest.mark.asyncio
 async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
     from rigplane.backends.discovery import CivProbeDiagnostic
-    from rigplane.backends.icom7610 import Icom7610SerialRadio
     from rigplane.web.server import WebConfig, WebServer
 
     error = serial.SerialException(
@@ -185,7 +228,6 @@ async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["connect", "soft_reconnect"])
 async def test_serial_permission_error_reaches_health_without_private_details(method):
-    from rigplane.backends.icom7610 import Icom7610SerialRadio
     from rigplane.web.runtime_helpers import classify_radio_health
     from rigplane.web.state_schema import RadioHealthPublic
     from rigplane.web.server import WebConfig, WebServer

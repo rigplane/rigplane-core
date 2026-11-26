@@ -197,6 +197,14 @@ class FilterWidthReading:
     radio_default: bool
 
 
+class CatReadParseError(CatParseError):
+    """A parse error with the actual CAT command that got the bad reply."""
+
+    def __init__(self, command: str, error: CatParseError) -> None:
+        self.command = command
+        super().__init__(error.template, error.response, error.reason)
+
+
 class YaesuCatRadio:
     """Radio backend for Yaesu FTX-1 (and compatible) transceivers.
 
@@ -445,16 +453,15 @@ class YaesuCatRadio:
                 await self._transport.connect()
             except (CatTransportError, OSError) as exc:
                 cause = exc if isinstance(exc, OSError) else exc.__cause__
-                if not isinstance(cause, OSError) or not serial_open_diagnostic(
-                    cause
-                ).startswith("serial_not_found"):
+                if not isinstance(cause, OSError):
                     raise
-                message = (
-                    f"Radio not connected, waiting for the port {self._device}: {exc}"
-                )
+                diagnostic = serial_open_diagnostic(cause)
+                if not diagnostic.startswith("serial_not_found"):
+                    raise
+                logger.debug("Waiting for CAT serial port %s: %s", self._device, exc)
                 if generation == self._identity_generation:
-                    self.last_error = message
-                raise RadioConnectionError(message) from cause
+                    self.last_error = diagnostic
+                raise RadioConnectionError(diagnostic) from cause
             if generation != self._identity_generation:
                 await self._transport.close()
                 return
@@ -548,6 +555,10 @@ class YaesuCatRadio:
         if not self._transport.connected:
             return False
         return self._identity_permits_commands()
+
+    @property
+    def control_connected(self) -> bool:
+        return self._transport.connected
 
     @property
     def radio_ready(self) -> bool:
@@ -1502,7 +1513,10 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no parse template")
 
         # Transport strips trailing ';'; add it back for the parser.
-        result = parser.parse(raw + ";")
+        try:
+            result = parser.parse(raw + ";")
+        except CatParseError as exc:
+            raise CatReadParseError(read_cmd, exc) from exc
         if cmd_name == "get_memory_channel":
             self._mode_name(result["mode"])
         elif cmd_name in {"get_agc", "get_agc_sub"}:
