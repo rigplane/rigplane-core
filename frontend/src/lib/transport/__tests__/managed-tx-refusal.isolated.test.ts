@@ -43,7 +43,7 @@ describe('managed TX refusal presentation', () => {
       expect(text).not.toBe(`core.toast.${toast}`);
       const catalog = { 'en-US': enUS, 'ru-RU': ruRU, 'ja-JP': jaJP }[locale];
       expect(catalog).toHaveProperty([`core.toast.${toast}`]);
-      expect(text).toBe((catalog as Record<string, string>)[`core.toast.${toast}`]);
+      expect(text).toBe((catalog as unknown as Record<string, string>)[`core.toast.${toast}`]);
       if (code === 'future_refusal') expect(text).toBe(messageFromReasonCode('txStartRefused'));
     }
   });

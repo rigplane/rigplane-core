@@ -22,7 +22,7 @@ describe('ru-RU glossary: the rig is радио', () => {
     'core.toast.txControllerRefused',
     'core.toast.txRadioRefused',
   ])('keeps the MOR-4847 refusal value %s within the rig glossary', (key) => {
-    const value = (ruRU as Record<string, string>)[key];
+    const value = (ruRU as unknown as Record<string, string>)[key];
     expect(value).toBeTypeOf('string');
     expect(value).not.toMatch(/радиостанц|трансивер/i);
   });

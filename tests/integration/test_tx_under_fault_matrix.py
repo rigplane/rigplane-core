@@ -1088,7 +1088,7 @@ async def test_a_tx_no_owner_keyed_is_never_keyed_over_and_force_off_unkeys_it(
         on = {"operation": "transmit_on"}
         assert await _http_json(port, "POST", path, on, key) == (
             409,
-            {"error": "radio_tx_unowned"},
+            {"error": "radio_tx_unowned", "code": "other"},
         )
         # The refusals sent nothing to the radio.
         assert sim.ptt_on and sim.ptt_set_writes[writes:] == []

@@ -567,7 +567,10 @@ async def test_path6_operator_ptt_refuses_every_remote_surface_then_one_key_wins
         status, body = await _http_json(
             arena.port, "POST", _MANAGED, _TRANSMIT_ON, a.key
         )
-        assert (status, body) == (409, {"error": "radio_tx_unowned"})
+        assert (status, body) == (
+            409,
+            {"error": "radio_tx_unowned", "code": "other"},
+        )
         await _tx_start_on_wire(arena, mark, seen=False)
         assert arena.sim.ptt_set_writes[writes:] == [] and arena.holder() is None
         # The operator lets go; two sessions then key at once: one wins.
@@ -793,7 +796,10 @@ async def test_path7_stale_key_reconnect_storm_never_replays_the_released_ptt(
         status, body = await _http_json(
             arena.port, "POST", _MANAGED, _TRANSMIT_ON, a.key
         )
-        assert (status, body) == (403, {"error": "controller_invalid"})
+        assert (status, body) == (
+            403,
+            {"error": "controller_invalid", "code": "controller_refused"},
+        )
         assert a.owner not in arena.controller._sessions  # noqa: SLF001
         assert arena.sim.ptt_set_writes == writes and not arena.sim.ptt_on
         await b.primary.heartbeat()
