@@ -1897,6 +1897,18 @@ describe('bridge hardware keys (MOR-2509 package C)', () => {
     }
   });
 
+  it('keeps the producer refusal on the VFO bridge own VOX control', () => {
+    const model = functionsFixture({ vox: 'unknown' });
+    const message = 'The provider refused to report VOX.';
+    model.txAux!.vox.availability = { structural: true, operational: false, message };
+    const root = mountSurface({ viewModel: model, appearance: 'standard' });
+    const button = root.querySelector<HTMLButtonElement>('[data-vfo-vox]')!;
+    expect(button.disabled).toBe(true);
+    const description = button.getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(root.querySelector(`#${description}`)?.textContent).toBe(message);
+  });
+
   it('every bridge switch carries a valid aria-checked and no other key pretends to be one', () => {
     const lit = mountSurface({ viewModel: functionsFixture({
       atu: 'on', vox: true, dialLock: true,

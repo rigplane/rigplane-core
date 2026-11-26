@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import type { ServerState } from '$lib/types/state';
 import {
   getFieldAvailability,
+  getFieldAvailabilityMessage,
   isFieldAvailable,
   areFieldsAvailable,
 } from '../field-status';
@@ -24,6 +25,28 @@ function stateWith(fieldStatus: Record<string, unknown>): ServerState {
 }
 
 describe('field-status parent/child resolution', () => {
+  it('uses the same nearest ancestor for availability and its explanation', () => {
+    const state = stateWith({
+      scopeControls: { observed: false, freshness: 'unknown', availability: 'unavailable', message: 'Outer refusal' },
+      'scopeControls.group': { observed: false, freshness: 'unknown', availability: 'unavailable', message: 'Nearest refusal' },
+      'scopeControls.group.mode': { observed: true, freshness: 'fresh', availability: 'available', message: 'Obsolete leaf message' },
+    });
+    expect(getFieldAvailability(state, 'scopeControls.group.mode')).toBe('unavailable');
+    expect(getFieldAvailabilityMessage(state, 'scopeControls.group.mode')).toBe('Nearest refusal');
+    expect(getFieldAvailabilityMessage(state, 'scopeControls.group.edge')).toBe('Nearest refusal');
+    expect(getFieldAvailabilityMessage(state, 'main.mode')).toBeUndefined();
+  });
+
+  it('keeps own refusal precedence and does not expose messages on held stale readings', () => {
+    const state = stateWith({
+      main: { observed: false, freshness: 'unknown', availability: 'unavailable', message: 'Parent refusal' },
+      'main.nr': { observed: false, freshness: 'unknown', availability: 'unavailable', message: 'Own refusal' },
+      'main.nb': { observed: true, freshness: 'stale', availability: 'stale', message: 'Old refusal' },
+    });
+    expect(getFieldAvailabilityMessage(state, 'main.nr')).toBe('Own refusal');
+    expect(getFieldAvailabilityMessage(state, 'main.nb')).toBeUndefined();
+    expect(getFieldAvailabilityMessage(null, 'main.nr')).toBeUndefined();
+  });
   it('treats a leaf as available when no entry and no ancestor entry exist', () => {
     const state = stateWith({
       'main.freqHz': { availability: 'available', freshness: 'fresh', observed: true },

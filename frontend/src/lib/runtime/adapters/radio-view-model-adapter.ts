@@ -24,7 +24,7 @@
  * emitted model through the real `validateRadioViewModel`.
  */
 import type { Capabilities, FreqRange } from '$lib/types/capabilities';
-import type { ServerState } from '$lib/types/state';
+import type { FieldStatusPublic, ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterEngineeringUnit, MeterField, MeterRfState, MeterSourceIdentity, MeterSourcePath,
@@ -43,7 +43,7 @@ import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { deriveFilterWidthDisplay } from './filter-width-display';
 import { refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
-import { isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
+import { getFieldAvailabilityMessage, isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { shiftFromDirection } from '$lib/radio/repeater-transitions';
@@ -196,15 +196,25 @@ function strictFieldAvailable(state: ServerState | null, field: string): boolean
   return seen(state, field) && topFieldAvailable(state, field);
 }
 
+function fieldMessage(state: ServerState | null, ...paths: string[]): FieldStatusPublic['message'] {
+  return paths.map(path => getFieldAvailabilityMessage(state, path)).find(message => message?.trim());
+}
+
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
  *  control must never report a "known" reading even if the (irrelevant)
  *  field happens to look fresh — so the reading gates on BOTH, same as
  *  `availability.operational`. */
-function txAuxField<T>(structural: boolean, fieldFresh: boolean, value: T | undefined): TxAuxField<T> {
+function txAuxField<T>(
+  structural: boolean, fieldFresh: boolean, value: T | undefined,
+  message?: FieldStatusPublic['message'],
+): TxAuxField<T> {
   const operational = structural && fieldFresh;
   return {
     reading: operational && value !== undefined ? { status: 'known', value } : { status: 'unknown' },
-    availability: { structural, operational },
+    availability: {
+      structural, operational,
+      ...(structural && !operational && message?.trim() ? { message } : {}),
+    },
   };
 }
 const numOrUndef = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -310,20 +320,20 @@ function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAu
     || rawValues.some((v) => v !== undefined);
   if (!hasEvidence) return undefined;
   return {
-    atu: txAuxField(hasTuner, strictFieldAvailable(state, 'tunerStatus'), atuStatus(state?.tunerStatus)),
-    vox: txAuxField(hasVox, topFieldAvailable(state, 'voxOn'), boolOrUndef(state?.voxOn)),
-    voxGain: txAuxField(hasVox, topFieldAvailable(state, 'voxGain'), numOrUndef(state?.voxGain)),
-    antiVoxGain: txAuxField(hasVox, topFieldAvailable(state, 'antiVoxGain'), numOrUndef(state?.antiVoxGain)),
-    voxDelay: txAuxField(hasVox, topFieldAvailable(state, 'voxDelay'), numOrUndef(state?.voxDelay)),
-    compressor: txAuxField(hasCompressor, topFieldAvailable(state, 'compressorOn'), boolOrUndef(state?.compressorOn)),
+    atu: txAuxField(hasTuner, strictFieldAvailable(state, 'tunerStatus'), atuStatus(state?.tunerStatus), fieldMessage(state, 'tunerStatus')),
+    vox: txAuxField(hasVox, topFieldAvailable(state, 'voxOn'), boolOrUndef(state?.voxOn), fieldMessage(state, 'voxOn')),
+    voxGain: txAuxField(hasVox, topFieldAvailable(state, 'voxGain'), numOrUndef(state?.voxGain), fieldMessage(state, 'voxGain')),
+    antiVoxGain: txAuxField(hasVox, topFieldAvailable(state, 'antiVoxGain'), numOrUndef(state?.antiVoxGain), fieldMessage(state, 'antiVoxGain')),
+    voxDelay: txAuxField(hasVox, topFieldAvailable(state, 'voxDelay'), numOrUndef(state?.voxDelay), fieldMessage(state, 'voxDelay')),
+    compressor: txAuxField(hasCompressor, topFieldAvailable(state, 'compressorOn'), boolOrUndef(state?.compressorOn), fieldMessage(state, 'compressorOn')),
     compressorLevel: txAuxField(
-      hasCompressor, topFieldAvailable(state, 'compressorLevel'), numOrUndef(state?.compressorLevel),
+      hasCompressor, topFieldAvailable(state, 'compressorLevel'), numOrUndef(state?.compressorLevel), fieldMessage(state, 'compressorLevel'),
     ),
-    monitor: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorOn'), boolOrUndef(state?.monitorOn)),
-    monitorLevel: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorGain'), numOrUndef(state?.monitorGain)),
-    rfPower: txAuxField(true, topFieldAvailable(state, 'powerLevel'), numOrUndef(state?.powerLevel)),
-    micGain: txAuxField(true, topFieldAvailable(state, 'micGain'), numOrUndef(state?.micGain)),
-    driveGain: txAuxField(hasDriveGain, topFieldAvailable(state, 'driveGain'), numOrUndef(state?.driveGain)),
+    monitor: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorOn'), boolOrUndef(state?.monitorOn), fieldMessage(state, 'monitorOn')),
+    monitorLevel: txAuxField(hasMonitor, topFieldAvailable(state, 'monitorGain'), numOrUndef(state?.monitorGain), fieldMessage(state, 'monitorGain')),
+    rfPower: txAuxField(true, topFieldAvailable(state, 'powerLevel'), numOrUndef(state?.powerLevel), fieldMessage(state, 'powerLevel')),
+    micGain: txAuxField(true, topFieldAvailable(state, 'micGain'), numOrUndef(state?.micGain), fieldMessage(state, 'micGain')),
+    driveGain: txAuxField(hasDriveGain, topFieldAvailable(state, 'driveGain'), numOrUndef(state?.driveGain), fieldMessage(state, 'driveGain')),
   };
 }
 
@@ -604,11 +614,11 @@ function deriveModeFilter(
     activeFilterConfiguration,
     // MOR-2513: a null (unobserved) mode maps onto the absent value, so
     // the reading is `unknown` — never a fabricated mode.
-    currentMode: txAuxField(hasModes, modeObserved, rx?.mode ?? undefined),
+    currentMode: txAuxField(hasModes, modeObserved, rx?.mode ?? undefined, fieldMessage(state, `${base}mode`)),
     modeChoices,
-    currentFilter: txAuxField(hasFilterSelect, filterObserved, numOrUndef(rx?.filter ?? undefined)),
+    currentFilter: txAuxField(hasFilterSelect, filterObserved, numOrUndef(rx?.filter ?? undefined), fieldMessage(state, `${base}filter`)),
     filterChoices,
-    filterWidth: txAuxField(hasWidth, widthObserved, numOrUndef(rx?.filterWidth ?? undefined)),
+    filterWidth: txAuxField(hasWidth, widthObserved, numOrUndef(rx?.filterWidth ?? undefined), fieldMessage(state, `${base}filterWidth`)),
     // MOR-3677: the composed display verdict for the ACTIVE receiver —
     // radio-default / narrow / not-reported are states the raw `filterWidth`
     // field cannot name. Same `(state, caps)` purity as every other fact
@@ -621,8 +631,8 @@ function deriveModeFilter(
     // published mode-derived bounds as confirmed while `currentMode` itself
     // read unknown (fabrication), and withheld derivable bounds whenever a
     // width readback simply hadn't arrived yet (false negative).
-    filterWidthMin: txAuxField(hasWidth, modeObserved, numOrUndef(widthMin)),
-    filterWidthMax: txAuxField(hasWidth, modeObserved, numOrUndef(widthMax)),
+    filterWidthMin: txAuxField(hasWidth, modeObserved, numOrUndef(widthMin), fieldMessage(state, `${base}mode`)),
+    filterWidthMax: txAuxField(hasWidth, modeObserved, numOrUndef(widthMax), fieldMessage(state, `${base}mode`)),
   };
 }
 
@@ -802,7 +812,7 @@ function deriveFilterPassband(
     : null;
 
   return {
-    filterShape: txAuxField(hasWidth, filterShapeObserved, numOrUndef(rx?.filterShape)),
+    filterShape: txAuxField(hasWidth, filterShapeObserved, numOrUndef(rx?.filterShape), fieldMessage(state, `${base}filterShape`)),
     // MOR-1502 review round. Deliberately NOT `hasWidth` above.
     // `filterShape`'s own structural/operational/value stay exactly as they
     // were — a radio with filter width but no `filter_shape` command still gets
@@ -819,7 +829,8 @@ function deriveFilterPassband(
     // (`radio-view-model.ts`) for the full split. Mirrors
     // `ifShiftControlStructural` immediately below, byte-for-byte doctrine.
     filterShapeControlStructural: hasFilterShapeCap,
-    ifShift: txAuxField(ifShiftStructural, ifShiftOperational, ifShiftValue),
+    ifShift: txAuxField(ifShiftStructural, ifShiftOperational, ifShiftValue, hasIfShiftCap
+      ? fieldMessage(state, `${base}ifShift`) : fieldMessage(state, `${base}pbtInner`, `${base}pbtOuter`)),
     // MOR-1494 review round. Deliberately NOT `ifShiftStructural` above.
     // `ifShiftStructural`/`ifShiftOperational`/`ifShiftValue` stay exactly as
     // they were — a radio with `pbt` but no `if_shift` still gets an honest
@@ -847,14 +858,14 @@ function deriveFilterPassband(
     // MOR-2497 adds the third conjunct: the CURRENT mode must have twin PBT
     // (`modeHasTwinPbt`) — in FM the controls do not exist.
     pbtInner: {
-      ...txAuxField(pbtStructural, pbtInnerObserved, pbtInnerHz),
+      ...txAuxField(pbtStructural, pbtInnerObserved, pbtInnerHz, fieldMessage(state, `${base}pbtInner`)),
       display: qualifyDisplayObservation({
         state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtInner`,
         structural: pbtStructural, value: pbtInnerHz,
       }),
     },
     pbtOuter: {
-      ...txAuxField(pbtStructural, pbtOuterObserved, pbtOuterHz),
+      ...txAuxField(pbtStructural, pbtOuterObserved, pbtOuterHz, fieldMessage(state, `${base}pbtOuter`)),
       display: qualifyDisplayObservation({
         state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtOuter`,
         structural: pbtStructural, value: pbtOuterHz,
@@ -864,11 +875,13 @@ function deriveFilterPassband(
     // MOR-2640: NARROW readback for the ACTIVE receiver (`main.narrow`/
     // `sub.narrow`, `set_narrow`'s confirmed truth). Structural exactly
     // when the profile declares `narrow` — no capability, no control.
-    narrow: txAuxField(hasNarrowCap, topFieldAvailable(state, `${base}narrow`), boolOrUndef(rx?.narrow)),
-    dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
+    narrow: txAuxField(hasNarrowCap, topFieldAvailable(state, `${base}narrow`), boolOrUndef(rx?.narrow), fieldMessage(state, `${base}narrow`)),
+    dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode),
+      activeId === null ? undefined : fieldMessage(state, RECEIVER_KEY[activeId] + '.dataMode')),
     ...(modInputChoices.length > 0 ? {
       modInputChoices,
-      modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue),
+      modInputSource: txAuxField(modInputStructural, modInputObserved, modInputValue,
+        modInputKey === null ? undefined : fieldMessage(state, modInputKey)),
     } : {}),
   };
 }
@@ -954,28 +967,30 @@ function deriveDsp(
   const agcProjection = projectAgcReadback(caps, agcReadable ? rawAgcMode : undefined);
 
   return {
-    nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr)),
-    nrLevel: txAuxField(hasNrCap, nrLevelReadable, nrLevelProjection.value ?? undefined),
+    nrActive: txAuxField(hasNrCap, topFieldAvailable(state, `${base}nr`), boolOrUndef(rx?.nr), fieldMessage(state, `${base}nr`)),
+    nrLevel: txAuxField(hasNrCap, nrLevelReadable, nrLevelProjection.value ?? undefined, fieldMessage(state, `${base}nrLevel`)),
     nrLevelProjection,
-    nbActive: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nb`), boolOrUndef(rx?.nb)),
-    nbLevel: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nbLevel`), numOrUndef(rx?.nbLevel)),
-    nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue),
-    nbWidth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbWidth'), numOrUndef(state?.nbWidth)),
-    notchMode: txAuxField(hasNotchCap, autoNotchObserved && manualNotchObserved, notchModeValue),
+    nbActive: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nb`), boolOrUndef(rx?.nb), fieldMessage(state, `${base}nb`)),
+    nbLevel: txAuxField(hasNbCap, topFieldAvailable(state, `${base}nbLevel`), numOrUndef(rx?.nbLevel), fieldMessage(state, `${base}nbLevel`)),
+    nbDepth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbDepth'), nbDepthValue, fieldMessage(state, 'nbDepth')),
+    nbWidth: txAuxField(hasNbDepth, topFieldAvailable(state, 'nbWidth'), numOrUndef(state?.nbWidth), fieldMessage(state, 'nbWidth')),
+    notchMode: txAuxField(hasNotchCap, autoNotchObserved && manualNotchObserved, notchModeValue,
+      fieldMessage(state, `${base}autoNotch`, `${base}manualNotch`)),
     // notchFilter / manualNotchFreq are both receiver-scoped (MOR-1548
     // reclassified notchFilter), matching the ic7610.toml cmd29 route's own
     // per-receiver rationale — same pattern as manualNotchWidth below.
-    notchFreq: txAuxField(hasNotchCap, notchFreqObserved, notchFreqValue),
+    notchFreq: txAuxField(hasNotchCap, notchFreqObserved, notchFreqValue,
+      fieldMessage(state, `${base}${preferManualNotchFreq ? "manualNotchFreq" : "notchFilter"}`)),
     ...(notchFreqDomain !== null ? { notchFreqDomain } : {}),
     // MOR-2726: `notch` alone is not proof of a notch-width control — the
     // FTX-1 has a manual notch but no width. Same declared-field gate as
     // `agcTimeConstant` below.
     manualNotchWidth: txAuxField(
       hasNotchCap && hasCap(caps, onSub ? 'manual_notch_width_sub' : 'manual_notch_width'),
-      topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth),
+      topFieldAvailable(state, `${base}manualNotchWidth`), numOrUndef(rx?.manualNotchWidth), fieldMessage(state, `${base}manualNotchWidth`),
     ),
     agcMode: {
-      ...txAuxField(hasAgcCap, agcReadable, agcProjection.mode),
+      ...txAuxField(hasAgcCap, agcReadable, agcProjection.mode, fieldMessage(state, `${base}agc`)),
       ...(agcProjection.autoMode === undefined ? {} : { autoMode: agcProjection.autoMode }),
       ...(agcProjection.autoSpeed === undefined ? {} : { autoSelectedSpeed: agcProjection.autoSpeed }),
     },
@@ -988,7 +1003,7 @@ function deriveDsp(
     // never the field status a mis-credited reading could flip.
     agcTimeConstant: txAuxField(
       hasAgcCap && hasCap(caps, onSub ? 'agc_time_constant_sub' : 'agc_time_constant'),
-      topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant),
+      topFieldAvailable(state, `${base}agcTimeConstant`), numOrUndef(rx?.agcTimeConstant), fieldMessage(state, `${base}agcTimeConstant`),
     ),
   };
 }
@@ -1049,15 +1064,15 @@ function deriveRfFrontEnd(
   const base = onSub ? 'sub.' : 'main.';
 
   return {
-    preamp: txAuxField(hasPreCap, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp)),
+    preamp: txAuxField(hasPreCap, topFieldAvailable(state, `${base}preamp`), numOrUndef(rx?.preamp), fieldMessage(state, `${base}preamp`)),
     preValues: caps.preValues ?? [],
     ...(caps.preLabels && Object.keys(caps.preLabels).length > 0 ? { preLabels: caps.preLabels } : {}),
-    attenuator: txAuxField(hasAttCap, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att)),
+    attenuator: txAuxField(hasAttCap, topFieldAvailable(state, `${base}att`), numOrUndef(rx?.att), fieldMessage(state, `${base}att`)),
     attValues: caps.attValues ?? [],
-    rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain)),
-    squelch: txAuxField(hasSquelchCap, topFieldAvailable(state, `${base}squelch`), numOrUndef(rx?.squelch)),
-    digiSel: txAuxField(hasDigiSelCap, topFieldAvailable(state, `${base}digisel`), boolOrUndef(rx?.digisel)),
-    ipPlus: txAuxField(hasIpPlusCap, topFieldAvailable(state, `${base}ipplus`), boolOrUndef(rx?.ipplus)),
+    rfGain: txAuxField(hasRfGainCap, topFieldAvailable(state, `${base}rfGain`), numOrUndef(rx?.rfGain), fieldMessage(state, `${base}rfGain`)),
+    squelch: txAuxField(hasSquelchCap, topFieldAvailable(state, `${base}squelch`), numOrUndef(rx?.squelch), fieldMessage(state, `${base}squelch`)),
+    digiSel: txAuxField(hasDigiSelCap, topFieldAvailable(state, `${base}digisel`), boolOrUndef(rx?.digisel), fieldMessage(state, `${base}digisel`)),
+    ipPlus: txAuxField(hasIpPlusCap, topFieldAvailable(state, `${base}ipplus`), boolOrUndef(rx?.ipplus), fieldMessage(state, `${base}ipplus`)),
   };
 }
 
@@ -1131,7 +1146,7 @@ function deriveReceiverIndicators(
     ): TxAuxField<T> => txAuxField(
       structural,
       receiverOperational && seen(state, path(leaf)) && topFieldAvailable(state, path(leaf)),
-      value,
+      value, fieldMessage(state, path(leaf)),
     );
 
     const autoNotchKnown = receiverOperational
@@ -1198,7 +1213,7 @@ function deriveReceiverIndicators(
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
-      notchMode: txAuxField(hasNotch, notchOperational, notchMode),
+      notchMode: txAuxField(hasNotch, notchOperational, notchMode, fieldMessage(state, path('autoNotch'), path('manualNotch'))),
       attenuator: strictField(attStructural, 'att', numOrUndef(rx?.att)),
       preamp: strictField(preampStructural, 'preamp', numOrUndef(rx?.preamp)),
       rfGain: {
@@ -1246,7 +1261,7 @@ function deriveRadioWideIndicators(
   const antennaFact = antenna?.txAntenna ?? txAuxField(
     antennaStructural,
     strictFieldAvailable(state, 'txAntenna'),
-    numOrUndef(state?.txAntenna),
+    numOrUndef(state?.txAntenna), fieldMessage(state, 'txAntenna'),
   );
 
   const dualReceiver = structuralReceivers.includes('SUB');
@@ -1269,7 +1284,7 @@ function deriveRadioWideIndicators(
     dialLock: txAuxField(
       hasCap(caps, 'dial_lock'),
       strictFieldAvailable(state, 'dialLock'),
-      boolOrUndef(state?.dialLock),
+      boolOrUndef(state?.dialLock), fieldMessage(state, 'dialLock'),
     ),
     ritActive: ritXit?.ritActive ?? absentBoolean,
     ritOffset: ritXit?.ritOffset ?? absentNumber,
@@ -1324,7 +1339,7 @@ function bandReadingAt(
   const name = observed && hz !== undefined
     ? findActiveBand(hz, freqRanges) ?? undefined
     : undefined;
-  return txAuxField(structural, observed, name);
+  return txAuxField(structural, observed, name, fieldMessage(state, `${base}freqHz`));
 }
 
 /**
@@ -1531,11 +1546,11 @@ function deriveRepeater(
     const offsetHz = numOrUndef(rx?.repeaterOffsetHz);
 
     return {
-      inRepeaterBand: txAuxField(true, freqObserved, inBand),
-      toneMode: txAuxField(hasTone, toneObserved && tsqlObserved, toneMode),
-      toneFreq: txAuxField(hasTone, toneFreqObserved, toneFreq),
-      shift: txAuxField(hasShift, shiftObserved, shift),
-      offsetHz: txAuxField(hasOffset, offsetObserved, offsetHz),
+      inRepeaterBand: txAuxField(true, freqObserved, inBand, fieldMessage(state, path('freqHz'))),
+      toneMode: txAuxField(hasTone, toneObserved && tsqlObserved, toneMode, fieldMessage(state, path('repeaterTone'), path('repeaterTsql'))),
+      toneFreq: txAuxField(hasTone, toneFreqObserved, toneFreq, fieldMessage(state, path('toneFreq'))),
+      shift: txAuxField(hasShift, shiftObserved, shift, fieldMessage(state, path('repeaterShift'))),
+      offsetHz: txAuxField(hasOffset, offsetObserved, offsetHz, fieldMessage(state, path('repeaterOffsetHz'))),
     };
   };
 
@@ -1565,10 +1580,10 @@ function deriveRitXit(state: ServerState | null, caps: Capabilities | null): Rit
   const offsetObserved = strictFieldAvailable(state, 'ritFreq');
   const offsetRaw = numOrUndef(state?.ritFreq);
   return {
-    ritActive: txAuxField(hasRitCap, strictFieldAvailable(state, 'ritOn'), boolOrUndef(state?.ritOn)),
-    ritOffset: txAuxField(hasRitCap, offsetObserved, offsetRaw),
-    xitActive: txAuxField(hasXitCap, strictFieldAvailable(state, 'ritTx'), boolOrUndef(state?.ritTx)),
-    xitOffset: txAuxField(hasXitCap, offsetObserved, offsetRaw),
+    ritActive: txAuxField(hasRitCap, strictFieldAvailable(state, 'ritOn'), boolOrUndef(state?.ritOn), fieldMessage(state, 'ritOn')),
+    ritOffset: txAuxField(hasRitCap, offsetObserved, offsetRaw, fieldMessage(state, 'ritFreq')),
+    xitActive: txAuxField(hasXitCap, strictFieldAvailable(state, 'ritTx'), boolOrUndef(state?.ritTx), fieldMessage(state, 'ritTx')),
+    xitOffset: txAuxField(hasXitCap, offsetObserved, offsetRaw, fieldMessage(state, 'ritFreq')),
   };
 }
 
@@ -1595,8 +1610,10 @@ function deriveAntenna(state: ServerState | null, caps: Capabilities | null): An
   const rxAntennaObserved = txAntennaObserved && txAntennaRaw !== undefined
     && strictFieldAvailable(state, txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1');
   return {
-    txAntenna: txAuxField(true, txAntennaObserved, txAntennaRaw),
-    rxAnt: txAuxField(hasRxAntennaCap, rxAntennaObserved, boolOrUndef(rxAntennaRaw)),
+    txAntenna: txAuxField(true, txAntennaObserved, txAntennaRaw, fieldMessage(state, 'txAntenna')),
+    rxAnt: txAuxField(hasRxAntennaCap, rxAntennaObserved, boolOrUndef(rxAntennaRaw),
+      fieldMessage(state, 'txAntenna', ...(txAntennaObserved && txAntennaRaw !== undefined
+        ? [txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1'] : []))),
     antennaCount,
   };
 }
@@ -1614,16 +1631,16 @@ function deriveScan(state: ServerState | null): ScanViewModel | undefined {
   const resumeRaw = numOrUndef(state?.scanResumeMode);
   return {
     scanning: txAuxField(
-      state?.scanning !== undefined, topFieldAvailable(state, 'scanning'), boolOrUndef(state?.scanning),
+      state?.scanning !== undefined, topFieldAvailable(state, 'scanning'), boolOrUndef(state?.scanning), fieldMessage(state, 'scanning'),
     ),
     scanType: txAuxField(
-      state?.scanType !== undefined, topFieldAvailable(state, 'scanType'), numOrUndef(state?.scanType),
+      state?.scanType !== undefined, topFieldAvailable(state, 'scanType'), numOrUndef(state?.scanType), fieldMessage(state, 'scanType'),
     ),
     // The shipped `& 0x0F` mask (`toScanProps`), applied verbatim — the raw
     // field carries a direction bit this contract does not interpret.
     scanResumeMode: txAuxField(
       state?.scanResumeMode !== undefined, topFieldAvailable(state, 'scanResumeMode'),
-      resumeRaw !== undefined ? (resumeRaw & 0x0f) : undefined,
+      resumeRaw !== undefined ? (resumeRaw & 0x0f) : undefined, fieldMessage(state, 'scanResumeMode'),
     ),
   };
 }
@@ -1676,20 +1693,20 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
   const pitchDomain = controlDisplayDomain(caps?.controls?.cw_pitch, 5);
   const keySpeedDomain = controlDisplayDomain(caps?.controls?.key_speed, 1);
   return {
-    breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn)),
+    breakIn: txAuxField(hasBreakInCap, topFieldAvailable(state, 'breakIn'), breakInMode(state?.breakIn), fieldMessage(state, 'breakIn')),
     breakInDelay: txAuxField(
-      hasBreakInCap, topFieldAvailable(state, 'breakInDelay'), numOrUndef(state?.breakInDelay),
+      hasBreakInCap, topFieldAvailable(state, 'breakInDelay'), numOrUndef(state?.breakInDelay), fieldMessage(state, 'breakInDelay'),
     ),
-    keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed)),
-    pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch)),
+    keyerSpeed: txAuxField(true, topFieldAvailable(state, 'keySpeed'), numOrUndef(state?.keySpeed), fieldMessage(state, 'keySpeed')),
+    pitchHz: txAuxField(true, topFieldAvailable(state, 'cwPitch'), numOrUndef(state?.cwPitch), fieldMessage(state, 'cwPitch')),
     ...(pitchDomain !== null ? { pitchDomain } : {}),
     ...(keySpeedDomain !== null ? { keySpeedDomain } : {}),
     reversePaddle: txAuxField(
-      true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0,
+      true, topFieldAvailable(state, 'dashRatio'), dashRatio === undefined ? undefined : dashRatio < 0, fieldMessage(state, 'dashRatio'),
     ),
-    apf: txAuxField(hasApfCap, topFieldAvailable(state, `${base}apfTypeLevel`), numOrUndef(rx?.apfTypeLevel)),
+    apf: txAuxField(hasApfCap, topFieldAvailable(state, `${base}apfTypeLevel`), numOrUndef(rx?.apfTypeLevel), fieldMessage(state, `${base}apfTypeLevel`)),
     twinPeak: txAuxField(
-      hasTwinPeakCap, topFieldAvailable(state, `${base}twinPeakFilter`), boolOrUndef(rx?.twinPeakFilter),
+      hasTwinPeakCap, topFieldAvailable(state, `${base}twinPeakFilter`), boolOrUndef(rx?.twinPeakFilter), fieldMessage(state, `${base}twinPeakFilter`),
     ),
   };
 }
@@ -1784,31 +1801,31 @@ function deriveScopeControls(
   const hasReceiverSelect = hasCap(caps, 'dual_rx');
   const sc = state?.scopeControls;
   return {
-    mode: txAuxField(true, topFieldAvailable(state, 'scopeControls.mode'), numOrUndef(sc?.mode)),
-    edge: txAuxField(true, topFieldAvailable(state, 'scopeControls.edge'), numOrUndef(sc?.edge)),
-    span: txAuxField(true, topFieldAvailable(state, 'scopeControls.span'), numOrUndef(sc?.span)),
-    speed: txAuxField(true, topFieldAvailable(state, 'scopeControls.speed'), numOrUndef(sc?.speed)),
-    hold: txAuxField(true, topFieldAvailable(state, 'scopeControls.hold'), boolOrUndef(sc?.hold)),
-    refDb: txAuxField(true, topFieldAvailable(state, 'scopeControls.refDb'), numOrUndef(sc?.refDb)),
+    mode: txAuxField(true, topFieldAvailable(state, 'scopeControls.mode'), numOrUndef(sc?.mode), fieldMessage(state, 'scopeControls.mode')),
+    edge: txAuxField(true, topFieldAvailable(state, 'scopeControls.edge'), numOrUndef(sc?.edge), fieldMessage(state, 'scopeControls.edge')),
+    span: txAuxField(true, topFieldAvailable(state, 'scopeControls.span'), numOrUndef(sc?.span), fieldMessage(state, 'scopeControls.span')),
+    speed: txAuxField(true, topFieldAvailable(state, 'scopeControls.speed'), numOrUndef(sc?.speed), fieldMessage(state, 'scopeControls.speed')),
+    hold: txAuxField(true, topFieldAvailable(state, 'scopeControls.hold'), boolOrUndef(sc?.hold), fieldMessage(state, 'scopeControls.hold')),
+    refDb: txAuxField(true, topFieldAvailable(state, 'scopeControls.refDb'), numOrUndef(sc?.refDb), fieldMessage(state, 'scopeControls.refDb')),
     // MOR-3694: the declared REF range from capabilities; `null` fails the
     // REF steppers closed (no fallback range).
     refRange: refRangeFromCaps(caps),
     dual: txAuxField(
-      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.dual'), boolOrUndef(sc?.dual),
+      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.dual'), boolOrUndef(sc?.dual), fieldMessage(state, 'scopeControls.dual'),
     ),
     receiver: txAuxField(
-      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.receiver'), numOrUndef(sc?.receiver),
+      hasReceiverSelect, topFieldAvailable(state, 'scopeControls.receiver'), numOrUndef(sc?.receiver), fieldMessage(state, 'scopeControls.receiver'),
     ),
     duringTx: txAuxField(
-      true, topFieldAvailable(state, 'scopeControls.duringTx'), boolOrUndef(sc?.duringTx),
+      true, topFieldAvailable(state, 'scopeControls.duringTx'), boolOrUndef(sc?.duringTx), fieldMessage(state, 'scopeControls.duringTx'),
     ),
     centerType: txAuxField(
-      true, topFieldAvailable(state, 'scopeControls.centerType'), numOrUndef(sc?.centerType),
+      true, topFieldAvailable(state, 'scopeControls.centerType'), numOrUndef(sc?.centerType), fieldMessage(state, 'scopeControls.centerType'),
     ),
     vbwNarrow: txAuxField(
-      true, topFieldAvailable(state, 'scopeControls.vbwNarrow'), boolOrUndef(sc?.vbwNarrow),
+      true, topFieldAvailable(state, 'scopeControls.vbwNarrow'), boolOrUndef(sc?.vbwNarrow), fieldMessage(state, 'scopeControls.vbwNarrow'),
     ),
-    rbw: txAuxField(true, topFieldAvailable(state, 'scopeControls.rbw'), numOrUndef(sc?.rbw)),
+    rbw: txAuxField(true, topFieldAvailable(state, 'scopeControls.rbw'), numOrUndef(sc?.rbw), fieldMessage(state, 'scopeControls.rbw')),
   };
 }
 
@@ -2005,7 +2022,7 @@ function deriveRxAudio(
   const perReceiverAf = !live && hasCap(caps, 'af_level') && structuralReceivers.includes('SUB')
     && hasCap(caps, 'af_level_sub');
   const receiverAf = (key: 'main' | 'sub') => txAuxField(
-    true, state !== null && topFieldAvailable(state, `${key}.afLevel`), numOrUndef(state?.[key]?.afLevel),
+    true, state !== null && topFieldAvailable(state, `${key}.afLevel`), numOrUndef(state?.[key]?.afLevel), fieldMessage(state, `${key}.afLevel`),
   );
   const routing = audio.routing ?? null;
   const source = modInputSource.status === 'known' ? modInputSource.source : undefined;
@@ -2014,11 +2031,12 @@ function deriveRxAudio(
     liveAudio: { structural: hasLiveAudio, operational: hasLiveAudio && audio.connected },
     // `txAuxField` is the shared `{reading, availability}` builder — `RxAudioField`
     // IS `TxAuxField` (see the contract's alias), so there is one builder, not a fork.
-    afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel),
+    afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel, fieldMessage(state, onSub ? 'sub.afLevel' : 'main.afLevel')),
     ...(perReceiverAf ? { receiverAfLevels: { main: receiverAf('main'), sub: receiverAf('sub') } } : {}),
     routingFocus: txAuxField(hasAudioRouting, routing?.focus !== undefined, routing?.focus),
     routingSplit: txAuxField(hasAudioRouting, routing?.splitStereo !== undefined, routing?.splitStereo),
-    modInputSource: txAuxField(hasModInput, source !== undefined, source),
+    modInputSource: txAuxField(hasModInput, source !== undefined, source,
+      activeDataMode === null || activeDataMode === undefined ? undefined : fieldMessage(state, modInputStateKey(activeDataMode))),
     modInputChoices,
     modInputReadiness: facts.modInputReadiness,
     rxSilent: audio.rxSilent === true,

@@ -16,6 +16,7 @@
  * boolean or a default is the failure mode this contract exists to prevent.
  */
 import type { VfoScheme } from '$lib/types/capabilities';
+import type { FieldStatusPublic } from '$lib/types/state';
 import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
 import { isSourcelessPermitUnknown, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
@@ -82,6 +83,7 @@ export type BooleanFact =
 export interface Availability {
   structural: boolean;
   operational: boolean;
+  message?: FieldStatusPublic['message'];
 }
 
 export interface VfoViewModel {
@@ -1558,8 +1560,12 @@ function validateBooleanFact(value: unknown, path: string): BooleanFact {
 
 function validateAvailability(value: unknown, path: string): Availability {
   const v = record(value, path);
-  exactKeys(v, ['structural', 'operational'], path);
-  return { structural: bool(v.structural, `${path}.structural`), operational: bool(v.operational, `${path}.operational`) };
+  exactKeys(v, ['structural', 'operational', 'message'], path);
+  return {
+    structural: bool(v.structural, `${path}.structural`),
+    operational: bool(v.operational, `${path}.operational`),
+    ...(v.message === undefined ? {} : { message: nullableString(v.message, `${path}.message`) }),
+  };
 }
 
 function validateVfo(value: unknown, path: string): VfoViewModel {

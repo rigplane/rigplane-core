@@ -18,6 +18,7 @@ export type VfoOperationAvailability = Readonly<{
   structural: boolean;
   operational: boolean;
   reason: string | undefined;
+  message?: TxAuxField<unknown>['availability']['message'];
 }>;
 
 export type VfoOperationCallbacks = Readonly<{
@@ -150,11 +151,11 @@ export function projectVfoOperations(
   ): VfoRadioFunctionOperation => {
     const structural = field !== undefined && field.availability.structural;
     return {
-      availability: availability(
-        structural,
-        usable<AtuStatus | boolean>(field) && callback !== undefined,
-        undefined,
-      ),
+      availability: {
+        ...availability(structural, usable<AtuStatus | boolean>(field) && callback !== undefined, undefined),
+        ...(structural && !usable<AtuStatus | boolean>(field) && field?.availability.message
+          ? { message: field.availability.message } : {}),
+      },
       reading: field === undefined ? { status: 'unknown' } : field.reading,
     };
   };

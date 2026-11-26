@@ -55,6 +55,19 @@ describe('VFO display facet', () => {
 });
 
 describe('validateRadioViewModel', () => {
+  it.each(['The radio refused to report this field.', null, ''])('round-trips typed availability message %j', (message) => {
+    const view = valid();
+    const availability = { structural: true, operational: false, message };
+    view.scope.hardwareScope = availability;
+    expect(validateRadioViewModel(view).scope.hardwareScope).toEqual(availability);
+  });
+
+  it.each([1, false, {}, []])('rejects malformed availability message %j', (message) => {
+    const view = valid();
+    expect(() => validateRadioViewModel({ ...view, scope: { ...view.scope,
+      hardwareScope: { structural: true, operational: false, message },
+    } })).toThrow(TypeError);
+  });
   it('accepts a well-formed view model and round-trips it unchanged', () => {
     const model = valid();
     expect(validateRadioViewModel(model)).toEqual(model);

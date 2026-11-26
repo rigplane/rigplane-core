@@ -110,6 +110,21 @@ function currentLease(binding: unknown): ContinuousScalarRendererLease {
 }
 
 describe('two-scalar DSP family host', () => {
+  it.each(['The provider refused this receiver NB level.', undefined])('puts receiver explanation %j on the actual disabled scalar', (message) => {
+    activation.selected = undefined;
+    const model = view();
+    model.dsp!.nbLevel = { reading: { status: 'unknown' },
+      availability: { structural: true, operational: false, message } };
+    const r = render({ view: model });
+    const row = r.row('nbLevel')!;
+    expect(row.title).toBe(message ?? 'Not yet observed');
+    const slider = row.querySelector<HTMLElement>('[role="slider"]')!;
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    const description = slider.getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(description.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ')).toContain(row.title);
+    r.dispose();
+  });
   it('places both handles through the real Surface with five native and four finite controls', () => {
     const r = render();
     expect(capture.bindings).toHaveLength(2);
