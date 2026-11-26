@@ -1,4 +1,5 @@
 {
+  "codes": ["tx_held_by_other", "release_in_progress", "authority_unavailable", "read_only", "controller_refused", "radio_refused", "other"],
   "httpHeld": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "tx_held_by_other"},
   "httpReleasing": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "release_in_progress"},
   "httpOther": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "other"},

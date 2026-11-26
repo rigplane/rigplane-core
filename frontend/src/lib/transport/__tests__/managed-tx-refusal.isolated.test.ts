@@ -25,10 +25,9 @@ afterEach(() => { setLocale('en-US'); vi.unstubAllGlobals(); vi.useRealTimers();
 
 describe('managed TX refusal presentation', () => {
   it('covers every Python refusal enum value with a locale mapping or the generic fallback', () => {
-    const source = readFileSync(resolve(process.cwd(), '../src/rigplane/runtime/managed_tx_state.py'), 'utf8');
-    const enumBody = source.match(/class ManagedTxRefusalReason\(StrEnum\):([\s\S]*?)(?=\nclass )/);
-    expect(enumBody).not.toBeNull();
-    const codes = [...enumBody![1].matchAll(/^\s+[A-Z_]+ = "([a-z_]+)"$/gm)].map((match) => match[1]);
+    // The producer pins this closed list in the shared wire fixture; its Python
+    // contract test asserts it equals ManagedTxRefusalReason.
+    const codes: string[] = wire.codes;
     expect(codes.length).toBeGreaterThan(0);
     expect(codes.filter((code) => !cases.some(([covered]) => covered === code))).toEqual([]);
     expect(managedTxRefusalToastCode('other')).toBe('txStartRefused');
