@@ -3753,6 +3753,36 @@ def _degraded_server() -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name,params", [("ptt_on", {}), ("ptt", {"state": True})])
+async def test_direct_ptt_command_waits_for_its_response(name, params) -> None:
+    sending = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def send(_text: str) -> None:
+        sending.set()
+        await resume.wait()
+
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(side_effect=send))
+    handler = _control_handler(ws=ws, radio=_capable_radio(), server=_degraded_server())
+    command = asyncio.create_task(
+        handler._handle_command({"id": "key", "name": name, "params": params})
+    )
+    try:
+        await asyncio.wait_for(sending.wait(), 1)
+        assert not command.done()
+        resume.set()
+        await command
+        assert decode_json(ws.send_text.await_args.args[0])["ok"] is True
+        assert not handler._managed_ptt_responses
+    finally:
+        resume.set()
+        command.cancel()
+        response_tasks = tuple(handler._managed_ptt_responses)
+        handler._cancel_pending_command_flushes()
+        await asyncio.gather(command, *response_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
     ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()

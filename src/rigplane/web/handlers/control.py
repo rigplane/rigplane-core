@@ -1356,7 +1356,7 @@ class ControlHandler:
         elif msg_type == "unsubscribe":
             await self._handle_unsubscribe(msg)
         elif msg_type == "cmd":
-            await self._handle_command(msg)
+            await self._handle_command(msg, allow_pending_ptt=True)
         elif msg_type == "controller_heartbeat":
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1494,7 +1494,9 @@ class ControlHandler:
             if isinstance(exc, (asyncio.CancelledError, EOFError)):
                 raise
 
-    async def _handle_command(self, msg: dict[str, Any]) -> None:
+    async def _handle_command(
+        self, msg: dict[str, Any], *, allow_pending_ptt: bool = False
+    ) -> None:
         cmd_id = msg.get("id", "")
         name = msg.get("name", "")
         params = msg.get("params", {})
@@ -1563,7 +1565,9 @@ class ControlHandler:
                 return
             self._cmd_last[key] = now
 
-        if name == "ptt_on" or (name == "ptt" and params.get("state") is True):
+        if allow_pending_ptt and (
+            name == "ptt_on" or (name == "ptt" and params.get("state") is True)
+        ):
             submitted = asyncio.Event()
 
             def finished(task: asyncio.Task[None]) -> None:

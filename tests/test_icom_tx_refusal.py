@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from _perf_helpers import fast_connect
+from rigplane.cli import _ManagedTxRadioSession
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
@@ -44,7 +45,7 @@ from test_managed_tx_http_route import _Writer, _reader
 
 
 @pytest.fixture
-async def simulated_key(monkeypatch):
+async def simulated_key(monkeypatch, tmp_path):
     sim = MockIcomRadio(stateful_ptt=True, unsolicited_civ=False)
     await sim.start()
     radio = IcomRadio(
@@ -82,16 +83,21 @@ async def simulated_key(monkeypatch):
         return dispatch(command, payload, from_addr)
 
     monkeypatch.setattr(sim, "_dispatch_civ", injected_reply)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    session = _ManagedTxRadioSession(radio, composition)
     try:
         with fast_connect():
-            await radio.connect()
+            await session.__aenter__()
         radio._civ_get_timeout = 0.2
         radio._civ_min_interval = 0
-        yield radio, sim, script
+        yield radio, sim, script, composition
     finally:
-        with fast_connect():
-            await radio.disconnect()
-        await sim.stop()
+        try:
+            with fast_connect():
+                await session.__aexit__(None, None, None)
+        finally:
+            await sim.stop()
 
 
 @pytest.mark.parametrize(
@@ -109,7 +115,7 @@ async def simulated_key(monkeypatch):
 async def test_simulator_key_reply_is_the_typed_write_result(
     simulated_key, operation, answer, expected, keyed
 ):
-    radio, sim, script = simulated_key
+    radio, sim, script, _composition = simulated_key
     script["answer"] = answer
 
     result = await radio.actuate(
@@ -120,7 +126,7 @@ async def test_simulator_key_reply_is_the_typed_write_result(
     assert script["keys"] == 1
     assert sim.ptt_on is keyed
     if not keyed:
-        assert radio.state.ptt is False
+        assert radio.radio_state.ptt is False
 
 
 @pytest.mark.parametrize("result", list(ActuationResult))
@@ -215,12 +221,10 @@ async def test_shared_queue_does_not_name_pre_dispatch_failure_as_radio_refusal(
 @pytest.mark.parametrize("ingress", ["http", "ws", "rigctld"])
 @pytest.mark.parametrize("answer", ["nak", "ack", "silence", "lost-ack"])
 async def test_simulator_reply_reaches_ingress_and_managed_document(
-    simulated_key, tmp_path, ingress, answer
+    simulated_key, ingress, answer
 ):
-    radio, sim, script = simulated_key
+    radio, sim, script, composition = simulated_key
     script["answer"] = answer
-    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
-    install_managed_tx_composition(radio, composition)
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     server.command_queue.bind_connection_generation(lambda: radio)
     await composition.transport_ready(radio)
@@ -304,7 +308,7 @@ async def test_simulator_reply_reaches_ingress_and_managed_document(
         if answer == "nak":
             assert state.intent.kind is ManagedTxIntentKind.RX
             assert state.last_error == ManagedTxRefusalReason.RADIO_REFUSED
-            assert radio.state.ptt is False
+            assert radio.radio_state.ptt is False
 
             writer = _Writer()
             await server._handle_http(writer, "GET", "/api/v1/managed-transmit")
@@ -324,12 +328,11 @@ async def test_simulator_reply_reaches_ingress_and_managed_document(
 @pytest.mark.parametrize("release", ["ptt_up", "force_off"])
 @pytest.mark.parametrize("late_reply", [0xFB, 0xFA])
 async def test_release_preempts_held_key_reply_without_late_reply_state_change(
-    simulated_key, tmp_path, release, late_reply
+    simulated_key, release, late_reply
 ):
-    radio, sim, script = simulated_key
+    radio, sim, script, composition = simulated_key
     script["answer"] = "held-ack"
     radio._civ_get_timeout = 2.0
-    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     await composition.transport_ready(radio)
     await composition.bind_state_store(server.command_state_store)
@@ -378,14 +381,84 @@ async def test_release_preempts_held_key_reply_without_late_reply_state_change(
 @pytest.mark.parametrize(
     "key_name,key_params", [("ptt_on", {}), ("ptt", {"state": True})]
 )
-async def test_ws_receive_path_accepts_release_while_key_reply_is_held(
-    simulated_key, tmp_path, key_name, key_params
+async def test_ws_release_before_queue_dispatch_answers_revoked_key(
+    simulated_key, key_name, key_params
 ):
-    radio, sim, script = simulated_key
+    radio, sim, script, composition = simulated_key
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server.command_queue.bind_connection_generation(lambda: radio)
+    await composition.bind_state_store(server.command_state_store)
+    attach_managed_tx_composition(server, composition)
+    await composition.authority._stop_scheduler(composition.authority._scheduler_task)
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
+    handler = ControlHandler(
+        ws,
+        radio,
+        "test",
+        radio.model,
+        server=server,
+        session_id="early-release-client",
+        managed_tx_authority=composition.authority,
+    )
+    handler._publish_session_liveness(live=True)
+    drain = None
+    try:
+        await asyncio.wait_for(
+            handler._handle_text(
+                encode_json(
+                    {
+                        "type": "cmd",
+                        "id": "key",
+                        "name": key_name,
+                        "params": key_params,
+                    }
+                )
+            ),
+            1.0,
+        )
+        assert server.command_queue.has_commands
+        await handler._handle_text(
+            encode_json({"type": "cmd", "id": "off", "name": "ptt_off", "params": {}})
+        )
+        drain = asyncio.create_task(_drain_queue(server))
+        await await_until(
+            lambda: not handler._managed_ptt_responses,
+            timeout=1.0,
+            description="revoked key answered",
+        )
+        responses = {
+            body["id"]: body
+            for call in ws.send_text.await_args_list
+            for body in (decode_json(call.args[0]),)
+        }
+        assert set(responses) == {"key", "off"}
+        assert responses["key"]["ok"] is False
+        assert responses["key"]["code"] == ManagedTxRefusalReason.OTHER
+        assert script["keys"] == 0
+        assert not sim.ptt_on
+        state = (await composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert state.pending_effect is None
+        assert not state.release_required
+    finally:
+        response_tasks = tuple(handler._managed_ptt_responses)
+        handler._cancel_pending_command_flushes()
+        if drain is not None:
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+        await asyncio.gather(*response_tasks, return_exceptions=True)
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.parametrize(
+    "key_name,key_params", [("ptt_on", {}), ("ptt", {"state": True})]
+)
+async def test_ws_receive_path_accepts_release_while_key_reply_is_held(
+    simulated_key, key_name, key_params
+):
+    radio, sim, script, composition = simulated_key
     script["answer"] = "held-ack"
     radio._civ_get_timeout = 2.0
-    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
-    install_managed_tx_composition(radio, composition)
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     server.command_queue.bind_connection_generation(lambda: radio)
     await composition.transport_ready(radio)
