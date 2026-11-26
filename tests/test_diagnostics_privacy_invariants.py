@@ -55,6 +55,134 @@ def _isolate_contributors() -> Any:
 # --- Helpers --------------------------------------------------------
 
 
+@pytest.fixture
+def credential_config() -> tuple[str, list[str]]:
+    """Synthetic credentials in nested TOML tables, lists, and neutral fields."""
+    envelope = "eyJh" * 100  # 400 base64url characters; synthetic, not a credential.
+    short_secret = "synthetic-nested-credential"
+    toml = f'''
+listen = "127.0.0.1"
+port = 8080
+log_level = "INFO"
+keyboard_layout = "US"
+
+[remote]
+entitlement_token = "{envelope}"
+opaque = "{envelope}"
+values = ["harmless", "{envelope}", ["{envelope}"]]
+
+[remote.nested]
+apiKey = "{short_secret}"
+description = "{envelope}"
+
+[[remote.peers]]
+name = "first"
+client_credentials = {{ user = "{short_secret}" }}
+payload = "{envelope}"
+
+[[remote.peers]]
+name = "second"
+private_key = ["{short_secret}"]
+signature = "{short_secret}"
+'''
+    return toml, [envelope, short_secret]
+
+
+def test_config_credentials_absent_from_final_zip(
+    tmp_path: Path, credential_config: tuple[str, list[str]]
+) -> None:
+    register(ConfigContributor)
+    ctx = _make_ctx(tmp_path)
+    toml, secrets = credential_config
+    (ctx.config_dir / "settings.toml").write_text(toml, encoding="utf-8")
+
+    result = build_bundle(ctx, tmp_path / "report.zip")
+    blob = _bundle_bytes(result)
+    for secret in secrets:
+        assert secret.encode() not in blob
+
+    with zipfile.ZipFile(result) as zf:
+        summary = json.loads(zf.read("config/config-summary.json"))
+    content = summary["files"][0]["content"]
+    assert content["listen"] == "127.0.0.1"
+    assert content["port"] == 8080
+    assert content["log_level"] == "INFO"
+    assert content["keyboard_layout"] == "US"
+    remote = content["remote"]
+    assert remote["entitlement_token"] == "<REDACTED>"
+    assert remote["opaque"] == "<REDACTED>"
+    assert remote["values"] == ["harmless", "<REDACTED>", ["<REDACTED>"]]
+    assert remote["nested"] == {"apiKey": "<REDACTED>", "description": "<REDACTED>"}
+    assert remote["peers"] == [
+        {"name": "first", "client_credentials": "<REDACTED>", "payload": "<REDACTED>"},
+        {"name": "second", "private_key": "<REDACTED>", "signature": "<REDACTED>"},
+    ]
+
+
+def test_bundle_scrubs_unredacted_contributor_text_and_manifest(tmp_path: Path) -> None:
+    envelope = "eyJh" * 100
+    token = "Ab0_" * 16
+    binary = b"\x00\xff\x01opaque-binary"
+
+    class RawContributor:
+        name = "raw"
+
+        def contribute(self, ctx: BundleContext, output_dir: Path) -> None:
+            (output_dir / "nested").mkdir()
+            (output_dir / "nested" / "request.log").write_text(
+                f"Authorization: Bearer {envelope}\n"
+                f"headers={{'Authorization': 'Bearer {envelope}'}}\n"
+                f"token={token}\n",
+                encoding="utf-8",
+            )
+            (output_dir / "payload.json").write_text(
+                json.dumps(
+                    {
+                        "message": f"Authorization: Bearer {envelope}",
+                        "remote": {"entitlement_token": "short-sensitive-value"},
+                        "opaque": envelope,
+                        "detail": f"token={token}",
+                        "keyboard_layout": "US",
+                        "port": 8080,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "data.bin").write_bytes(binary)
+
+    register(RawContributor)
+    result = build_bundle(
+        _make_ctx(tmp_path, user_description=f"Authorization: Bearer {envelope}"),
+        tmp_path / "report.zip",
+    )
+    blob = _bundle_bytes(result)
+    assert envelope.encode() not in blob
+    assert token.encode() not in blob
+    assert b"short-sensitive-value" not in blob
+    with zipfile.ZipFile(result) as zf:
+        assert zf.read("raw/nested/request.log").decode() == (
+            "Authorization: Bearer <REDACTED>\n"
+            "headers={'Authorization': 'Bearer <REDACTED>'}\n"
+            "token=<REDACTED>\n"
+        )
+        payload = json.loads(zf.read("raw/payload.json"))
+        assert payload == {
+            "message": "Authorization: Bearer <REDACTED>",
+            "remote": {"entitlement_token": "<REDACTED>"},
+            "opaque": "<REDACTED>",
+            "detail": "token=<REDACTED>",
+            "keyboard_layout": "US",
+            "port": 8080,
+        }
+        assert zf.read("raw/data.bin") == binary
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["user_description"] == "Authorization: Bearer <REDACTED>"
+        record = manifest["contributors"][0]
+        assert record["size_bytes"] == sum(
+            len(zf.read(f"raw/{name}")) for name in record["files"]
+        )
+
+
 def _make_ctx(tmp_path: Path, **overrides: Any) -> BundleContext:
     config_dir = tmp_path / "config"
     log_dir = tmp_path / "log"
