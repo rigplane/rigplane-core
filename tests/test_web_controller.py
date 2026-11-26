@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 from types import SimpleNamespace
+from urllib.error import URLError
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -25,7 +27,8 @@ from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime.controller_authority import ControllerError
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 from rigplane.web import server as server_module
-from rigplane.web.eibi import EibiClient
+from rigplane.web import eibi as eibi_module
+from rigplane.web.eibi import EiBiProvider
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer, _HttpCommandExecutor
@@ -220,7 +223,7 @@ def eibi_catalogue(station, tmp_path, monkeypatch):
     download = Mock(return_value=raw)
     monkeypatch.setattr("rigplane.web.eibi._download_url", download)
     cache = tmp_path / "catalogue"
-    server._eibi = EibiClient(cache_dir=cache)
+    server._eibi = EiBiProvider(cache_dir=cache)
     return cache, raw, download
 
 
@@ -244,6 +247,80 @@ async def test_eibi_refresh_writes_catalogue_cache_for_current_controller(
     assert stations.status == 200
     assert stations.payload["stations"][0]["station"] == "Test Station"
     assert server.command_queue.drain() == []
+
+
+async def test_eibi_refresh_exception_is_typed_and_logged(
+    station, eibi_catalogue, monkeypatch, caplog
+):
+    server, _ = station
+    key, _ = await remote(server)
+    detail = "private cache path /internal/catalogue"
+    fetch = AsyncMock(side_effect=OSError(detail))
+    monkeypatch.setattr(server._eibi, "fetch", fetch)
+    response = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 500
+    assert response.payload == {"error": "eibi_fetch_failed"}
+    assert detail in caplog.text
+    fetch.assert_awaited_once_with(force=False)
+
+
+async def test_eibi_refresh_upstream_failure_is_typed_and_logged(
+    station, eibi_catalogue, caplog
+):
+    server, _ = station
+    cache, _, download = eibi_catalogue
+    key, _ = await remote(server)
+    detail = "private upstream failure detail"
+    download.side_effect = URLError(detail)
+    response = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 502
+    assert response.payload == {
+        "error": "eibi_fetch_failed",
+        "status": "fetch_failed",
+    }
+    assert detail in caplog.text
+    assert download.call_count == 2
+    assert not (cache / "eibi.csv").exists()
+
+
+@pytest.mark.parametrize("size", [31, 32, 33])
+def test_eibi_download_is_bounded_and_closes_response(monkeypatch, size):
+    monkeypatch.setattr(eibi_module, "_MAX_DOWNLOAD_BYTES", 32)
+    response = io.BytesIO(b"x" * size)
+    read = Mock(wraps=response.read)
+    monkeypatch.setattr(response, "read", read)
+    open_url = Mock(return_value=response)
+    monkeypatch.setattr(eibi_module, "urlopen", open_url)
+    if size <= 32:
+        assert eibi_module._download_url("http://www.eibispace.de/dx/test.csv") == (
+            b"x" * size
+        )
+    else:
+        with pytest.raises(ValueError, match="EiBi download exceeds size limit"):
+            eibi_module._download_url("http://www.eibispace.de/dx/test.csv")
+    read.assert_called_once_with(33)
+    assert response.closed
+    assert open_url.call_args.kwargs == {"timeout": eibi_module._FETCH_TIMEOUT}
+
+
+async def test_eibi_oversized_download_leaves_cache_and_catalogue_unchanged(
+    station, tmp_path, monkeypatch
+):
+    server, _ = station
+    cache = tmp_path / "catalogue"
+    server._eibi = EiBiProvider(cache_dir=cache)
+    monkeypatch.setattr(eibi_module, "_MAX_DOWNLOAD_BYTES", 32)
+    response = io.BytesIO(b"x" * 33)
+    monkeypatch.setattr(eibi_module, "urlopen", Mock(return_value=response))
+    key, _ = await remote(server)
+    result = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert result.status == 500
+    assert result.payload == {"error": "eibi_fetch_failed"}
+    assert response.closed
+    assert not (cache / "eibi.csv").exists()
+    assert not (cache / "eibi-meta.json").exists()
+    assert not server._eibi.loaded
+    assert server._eibi.station_count == 0
 
 
 @pytest.mark.parametrize("credential", ["missing", "wrong", "revoked"])

@@ -156,6 +156,7 @@ describe('MOR-1409 A05b EiBi tune authority', () => {
 
   it('sends the controller credential on the fetch POST and omits retired credentials', async () => {
     const controllerKey = 'a'.repeat(64);
+    vi.spyOn(controllerClient, 'remote', 'get').mockReturnValue(true);
     vi.spyOn(controllerClient, 'headers').mockReturnValue({ 'X-RigPlane-Controller': controllerKey });
     localStorage.setItem('rigplane-auth-token', 'fetch-token');
     h.fetch.mockImplementation(async (input: RequestInfo | URL) => {

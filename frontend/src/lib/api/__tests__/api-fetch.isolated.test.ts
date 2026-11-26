@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { apiFetch } from '../api-fetch';
 import { controllerClient } from '../../transport/controller-client';
 
@@ -13,6 +13,10 @@ const credentialExceptions = [
 ] as const;
 
 describe('apiFetch', () => {
+  beforeEach(() => {
+    vi.spyOn(controllerClient, 'remote', 'get').mockReturnValue(true);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -40,6 +44,29 @@ describe('apiFetch', () => {
     vi.stubGlobal('fetch', stub);
     await apiFetch('/api/v1/capabilities');
     expect(stub).toHaveBeenCalledWith('/api/v1/capabilities', undefined);
+  });
+
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
+    'keeps local %s sessionless when a stale grant remains', async (method) => {
+      vi.spyOn(controllerClient, 'remote', 'get').mockReturnValue(false);
+      vi.spyOn(controllerClient, 'headers').mockReturnValue({ 'X-RigPlane-Controller': controllerKey });
+      const response = new Response('{}');
+      const stub = vi.fn(async () => response);
+      vi.stubGlobal('fetch', stub);
+      const init = { method, headers: { 'Content-Type': 'application/json' }, body: '{}' };
+      expect(await apiFetch('/api/v1/eibi/fetch', init)).toBe(response);
+      expect(stub).toHaveBeenCalledWith('/api/v1/eibi/fetch', init);
+      expect(controllerClient.headers).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves an explicitly supplied local session credential', async () => {
+    vi.spyOn(controllerClient, 'remote', 'get').mockReturnValue(false);
+    const stub = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', stub);
+    const init = { method: 'POST', headers: { 'X-RigPlane-Controller': controllerKey } };
+    await apiFetch('/api/v1/eibi/fetch', init);
+    expect(stub).toHaveBeenCalledWith('/api/v1/eibi/fetch', init);
   });
 
   it.each(['POST', 'PUT', 'PATCH', 'DELETE', 'post'])(

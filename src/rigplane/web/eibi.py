@@ -30,6 +30,7 @@ _EIBI_BASE = "http://www.eibispace.de/dx"
 _CACHE_CSV = "eibi.csv"
 _CACHE_META = "eibi-meta.json"
 _FETCH_TIMEOUT = 30  # seconds
+_MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 _CACHE_TTL = 7 * 86400  # 7 days
 
 # Season naming: A=Summer (Mar-Oct), B=Winter (Oct-Mar), followed by 2-digit year
@@ -298,15 +299,17 @@ def _download_url(url: str, ua: str = "rigplane/1.0") -> bytes:
     """Blocking download helper (run in a thread)."""
     req = Request(url, headers={"User-Agent": ua})
     with urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
-        data = resp.read()
+        data = resp.read(_MAX_DOWNLOAD_BYTES + 1)
         assert isinstance(data, bytes)
+        if len(data) > _MAX_DOWNLOAD_BYTES:
+            raise ValueError("EiBi download exceeds size limit")
         return data
 
 
 def _load_cache_files_sync(
     csv_path: Path, meta_path: Path
 ) -> tuple[bytes, dict[str, Any]]:
-    """Synchronous helper for :meth:`EibiClient.load_cache`.
+    """Synchronous helper for :meth:`EiBiProvider.load_cache`.
 
     Reads the CSV bytes and (optionally) the JSON meta sidecar in a
     single worker-thread hop, so the event loop is not blocked while
@@ -530,7 +533,8 @@ class EiBiProvider:
                 raw = await asyncio.to_thread(_download_url, url2)
                 season = prev_season
             except (URLError, OSError) as exc2:
-                return {"error": str(exc2), "status": "fetch_failed"}
+                logger.error("eibi: fallback fetch failed: %s", exc2)
+                return {"error": "eibi_fetch_failed", "status": "fetch_failed"}
 
         # Cache to disk
         cache_dir = self._get_cache_dir()

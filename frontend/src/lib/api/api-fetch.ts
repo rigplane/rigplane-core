@@ -1,7 +1,7 @@
 /**
  * REST seam (C4): every `/api/v1/...` call goes through `apiFetch`.
  *
- * Core mutations carry the current controller credential. Acquisition and
+ * Remote Core mutations carry the current controller credential. Acquisition and
  * release supply their own lifecycle headers in ControllerClient.
  *
  * Lives in `lib/api/` (a peer of `lib/transport/`) rather than in the
@@ -11,7 +11,7 @@
 import { controllerClient } from '../transport/controller-client';
 
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  if (path.startsWith('/api/v1/') && path !== '/api/v1/controller'
+  if (controllerClient.remote && path.startsWith('/api/v1/') && path !== '/api/v1/controller'
     && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(init?.method?.toUpperCase() ?? 'GET')) {
     const credential = controllerClient.headers();
     if (Object.keys(credential).length > 0) {
