@@ -36,6 +36,7 @@ WIRE = json.loads(
 def test_closed_producer_vocabulary_includes_reserved_radio_refusal() -> None:
     from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
 
+    assert WIRE["codes"] == [reason.value for reason in ManagedTxRefusalReason]
     assert {reason.value for reason in ManagedTxRefusalReason} == {
         "tx_held_by_other",
         "release_in_progress",
