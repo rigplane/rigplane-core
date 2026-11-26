@@ -2,6 +2,7 @@
   import { onDestroy, type Snippet } from 'svelte';
   import { ControlButton, HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import {
     bindChoiceInstrument, bindToggleInstrument, usable as fieldUsable,
@@ -73,16 +74,16 @@
   const notchTogglePending = (mode: 'manual' | 'auto'): boolean =>
     pendingNotch === mode || (pendingNotch === 'off' && notchBehavior.isSelected(mode));
   const nrSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: dsp?.nrActive, label: 'NR',
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.nrActive), field: dsp?.nrActive, label: 'NR',
     requested: requested('nrActive'), invoke: (next) => onToggle?.('nrActive', next),
   }));
   const nbSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: dsp?.nbActive, label: 'NB',
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.nbActive), field: dsp?.nbActive, label: 'NB',
     requested: requested('nbActive'), invoke: (next) => onToggle?.('nbActive', next),
   }));
   const notchSeat = createChoiceRendererSeat<DspFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: dsp?.notchMode, label: 'Notch mode',
-    options: DSP_NOTCH_MODES.map(value => ({ value, label: value })),
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.notchMode), field: dsp?.notchMode, label: 'Notch mode',
+    options: DSP_NOTCH_MODES.map(value => ({ value, label: value, disabledReason: disabledFieldReasonText(dsp?.notchMode) })),
     requested: requestedNotch(),
     invoke: (mode) => onNotchModeChange?.(mode as DspNotchMode),
   }));
@@ -96,11 +97,11 @@
     };
   };
   const manualNotchSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: notchToggleField('manual'), label: 'NOTCH',
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.notchMode), field: notchToggleField('manual'), label: 'NOTCH',
     invoke: (next) => onNotchModeChange?.(next ? 'manual' : 'off'),
   }));
   const autoNotchSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: notchToggleField('auto'), label: 'A-NOTCH',
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.notchMode), field: notchToggleField('auto'), label: 'A-NOTCH',
     invoke: (next) => onNotchModeChange?.(next ? 'auto' : 'off'),
   }));
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -157,8 +158,8 @@
     notchBehavior.invoke(notchBehavior.isSelected(mode) ? 'off' : mode);
   }
   const agcSeat = createChoiceRendererSeat<DspFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: dsp?.agcMode, label: 'AGC mode',
-    options: agcOptions.map(option => ({ value: option.value, label: option.label })),
+    context: rendererContext ?? null, title: disabledFieldReasonText(dsp?.agcMode), field: dsp?.agcMode, label: 'AGC mode',
+    options: agcOptions.map(option => ({ value: option.value, label: option.label, disabledReason: disabledFieldReasonText(dsp?.agcMode) })),
     ...(pendingAgcMode === null ? {} : {
       requested: { kind: 'requested-target' as const, target: pendingAgcMode },
     }),
@@ -177,6 +178,8 @@
     {@const pending = pendingOf(field)}
     {@const behavior = field === 'nrActive' ? nrBehavior : nbBehavior}
     {@const id = `${pendingId}-${field}`}
+    {@const reasonText = disabledFieldReasonText(current)}
+    {@const reasonId = `${id}-reason`}
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
         seat={field === 'nrActive' ? nrSeat : nbSeat} renderer={finiteAppearance.toggle}
@@ -191,11 +194,13 @@
       <button
         type="button" class="dsp-toggle" data-testid={`dsp-${field}`} data-field={field}
         data-disabled-reason={usable(field) ? undefined : 'field-not-observed'}
+        title={disabledFieldReasonText(current)}
         aria-pressed={behavior.confirmed}
         data-pending-status={pending !== null ? 'pending' : 'confirmed'}
-        aria-describedby={pending !== null ? id : undefined}
+        aria-describedby={[pending !== null ? id : '', reasonText ? reasonId : ''].filter(Boolean).join(' ') || undefined}
         disabled={!behavior.available} onclick={() => behavior.invoke()}
       >{label}</button>
+      {#if reasonText}<span id={reasonId} class="sr-only">{reasonText}</span>{/if}
       {#if pending !== null}<span {id} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
     {/if}
   {/if}
@@ -231,7 +236,7 @@
           aria-pressed={pressed} disabled={!available}
           data-pending-status={pending ? 'pending' : 'confirmed'}
           aria-describedby={pending ? id : undefined}
-          title={`${label} — click to toggle; hold for settings`}
+          title={disabledFieldReasonText(current) ?? `${label} — click to toggle; hold for settings`}
           onclick={() => kind === 'notch' ? compactNotch('manual') : compactToggle(field)}>{label}</button>
         {#if pending}<span {id} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>{/if}
       {/if}
@@ -258,6 +263,7 @@
       />{/key}{/key}
     {:else}
       <button type="button" class="dsp-toggle" data-testid="dsp-compact-autoNotch"
+        title={disabledFieldReasonText(dsp.notchMode)}
         aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected('auto')}
         disabled={!notchBehavior.available}
         data-pending-status={pending ? 'pending' : 'confirmed'}
@@ -276,6 +282,7 @@
       />{/key}{/key}
     {:else}
       <button type="button" class="dsp-toggle" data-testid={`dsp-${mode}Notch`}
+        title={disabledFieldReasonText(dsp.notchMode)}
         aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
         disabled={!notchBehavior.available}
         onclick={() => notchBehavior.invoke(notchBehavior.isSelected(mode) ? 'off' : mode)}>{label}</button>
@@ -301,6 +308,7 @@
         aria-describedby={pendingNotch !== null ? notchPendingId : undefined}>
         {#each DSP_NOTCH_MODES as mode (mode)}
           <button type="button" class="dsp-choice" data-testid={`dsp-notchMode-${mode}`}
+            title={disabledFieldReasonText(dsp.notchMode)}
             aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
             data-pending={pendingNotch === mode}
             disabled={!notchBehavior.available} onclick={() => notchBehavior.invoke(mode)}>{mode}</button>
@@ -321,6 +329,7 @@
     <div class="agc-key">
       <ControlButton surface="hardware" indicatorStyle="edge-left" indicatorColor="cyan"
         active={agcBehavior.isSelected(option.value)} disabled={!agcBehavior.available}
+        title={disabledFieldReasonText(dsp?.agcMode)}
         data={{ testid: `dsp-agcMode-${option.value}` }}
         role="radio" ariaChecked={agcBehavior.isSelected(option.value)}
         armed={isArmed} describedBy={isArmed ? armedId : undefined}

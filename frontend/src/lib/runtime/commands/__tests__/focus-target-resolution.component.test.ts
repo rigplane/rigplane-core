@@ -53,7 +53,8 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
 }));
-vi.mock('$lib/state/field-status', () => ({
+vi.mock('$lib/state/field-status', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/state/field-status')>(),
   getFieldStatus: vi.fn(() => undefined),
   isFieldAvailable: vi.fn(() => false),
 }));

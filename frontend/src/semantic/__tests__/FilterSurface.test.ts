@@ -158,6 +158,25 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
   };
 }
 
+describe('PBT held-reading explanations (MOR-4829)', () => {
+  it.each(['pbtInner', 'pbtOuter'] as const)('%s keeps freshness invisible without hiding a producer refusal', (field) => {
+    for (const message of [undefined, null, '', '  ', 'The radio refused this PBT reading.']) {
+      const view = base();
+      view.filterPassband![field] = {
+        reading: { status: 'unknown' },
+        availability: { structural: true, operational: false, message },
+        display: { state: 'stale', value: 100 },
+      };
+      withSurface(view, (s) => {
+        const input = s.input(`filter-${field}`)!;
+        expect(input).not.toBeNull();
+        expect(input.disabled).toBe(true);
+        expect(input.getAttribute('title')).toBe(message?.trim() ? message : null);
+      });
+    }
+  });
+});
+
 describe('hosted Mode and Filter placement', () => {
   it('renders grouped and independent Mode/Filter once and preserves every residual owner once', () => {
     for (const presentation of ['grouped', 'independent'] as const) {
