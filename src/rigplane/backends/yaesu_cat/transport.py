@@ -42,6 +42,7 @@ from typing import Any
 
 from ...core._optional_deps import _require_pyserial_asyncio
 from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
+from ...core.serial_health import SerialLinkHealth
 from ...core.serial_open import open_serial_port
 
 __all__ = [
@@ -213,6 +214,7 @@ class YaesuCatTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
+        self._link_health = SerialLinkHealth()
         self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
@@ -226,7 +228,7 @@ class YaesuCatTransport:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self._connected and not self._link_health.io_failed
 
     @property
     def baudrate(self) -> int:
@@ -248,7 +250,9 @@ class YaesuCatTransport:
     async def connect(self) -> None:
         """Open serial connection."""
         if self._connected:
-            return
+            if not self._link_health.io_failed:
+                return
+            await self.close()
         self.last_valid_frame_monotonic = None
 
         try:
@@ -269,6 +273,7 @@ class YaesuCatTransport:
                 stopbits=1,
             )
             self._connected = True
+            self._link_health.record_open()
             self._stats.record_port_open()
             logger.info("CAT serial port opened: %s", self._device)
         except Exception as exc:
@@ -384,12 +389,15 @@ class YaesuCatTransport:
 
         encoded = command.encode("ascii")
         self._require_write_currency(is_current)
+        writer = self._writer
         try:
-            self._writer.write(encoded)
+            writer.write(encoded)
             if on_committed is not None:
                 on_committed()
-            await self._writer.drain()
+            await writer.drain()
         except Exception as exc:
+            if self._writer is writer:
+                self._link_health.record_failure()
             self._stats.record_error(f"write failed: {exc}")
             raise CatTransportError(f"Write failed: {exc}") from exc
 
@@ -413,9 +421,10 @@ class YaesuCatTransport:
         if timeout is None:
             timeout = self._timeout
 
+        reader = self._reader
         try:
             line_bytes = await asyncio.wait_for(
-                self._reader.readuntil(b";"),
+                reader.readuntil(b";"),
                 timeout=timeout,
             )
             # Classify before decoding: a byte >= 0x80 would otherwise raise
@@ -432,6 +441,8 @@ class YaesuCatTransport:
         except CatGarbledFrameError:
             raise
         except Exception as exc:
+            if self._reader is reader:
+                self._link_health.record_failure()
             self._stats.record_error(f"read failed: {exc}")
             raise CatTransportError(f"Read failed: {exc}") from exc
 
@@ -503,8 +514,11 @@ class YaesuCatTransport:
         return drained
 
     def _maybe_reconnect_needed(self) -> bool:
-        """Check if consecutive errors warrant a reconnect."""
-        return self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
+        """Retry failed I/O or the existing consecutive-error threshold."""
+        return (
+            self._link_health.io_failed
+            or self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
+        )
 
     # ── Public API (all acquire exchange gate) ────────────────────────
 
@@ -654,6 +668,8 @@ class YaesuCatTransport:
                     continue
 
                 # ── Match! ──
+                if self._writer is writer and self._stats.reconnects == reconnects:
+                    self._link_health.record_response()
                 self._stats.record_success()
                 return CatQueryResponse(response, response_is_current)
 

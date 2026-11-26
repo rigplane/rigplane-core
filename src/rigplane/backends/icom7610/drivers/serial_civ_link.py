@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....core.exceptions import CommandError
+from ....core.serial_health import SerialLinkHealth
 from ....core.serial_open import open_serial_port
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,7 @@ class SerialCivLink:
         self._writer: Any | None = None
         self._connected = False
         self._healthy = False
+        self._link_health = SerialLinkHealth()
         self._max_write_queue = max_write_queue
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
         self._receive_generation = 0
@@ -211,17 +213,17 @@ class SerialCivLink:
     @property
     def connected(self) -> bool:
         """Whether serial transport is currently connected."""
-        return self._connected
+        return self._connected and not self._link_health.io_failed
 
     @property
     def healthy(self) -> bool:
         """Whether I/O path is currently healthy."""
-        return self._healthy
+        return self._healthy and not self._link_health.io_failed
 
     @property
     def ready(self) -> bool:
         """Readiness signal suitable for higher-level radio_ready logic."""
-        return self._connected and self._healthy
+        return self.connected and self.healthy
 
     def set_device(self, device: str) -> None:
         """Rebind this link to a different device node path (MOR-1453).
@@ -239,8 +241,10 @@ class SerialCivLink:
 
     async def connect(self) -> None:
         """Open serial CI-V transport."""
-        if self._connected:
+        if self._connected and not self._link_health.io_failed:
             return
+        if self._writer is not None:
+            await self.disconnect()
         if self._require_optional_deps:
             self._ensure_serial_dependencies()
 
@@ -253,6 +257,7 @@ class SerialCivLink:
         self._writer = writer
         self._connected = True
         self._healthy = True
+        self._link_health.record_open()
         self._writer_task = asyncio.create_task(
             self._writer_loop(self._write_queue, writer), name="serial-civ-writer"
         )
@@ -510,6 +515,7 @@ class SerialCivLink:
             if chunk is None:
                 return None
             for parsed in self._codec.feed(chunk):
+                self._link_health.record_response()
                 self._frames.put_nowait(parsed)
 
     async def _read_once(self) -> bytes | None:
@@ -521,11 +527,17 @@ class SerialCivLink:
         try:
             chunk = await reader.read(self._read_chunk_size)
         except (OSError, asyncio.IncompleteReadError) as exc:
+            if self._reader is not reader:
+                return b""
             logger.warning("Recoverable serial read error: %s", exc)
             self._healthy = False
+            self._link_health.record_failure()
             await asyncio.sleep(0.5)  # backoff to prevent log/CPU flood
             return b""
         except Exception as exc:
+            if self._reader is not reader:
+                return b""
+            self._link_health.record_failure()
             # Catch pyserial SerialException ("device reports readiness...")
             # which is not a subclass of OSError.
             if "SerialException" in type(exc).__name__:
@@ -540,10 +552,13 @@ class SerialCivLink:
             self._healthy = False
             return None
 
+        if self._reader is not reader:
+            return b""
         if chunk == b"":
             # EOF / stream closed by peer.
             self._connected = False
             self._healthy = False
+            self._link_health.record_failure()
             return None
 
         self._healthy = True
@@ -595,6 +610,7 @@ class SerialCivLink:
                     ):
                         return
                     self._healthy = False
+                    self._link_health.record_failure()
                     await asyncio.sleep(0)
                 except Exception as exc:
                     if request is not None and not request.result.done():
@@ -603,6 +619,7 @@ class SerialCivLink:
                     if self._write_session_is_current(queue, writer):
                         self._connected = False
                         self._healthy = False
+                        self._link_health.record_failure()
                     return
                 else:
                     if not self._write_session_is_current(queue, writer) or (

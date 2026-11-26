@@ -657,14 +657,6 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_runtime._notify_change("connection_facts_changed", {})
         await self._stop_civ_data_watchdog()
         await self._stop_serial_audio_driver()
-        if (
-            self._conn_state != RadioConnectionState.CONNECTED
-            and not self._serial_session.connected
-        ):
-            self._conn_state = RadioConnectionState.DISCONNECTED
-            self._civ_stream_ready = False
-            self._civ_recovering = False
-            return
         if self._conn_state != RadioConnectionState.CONNECTED:
             await self._stop_civ_worker()
             await self._stop_civ_rx_pump()

@@ -993,9 +993,20 @@ def classify_radio_health(
         }
 
     connected = _bool_attr(radio, "connected")
-    ready = radio_ready(radio)
+    control_connected = _bool_attr(radio, "control_connected", default=True)
+    ready = radio_ready(radio) and control_connected
     conn_state = _conn_state_value(radio)
     if conn_state in {"connecting", "reconnecting"}:
+        radio_link = "reconnecting"
+    elif not control_connected and (
+        connected
+        or conn_state == "connected"
+        or (
+            conn_state is None
+            and getattr(radio, "connection_identity", None) is not None
+            and _serial_link_loss_evidence(radio)
+        )
+    ):
         radio_link = "reconnecting"
     elif connected or conn_state == "connected":
         radio_link = "connected"
