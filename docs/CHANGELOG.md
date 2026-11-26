@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1rc3] — 2026-11-26
+
+Third release candidate of 3.3.1: 3.3.1rc2 plus three FTX-1 fixes cherry-picked from main (nothing else).
+
+### Fixed
+
+- An FTX-1 in CW or RTTY mode could not start the station: the radio refuses the mic gain read there, and Core treated that one optional read as fatal and exited, so the app restarted it over and over. A radio that refuses an optional read now only marks that control unavailable (with the reason shown in the status bar and a diagnostic entry), reads it again later, and starts normally; frequency and mode still stop a start when they cannot be read. (MOR-4819)
+- FTX-1 controls were disabled under a false "Radio not responding: controls are paused" banner while the radio answered normally: the shared Yaesu radio now reports its CAT link as connected. (MOR-4819)
+- Starting the station with the radio's USB cable out gave up after about 75 seconds instead of waiting: the Yaesu radio now reports the standard "serial port not found" diagnosis, so the app keeps waiting and recovers when the port returns. (MOR-4752)
+
 ## [3.3.1rc2] — 2026-11-25
 
 Second release candidate of 3.3.1: 3.3.1rc1 plus the rigctl channel over the Tower peer, cherry-picked from main (nothing else).
