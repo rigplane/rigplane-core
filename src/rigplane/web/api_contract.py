@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final, Literal, NotRequired, TypedDict
 
+from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
+
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
 
@@ -200,6 +202,20 @@ class ManagedTransmitDocument(TypedDict):
     sampledAt: str
     managedTransmit: ManagedTransmitBlockRecord
     txObservation: TxObservationRecord
+
+
+class ManagedTransmitCommandReply(TypedDict):
+    """Managed command admission body; rejected replies add ``code``.
+
+    The producer vocabulary is ``ManagedTxRefusalReason``. Receivers must
+    tolerate unknown codes, display a generic refusal, and retain the raw
+    code for support diagnostics. Existing ``result`` values are unchanged.
+    """
+
+    ok: bool
+    operation: Literal["transmit_on", "force_off"]
+    result: Literal["accepted", "pending", "rejected"]
+    code: NotRequired[ManagedTxRefusalReason]
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
@@ -412,6 +428,7 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
         "required": ("ok", "operation", "result"),
         # HTTP 202 pending retains force_off debt until a provider rearms.
         "result_values": ("accepted", "pending", "rejected"),
+        "optional": ("code",),
     },
     "/api/v1/managed-transmit/tot": {
         "required": (

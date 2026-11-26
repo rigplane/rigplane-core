@@ -27,6 +27,7 @@ __all__ = [
     "CommandQueue",
     "CommandQueueEntry",
     "LEGACY_COMMAND_NAMES",
+    "POSITIVE_TX_ADMISSION_REJECTED",
     "execute_positive_tx_queue_entry",
     "validate_command_queue_entry_currency",
     "canonicalize_level_command",
@@ -1174,6 +1175,9 @@ def validate_command_queue_entry_currency(
         entry.controller_ticket.authority.validate(entry.controller_ticket)
 
 
+POSITIVE_TX_ADMISSION_REJECTED = "positive TX admission was rejected"
+
+
 async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
     """Release one pre-registered positive transition and join its wire result."""
     ready, submission = entry.positive_tx_ready, entry.positive_tx_submission
@@ -1193,7 +1197,7 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
         raise CommandError("positive TX admission was revoked") from exc
     outcome = getattr(receipt, "outcome", None)
     if getattr(outcome, "value", outcome) != "accepted":
-        raise CommandError("positive TX admission was rejected")
+        raise CommandError(POSITIVE_TX_ADMISSION_REJECTED)
     await receipt.wait_settlement()
 
 

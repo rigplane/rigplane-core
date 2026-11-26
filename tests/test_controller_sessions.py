@@ -289,7 +289,10 @@ async def test_http_transmit_on_is_owned_by_the_session(station, monkeypatch) ->
     assert (await request(server, "POST", path, on)).status == 409
     assert (await request(server, "POST", path, on, key=a)).status == 202
     stale = await request(server, "POST", path, on, key="0" * 64)
-    assert (stale.status, stale.payload) == (403, {"error": "controller_invalid"})
+    assert (stale.status, stale.payload) == (
+        403,
+        {"error": "controller_invalid", "code": "controller_refused"},
+    )
     assert managed.tx_holder_nowait() is not None
     released = await request(server, "DELETE", "/api/v1/controller", key=a)
     assert released.status == 200
@@ -542,7 +545,10 @@ async def test_http_transmit_on_for_a_session_ended_mid_request_is_forbidden(
         {"operation": "transmit_on"},
         key=key,
     )
-    assert (response.status, response.payload) == (403, {"error": "controller_invalid"})
+    assert (response.status, response.payload) == (
+        403,
+        {"error": "controller_invalid", "code": "controller_refused"},
+    )
 
 
 def test_ws_caps_keep_the_control_channel_of_a_sessionless_ptt_holder() -> None:

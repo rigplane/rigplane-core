@@ -20,6 +20,23 @@ class ManagedTxOutcome(StrEnum):
     STALE = "stale"
 
 
+class ManagedTxRefusalReason(StrEnum):
+    """Closed producer vocabulary for managed-TX HTTP/WS refusal ``code``.
+
+    Receivers must tolerate unknown codes: show a generic refusal and retain
+    the original code in support diagnostics. ``radio_refused`` is reserved
+    for a radio refusal; it must not be inferred from an admission rejection.
+    """
+
+    TX_HELD_BY_OTHER = "tx_held_by_other"
+    RELEASE_IN_PROGRESS = "release_in_progress"
+    AUTHORITY_UNAVAILABLE = "authority_unavailable"
+    READ_ONLY = "read_only"
+    CONTROLLER_REFUSED = "controller_refused"
+    RADIO_REFUSED = "radio_refused"
+    OTHER = "other"
+
+
 class ReleasePlan(StrEnum):
     PTT_RELEASE = "ptt_release"
     FORCE_RELEASE = "force_release"
@@ -185,6 +202,30 @@ class ManagedTxTransition:
     state: ManagedTxState
     outcome: ManagedTxOutcome
     effects: tuple[ManagedTxEffect, ...] = ()
+    reason: ManagedTxRefusalReason | None = None
+
+
+def submission_refusal_reason(
+    submission: object, owner: str | None = None
+) -> ManagedTxRefusalReason:
+    """Read this rejected receipt, without consulting mutable authority state."""
+    if getattr(submission, "outcome", None) is not ManagedTxOutcome.REJECTED:
+        return ManagedTxRefusalReason.OTHER
+    transition = getattr(submission, "transition", None)
+    reason = getattr(transition, "reason", None)
+    if isinstance(reason, ManagedTxRefusalReason):
+        return reason
+    if submission_refused_for_release_debt(submission):
+        return ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+    intent = getattr(getattr(transition, "state", None), "intent", None)
+    owner_token = getattr(intent, "owner_token", None)
+    if (
+        getattr(intent, "kind", None) is ManagedTxIntentKind.PTT
+        and bool(owner_token)
+        and owner_token != owner
+    ):
+        return ManagedTxRefusalReason.TX_HELD_BY_OTHER
+    return ManagedTxRefusalReason.OTHER
 
 
 def submission_refused_for_release_debt(submission: object) -> bool:
@@ -291,7 +332,17 @@ def reduce_managed_tx(
         if state.intent == ManagedTxIntent.ptt(event.owner_token):
             return ManagedTxTransition(state, ManagedTxOutcome.ACCEPTED)
         if state.intent.kind is not ManagedTxIntentKind.RX or state.release_required:
-            return ManagedTxTransition(state, ManagedTxOutcome.REJECTED)
+            return ManagedTxTransition(
+                state,
+                ManagedTxOutcome.REJECTED,
+                reason=(
+                    ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                    if state.intent.kind is ManagedTxIntentKind.RX
+                    else ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                    if state.intent.kind is ManagedTxIntentKind.PTT
+                    else ManagedTxRefusalReason.OTHER
+                ),
+            )
         return _on(
             state,
             event,
@@ -303,7 +354,15 @@ def reduce_managed_tx(
         if state.intent.kind is ManagedTxIntentKind.TRANSMIT:
             return ManagedTxTransition(state, ManagedTxOutcome.ACCEPTED)
         if state.intent.kind is not ManagedTxIntentKind.RX or state.release_required:
-            return ManagedTxTransition(state, ManagedTxOutcome.REJECTED)
+            return ManagedTxTransition(
+                state,
+                ManagedTxOutcome.REJECTED,
+                reason=(
+                    ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                    if state.intent.kind is ManagedTxIntentKind.RX
+                    else ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                ),
+            )
         return _on(
             state,
             event,

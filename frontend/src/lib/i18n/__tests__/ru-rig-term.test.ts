@@ -15,6 +15,18 @@ const strings = Object.entries(ruRU as unknown as Record<string, unknown>).filte
 const BROADCAST_ALLOWED = new Set<string>();
 
 describe('ru-RU glossary: the rig is радио', () => {
+  it.each([
+    'core.toast.txHeldByOther',
+    'core.toast.txReleaseInProgress',
+    'core.toast.txAuthorityUnavailable',
+    'core.toast.txControllerRefused',
+    'core.toast.txRadioRefused',
+  ])('keeps the MOR-4847 refusal value %s within the rig glossary', (key) => {
+    const value = (ruRU as unknown as Record<string, string>)[key];
+    expect(value).toBeTypeOf('string');
+    expect(value).not.toMatch(/радиостанц|трансивер/i);
+  });
+
   it('never calls the operator\'s rig a transceiver', () => {
     expect(strings.filter(([, v]) => /трансивер/i.test(v)).map(([k]) => k)).toEqual([]);
   });
@@ -32,6 +44,7 @@ describe('ru-RU glossary: the rig is радио', () => {
     expect(cat['core.statusbar.settings.tooltip']).toBe('Регулировки радио');
     expect(cat['core.statusbar.indicator.radio']).toBe('Радио ↔ Сервер: {state}');
     expect(cat['core.toast.radioConnected']).toBe('Радио подключено');
+    expect(cat['core.toast.txRadioRefused']).toBe('Радио отказалось перейти на передачу.');
     expect(cat['core.disabledReason.missing']).toBe('Не поддерживается этим радио');
   });
 });
