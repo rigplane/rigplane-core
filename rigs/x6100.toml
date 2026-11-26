@@ -198,6 +198,7 @@ unknown = ["global.meters.swr"]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
+entries = { "CW-R" = { hamlib = "CWR" } }
 # No [data_mode].modes declaration: no sourced fact for which X6100 modes
 # carry DATA, so it stays undeclared and the runtime keeps the current
 # DATA flag on a mode change (MOR-4036 undeclared fallback).

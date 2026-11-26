@@ -447,6 +447,15 @@ codes = [
     "B", "C", "D", "E",
 ]
 
+[modes.entries]
+"CW-U" = { hamlib = "CW" }
+"CW-L" = { hamlib = "CWR" }
+"RTTY-L" = { hamlib = "RTTY" }
+"RTTY-U" = { hamlib = "RTTYR" }
+"DATA-U" = { hamlib = "PKTUSB", data_partner = "USB" }
+"DATA-L" = { hamlib = "PKTLSB", data_partner = "LSB" }
+"DATA-FM" = { data_partner = "FM" }
+
 [filters]
 list = []
 encoding = "table_index"

@@ -612,15 +612,17 @@ class ApiResponseHead:
         """Parse a RES_HEAD payload (the consumer side of :meth:`encode`).
 
         Raises :class:`ApiPayloadError` on undecodable or non-object JSON,
-        a missing or non-integer ``status``, or ``headers`` that are not an
-        object of strings. Unknown fields are ignored (forward
-        compatibility); a missing ``headers`` reads as empty.
+        a missing or non-integer ``status``, or a missing or mistyped
+        ``headers`` — the wire contract requires the ``headers`` key, as
+        the browser-side contract decoder enforces it. Unknown fields are
+        ignored (forward compatibility); a present-but-empty ``headers``
+        stays valid.
         """
         obj = _json_object(payload, "response head")
         status = obj.get("status")
         if type(status) is not int:
             raise ApiPayloadError("api response head 'status' must be an integer")
-        headers_raw = obj.get("headers", {})
+        headers_raw = obj.get("headers")
         if not isinstance(headers_raw, dict):
             raise ApiPayloadError("api response head 'headers' must be an object")
         headers: dict[str, str] = {}

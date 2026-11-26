@@ -22,31 +22,30 @@ import yaml
 
 WORKFLOW_DIR = Path(".github/workflows")
 
-# Label sets verified on org runners 2026-10-31 (infra-control MOR-3875).
-# The arch-neutral build set verified 2026-11-20 through the actions/runners
-# API: every build runner (mini-server-build-core-1..3, mm-build-core-1 on
-# ARM64; nsu-build-core-1..3, gtr7-build-core-1 on X64) carries
-# self-hosted,Linux,build in addition to its architecture label.
-# The reserved merge-queue lane (MOR-4097, infra-control): the four X64 queue
-# runners carry self-hosted,Linux,X64,queue; the ARM64 queue runners carry
-# self-hosted,Linux,ARM64,queue-arm64 (mm-queue-core-1 without queue,
-# mini-server-queue-core-1..3 with it). None carries build. quick.yml workers
-# request the arch-neutral queue set for merge_group runs; the visual e2e leg
-# requests the ARM64 queue-arm64 set for every event, so arch-neutral build
-# jobs cannot starve it.
-APPROVED_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
+# MOR-4789 dispatch inventory (2026-11-25): the reachable scheme pools are
+# Linux ARM64 light and heavy. Heavy jobs select the public-allowing group
+# explicitly; labels alone do not establish the public repository trust boundary.
+HEAVY_LABELS = frozenset({"self-hosted", "linux", "arm64", "heavy"})
+SCHEME_LABEL_SETS = frozenset(
+    {frozenset({"self-hosted", "linux", "arm64", "light"}), HEAVY_LABELS}
+)
+
+# Transitional exceptions: required-check/queue reservations, build selectors
+# (including x64, unavailable in the org pool), and physical bench/platform roles.
+# Release/publishing selectors remain unchanged in this migration.
+LEGACY_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
     {
-        frozenset({"self-hosted", "Linux", "ARM64", "light"}),
-        frozenset({"self-hosted", "Linux", "ARM64", "gate"}),
-        frozenset({"self-hosted", "Linux", "ARM64", "build"}),
-        frozenset({"self-hosted", "Linux", "X64", "build"}),
-        frozenset({"self-hosted", "Linux", "build"}),
-        frozenset({"self-hosted", "Linux", "ARM64", "queue-arm64"}),
-        frozenset({"self-hosted", "Linux", "queue"}),
-        frozenset({"self-hosted", "macOS", "ARM64", "bench"}),
-        frozenset({"self-hosted", "macOS", "ARM64", "platform"}),
+        frozenset({"self-hosted", "linux", "arm64", "gate"}),
+        frozenset({"self-hosted", "linux", "arm64", "build"}),
+        frozenset({"self-hosted", "linux", "x64", "build"}),
+        frozenset({"self-hosted", "linux", "build"}),
+        frozenset({"self-hosted", "linux", "arm64", "queue-arm64"}),
+        frozenset({"self-hosted", "linux", "queue"}),
+        frozenset({"self-hosted", "macos", "arm64", "bench"}),
+        frozenset({"self-hosted", "macos", "arm64", "platform"}),
     }
 )
+APPROVED_LABEL_SETS = SCHEME_LABEL_SETS | LEGACY_LABEL_SETS
 
 HOSTED_TOKEN = re.compile(
     r"(^ubuntu|^macos|^windows|-latest$|"
@@ -93,17 +92,29 @@ def _hosted_tokens(labels: list[str]) -> list[str]:
 
 
 def _check_static_labels(
-    labels: list[str], *, path: str, line: int, job: str
+    labels: list[str], *, path: str, line: int, job: str, group: str | None = None
 ) -> list[Finding]:
-    label_set = frozenset(labels)
+    label_set = frozenset(label.lower() for label in labels)
     if label_set in APPROVED_LABEL_SETS:
+        if (label_set == HEAVY_LABELS and group != "rigplane-ci") or (
+            group is not None and (group != "rigplane-ci" or label_set != HEAVY_LABELS)
+        ):
+            return [
+                Finding(
+                    path,
+                    line,
+                    job,
+                    "runs-on group/labels are not a verified public pool; "
+                    "heavy requires group: rigplane-ci",
+                )
+            ]
         return []
     findings: list[Finding] = []
     if "self-hosted" not in label_set:
         findings.append(
             Finding(path, line, job, f"runs-on {labels!r} omits the self-hosted label")
         )
-    hosted = _hosted_tokens(labels)
+    hosted = _hosted_tokens(sorted(label_set))
     if hosted:
         findings.append(
             Finding(
@@ -134,7 +145,7 @@ def _runs_on_labels(node: yaml.Node) -> list[str] | None:
         return None
     if isinstance(node, yaml.MappingNode):
         found = _mapping_get(node, "labels")
-        if found is not None and not _mapping_get(node, "group"):
+        if found is not None:
             return _runs_on_labels(found[1])
     return None
 
@@ -151,12 +162,27 @@ def _scan_job(
         return [Finding(path, key_node.start_mark.line + 1, job, "job has no runs-on")]
     runs_key, runs_value = runs_on
     line = runs_key.start_mark.line + 1
+    group = None
+    if isinstance(runs_value, yaml.MappingNode):
+        group_pair = _mapping_get(runs_value, "group")
+        if group_pair is not None:
+            group_node = group_pair[1]
+            if (
+                not isinstance(group_node, yaml.ScalarNode)
+                or group_node.value != "rigplane-ci"
+            ):
+                return [
+                    Finding(
+                        path, line, job, "runs-on group is not a verified public pool"
+                    )
+                ]
+            group = group_node.value
     labels = _runs_on_labels(runs_value)
     if labels is None or any("${{" in label or "$(" in label for label in labels):
         if _has_allowlist(lines, key_node.start_mark.line, job_node.end_mark.line):
             return []
         return [Finding(path, line, job, DYNAMIC_MESSAGE)]
-    return _check_static_labels(labels, path=path, line=line, job=job)
+    return _check_static_labels(labels, path=path, line=line, job=job, group=group)
 
 
 def _scan_file(path: Path) -> list[Finding]:

@@ -21,6 +21,7 @@ from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
     KNOWN_CAPABILITIES,
 )
+from rigplane.core.hamlib_modes import HAMLIB_MODE_MASKS
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -82,6 +83,7 @@ from rigplane.profiles import (
     KeyboardConfig,
     MemoryProfile,
     MeterCalibrationPoint,
+    ModeEntry,
     PowerWriteQuantum,
     RadioProfile,
     RuleSpec,
@@ -176,6 +178,61 @@ _CTCSS_CAPABILITIES = frozenset({"repeater_tone", "tsql", "sql_type"})
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
 # MOR-3679: only ``cw`` has a consumer; add a family when a consumer needs it.
 KNOWN_MODE_FAMILIES = frozenset({"cw"})
+
+
+def _parse_mode_entries(
+    filename: str, raw: object, modes: list[str]
+) -> dict[str, ModeEntry]:
+    where = f"{filename}: [modes].entries"
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{where} must be a table")
+    entries: dict[str, ModeEntry] = {}
+    partners: set[str] = set()
+    for native, attrs in raw.items():
+        if native not in modes or not isinstance(attrs, dict):
+            raise RigLoadError(
+                f"{where}.{native} must be a table for a mode in [modes].list"
+            )
+        hamlib = attrs.get("hamlib")
+        if hamlib is not None and (
+            not isinstance(hamlib, str) or hamlib not in HAMLIB_MODE_MASKS
+        ):
+            raise RigLoadError(
+                f"{where}.{native}.hamlib {hamlib!r} has no rigctld mask bit"
+            )
+        partner = attrs.get("data_partner")
+        if partner is not None:
+            if (
+                not isinstance(partner, str)
+                or partner not in modes
+                or partner == native
+            ):
+                raise RigLoadError(
+                    f"{where}.{native}.data_partner {partner!r} must name another mode in [modes].list"
+                )
+            if partner in partners:
+                raise RigLoadError(
+                    f"{where}: more than one DATA mode partners with {partner!r}"
+                )
+            partners.add(partner)
+        entries[native] = ModeEntry(hamlib=hamlib, data_partner=partner)
+
+    claimed: dict[str, str] = {}
+    for native in modes:
+        entry = entries.get(native)
+        name = (entry.hamlib if entry else None) or native
+        if name not in HAMLIB_MODE_MASKS:
+            continue
+        prior = claimed.setdefault(name, native)
+        if prior != native:
+            raise RigLoadError(
+                f"{where}: Hamlib mode {name!r} claimed by both {prior!r} and {native!r}"
+            )
+    for native in partners:
+        entry = entries.get(native)
+        if entry is not None and entry.data_partner is not None:
+            raise RigLoadError(f"{where}.{native}: a DATA partner must be a plain mode")
+    return entries
 
 
 def _parse_mode_families(
@@ -805,6 +862,7 @@ class RigConfig:
     default_baud: int
     capabilities: tuple[str, ...]
     modes: tuple[str, ...]
+    mode_entries: dict[str, ModeEntry] = field(default_factory=dict, kw_only=True)
     filters: tuple[str, ...]
     vfo_scheme: str
     vfo_readback: str
@@ -1093,6 +1151,7 @@ class RigConfig:
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
+            mode_entries=dict(self.mode_entries),
             mode_families=dict(self.mode_families),
             filters=tuple(self.filters),
             command_names=frozenset(
@@ -3344,6 +3403,9 @@ def load_rig(path: Path) -> RigConfig:
             raise RigLoadError(f"{filename}: [modes].codes entries must be unique")
         mode_codes = tuple(raw_mode_codes)
     mode_families = _parse_mode_families(filename, data["modes"].get("families"), modes)
+    mode_entries = _parse_mode_entries(
+        filename, data["modes"].get("entries", {}), modes
+    )
 
     # Validate [filters]
     filter_section = data["filters"]
@@ -3397,6 +3459,22 @@ def load_rig(path: Path) -> RigConfig:
             defaults_raw = raw_rule.get("defaults", [])
             table_raw = raw_rule.get("table", [])
             narrow_table_raw = raw_rule.get("narrow_table", [])
+            # MOR-4442: coerce nothing silently. A float, bool or string in
+            # ``narrow_table`` used to pass through ``int()`` (so ``1800.9``
+            # became ``1800`` and ``true`` became ``1``) and a scalar raised
+            # a raw TypeError; both are load errors naming the table. Falsy
+            # scalars are values too (``0``, ``false``, ``0.0`` and ``''``
+            # used to skip this check: the numbers died on iteration and the
+            # empty string loaded as an empty table), so the type check is
+            # unconditional; an empty list stays a valid empty narrow table.
+            if not isinstance(narrow_table_raw, list) or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in narrow_table_raw
+            ):
+                raise RigLoadError(
+                    f"{filename}: [filters.width.{mode_key}].narrow_table "
+                    "must be a list of integers"
+                )
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
                 narrow_table=tuple(int(v) for v in narrow_table_raw),
@@ -4276,6 +4354,7 @@ def load_rig(path: Path) -> RigConfig:
         default_baud=radio.get("default_baud", 19200),
         capabilities=capability_features,
         modes=tuple(modes),
+        mode_entries=mode_entries,
         mode_codes=mode_codes,
         mode_families=mode_families,
         filters=tuple(filters),

@@ -87,6 +87,7 @@ from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
+from rigplane.runtime.scope_session import ScopeSetting
 from rigplane.scope import ScopeFrame
 from rigplane.core.state_store import (
     FreshnessClock,
@@ -5870,6 +5871,30 @@ async def test_scope_waveform_mode_unchanged_emits_no_observation(
         await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
 
     assert apply_spy.call_count == 0
+
+
+@pytest.mark.parametrize("setting", ["span", "mode"])
+async def test_scope_waveform_restores_pre_ack_value(
+    radio: IcomRadio, monkeypatch: pytest.MonkeyPatch, setting: ScopeSetting
+) -> None:
+    presets = radio.profile.scope_span_presets_hz
+    previous = presets.index(100_000) if setting == "span" else 0
+    requested = presets.index(50_000) if setting == "span" else 1
+    waveform = _make_scope_waveform_frame(mode=0, end_hz=100_000)
+    rx = radio._civ_runtime
+    path = FieldPath.scope_control("display", setting)
+    ack = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFB))
+    monkeypatch.setattr(radio, "_send_civ_raw", AsyncMock(return_value=ack))
+
+    await rx._route_civ_frame(waveform, generation=radio._civ_epoch)
+    assert radio._state_store.snapshot().field(path).value == previous
+
+    await radio._write_scope_setting(setting, requested, receiver=0)
+    assert radio._state_store.snapshot().field(path).value == requested
+
+    # The front panel returned to the old setting before a frame carried the write.
+    await rx._route_civ_frame(waveform, generation=radio._civ_epoch)
+    assert radio._state_store.snapshot().field(path).value == previous
 
 
 async def test_scope_waveform_fixed_mode_emits_no_span_edge_or_fixed_edge(

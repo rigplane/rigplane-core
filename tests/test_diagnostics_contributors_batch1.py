@@ -249,6 +249,103 @@ def test_dependencies_includes_icom_lan(tmp_path: Path) -> None:
 # -------------------------------------------------------------------- config
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "db_password",
+        "proxy_pwd",
+        "passwd",
+        "client_secret",
+        "access_token",
+        "Bearer",
+        "signedEntitlementV1",
+        "SIGNATURE",
+        "credentials",
+        "api_key",
+        "api-key",
+        "apiKey",
+        "API KEY",
+        "private_key",
+        "privateKey",
+        "key",
+        "ssh_key",
+        "key_material",
+        "key_repeat",
+        "key_id",
+        "ptt_key",
+    ],
+)
+def test_config_masks_sensitive_key_variants(tmp_path: Path, key: str) -> None:
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "rig.toml").write_text(
+        f'{json.dumps(key)} = "synthetic-sensitive-value"\nport = 8080\n',
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    ConfigContributor().contribute(_make_ctx(config_dir=cfg_dir), out_dir)
+    text = (out_dir / "config-summary.json").read_text()
+    content = json.loads(text)["files"][0]["content"]
+    assert "synthetic-sensitive-value" not in text
+    assert content[key] == "<REDACTED>"
+    assert content["port"] == 8080
+
+
+def test_config_preserves_harmless_key_names(tmp_path: Path) -> None:
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    harmless = {
+        "listen": "127.0.0.1",
+        "port": 8080,
+        "log_level": "INFO",
+        "keyboard_layout": "US",
+        "monkey": "animal",
+        "hotkey": "F1",
+    }
+    (cfg_dir / "rig.toml").write_text(
+        "\n".join(f"{key} = {json.dumps(value)}" for key, value in harmless.items()),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    ConfigContributor().contribute(_make_ctx(config_dir=cfg_dir), out_dir)
+    content = json.loads((out_dir / "config-summary.json").read_text())["files"][0][
+        "content"
+    ]
+    assert content == harmless
+
+
+@pytest.mark.parametrize(
+    ("value", "masked"),
+    [
+        ("A" * 200, False),
+        ("A" * 201, True),
+        ("Ab0_" * 100, True),
+        ("Ab0-" * 100, True),
+        ("Ab0+" * 100, True),
+        ("Ab0/" * 100, True),
+        ("Ab0/" * 99 + "ZQ==", True),
+        ("Ab0_" * 100 + "=", True),
+        ("ordinary diagnostic prose " * 20, False),
+    ],
+)
+def test_config_encoded_value_guard(tmp_path: Path, value: str, masked: bool) -> None:
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "rig.toml").write_text(
+        f'description = {json.dumps(value)}\nlog_level = "INFO"\n', encoding="utf-8"
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    ConfigContributor().contribute(_make_ctx(config_dir=cfg_dir), out_dir)
+    content = json.loads((out_dir / "config-summary.json").read_text())["files"][0][
+        "content"
+    ]
+    assert content["description"] == ("<REDACTED>" if masked else value)
+    assert content["log_level"] == "INFO"
+
+
 def test_config_drops_secret_keys(tmp_path: Path) -> None:
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()

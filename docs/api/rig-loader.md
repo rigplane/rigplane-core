@@ -213,6 +213,11 @@ except RigLoadError as e:
 | `[modes].list` non-empty | `[modes].list must not be empty` |
 | `[modes].families` names only `cw`, each a non-empty list of strings (if present) | `[modes].families unknown family 'X'; known: ['cw']`, `[modes].families.cw must be a non-empty list of strings` |
 | `[modes].families` members are in `[modes].list`, each at most once | `[modes].families.cw names mode 'X' that is not in [modes].list`, `[modes].families.cw repeats mode 'X' (already in family 'cw')` |
+| `[modes].entries` a table keyed by mode names from `[modes].list` (if present) | `[modes].entries must be a table`, `[modes].entries.<mode> must be a table for a mode in [modes].list` |
+| `[modes].entries.<mode>.hamlib` names a mode with a rigctld mask bit | `[modes].entries.<mode>.hamlib 'X' has no rigctld mask bit` |
+| Effective Hamlib names unique across `[modes].list` (the `hamlib` override, else the native name) | `[modes].entries: Hamlib mode 'X' claimed by both 'A' and 'B'` |
+| `[modes].entries.<mode>.data_partner` names another mode in `[modes].list`, at most one DATA entry per plain mode | `[modes].entries.<mode>.data_partner 'X' must name another mode in [modes].list`, `[modes].entries: more than one DATA mode partners with 'X'` |
+| A DATA partner is a plain mode (no `data_partner` of its own) | `[modes].entries.<mode>: a DATA partner must be a plain mode` |
 | `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
 | `[cw_text]` keys known and typed (if present): `supported` bool, `max_length` and `memory_channel` positive integers, `memory_type` `"text"` or `"message"` | `[cw_text].<key> must be ...` / `[cw_text] unknown key '<key>'` |
 | `[cw_text].supported = true` only with a `send_cw` command the protocol can write (CI-V bytes on `civ`, a CAT write template on `yaesu_cat`) | `[cw_text].supported = true needs a send_cw command <protocol> can write` |

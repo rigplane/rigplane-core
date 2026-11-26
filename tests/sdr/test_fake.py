@@ -126,6 +126,30 @@ def test_block_metadata_and_setters() -> None:
     assert blocks[1].timestamp_s >= blocks[0].timestamp_s
 
 
+def test_slaved_source_with_unknown_center_suppresses_blocks() -> None:
+    facts = IqSourceFacts("slaved", center_offset_hz=8_000)
+    blocks: list[IqBlock] = []
+    source = FakeIqSource(facts=facts, block_size=32, seed=11)
+    source.on_block(blocks.append)
+    source.open()
+
+    # Centre 0 on a slaved source means "frequency unknown" (the
+    # controller records it via set_center_freq(0)); no block may be
+    # published with the bogus 0 Hz centre.
+    source.pump(2)
+    assert blocks == []
+
+    source.set_center_freq(14_082_000)
+    source.pump(2)
+    assert [block.center_freq_hz for block in blocks] == [14_082_000, 14_082_000]
+
+    source.set_center_freq(0)
+    source.pump(1)
+    assert len(blocks) == 2
+
+    source.close()
+
+
 def test_tone_at_configured_offset_is_fft_peak() -> None:
     blocks = _pump_blocks(
         sample_rate_hz=48_000,

@@ -71,6 +71,131 @@ async def test_pinned_window_span_covers_it_from_any_vfo_position(model, vfo_hz)
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_pinned_low_frequency_window_grants_coverage_clamped_at_zero(model):
+    """MOR-4566: a pinned window at the very bottom of the spectrum — every
+    edge a real frequency — selects a preset whose ±coverage reaches below
+    0 Hz. The grant is clamped at the spectrum floor instead of raising, and
+    the window stays covered. The radio itself stays VFO-centred: the
+    production writer (ScopeSession.set_center) never reads center_hz — it
+    writes mode=0 and the span index only — so the radio sweeps VFO ± preset
+    (−35…165 kHz here) while the grant reports 0…165 kHz. The midpoint the
+    assertion below pins is the value set_view passes, which the production
+    writer ignores."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    writer.frequency = 65_000
+    source = RadioScopeSource(profile, writer)
+    window = View(30_000, 100_000)
+    granted = await source.set_view(window)
+    assert granted.view == window
+    assert granted.coverage == Coverage(0, 165_000)
+    assert writer.writes[-1] == ((0 + 165_000) / 2, 100_000, 0)
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_center_frame_reaching_below_zero_is_clamped_and_out_of_range(model):
+    """MOR-4566 (review F1): the grant clamp admits the configuration
+    whose frames then raised the very ValueError it fixed. At VFO 65 kHz
+    with the ±100 kHz preset every CENTER frame sweeps −35…165 kHz (the
+    assembler synthesises center ± bandwidth for mode 0), and
+    Coverage(-35000, …) raised per frame. A sweep reaching below 0 Hz is
+    published clamped at the spectrum floor and marked out of range; the
+    bins below 0 Hz do not exist, so no pixels are published. The wire
+    form is fed through the real assembler: a direct
+    ``ScopeFrame(0, 0, 65_000, 100_000, …, False)`` would mean edges
+    65–100 kHz, a valid window that never raised.
+    """
+    from rigplane.core.types import bcd_encode
+    from rigplane.scope import ScopeAssembler
+
+    source = RadioScopeSource(
+        load_rig(Path("rigs") / f"{model}.toml").to_profile(), Writer()
+    )
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    payload = (
+        bytes([1, 1, 0])
+        + bcd_encode(65_000)
+        + bcd_encode(100_000)
+        + b"\x00"
+        + bytes(475)
+    )
+    frame = ScopeAssembler().feed(payload, 0)
+    assert frame is not None
+    assert (frame.start_freq_hz, frame.end_freq_hz) == (-35_000, 165_000)
+    source.feed_frame(frame)
+    assert frames[-1].coverage == Coverage(0.0, 165_000)
+    assert frames[-1].out_of_range
+    assert frames[-1].pixels is None
+    await source.stop()
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_out_of_range_center_frame_reaching_below_zero_is_clamped(model):
+    """MOR-4566 (review F1): an out-of-range CENTER frame carries
+    (center, bandwidth); at VFO 65 kHz with the ±100 kHz preset that is
+    (65000, 100000), whose edges reach −35 kHz. feed_frame must not raise:
+    the clamped 0…165 kHz coverage is published out of range.
+    """
+    source = RadioScopeSource(
+        load_rig(Path("rigs") / f"{model}.toml").to_profile(), Writer()
+    )
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    source.feed_frame(ScopeFrame(0, 0, 65_000, 100_000, b"", True))
+    assert frames[-1].coverage == Coverage(0.0, 165_000)
+    assert frames[-1].out_of_range
+    assert frames[-1].pixels is None
+    await source.stop()
+
+
+async def test_frame_fully_below_zero_is_dropped():
+    """MOR-4566 (review F1): a frame whose whole window sits below 0 Hz
+    has no physical content at all — it is dropped, never published."""
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    source.feed_frame(ScopeFrame(0, 1, -2_000, -1_000, bytes(475), False))
+    assert frames == []
+    await source.stop()
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_follow_view_reaching_below_zero_is_clamped_at_zero(model):
+    """MOR-4566 (review F1): a follow gesture whose half span exceeds the
+    VFO (VFO 65 kHz, follow span 250 kHz) resolves to a view clamped at
+    the spectrum floor instead of raising the same ValueError the pinned
+    window raised before MOR-4566."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    writer.frequency = 65_000
+    source = RadioScopeSource(profile, writer)
+    assert source.resolve_view(FollowView("vfo", 250_000)) == View(0.0, 190_000)
+
+
+async def test_scroll_c_sweep_extent_expansion_is_clamped_at_zero():
+    """MOR-4566 (review F1): the sweep-extent expansion (MOR-4452) of a
+    SCROLL-C window sitting on the spectrum floor expands around the
+    window's own centre, which can push the start below 0 Hz. The
+    expansion is clamped at 0 like the grant instead of raising in
+    Coverage."""
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    # A 98.5 kHz window at the floor sits within the 5% sweep-extent
+    # tolerance of the 100 kHz preset: it expands to ±50 kHz around its
+    # own centre of 49.25 kHz — start −750 Hz without the clamp.
+    source.feed_frame(ScopeFrame(0, 2, 0, 98_500, bytes(475), False))
+    assert frames[-1].coverage == Coverage(0.0, 99_250)
+    assert not frames[-1].out_of_range
+    await source.stop()
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
 async def test_profile_center_span_and_partial(model):
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     writer = Writer()

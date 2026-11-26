@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol, TypedDict
 
 from rigplane.core.exceptions import BackgroundSendDropped
 from rigplane.core.state_acquisition_policy import (
@@ -116,6 +116,9 @@ class DeclaredCommandDefect(RuntimeError):
         if frame:
             parts.append(f"frame {frame!r}")
         super().__init__(f"{'; '.join(parts)}: {detail}")
+
+
+DeclaredReadFailure = Literal["refused", "malformed", "timeout"]
 
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
@@ -561,6 +564,39 @@ class _ReadRefusal:
 
     count: int
     retry_at: float
+    failure: DeclaredCommandDefect | None = None
+    malformed: bool = False
+
+    def message(self, path: FieldPath) -> str:
+        name = path.name.replace("_", " ")
+        if self.malformed:
+            cause = f"The radio returned an invalid reply for {name}."
+        else:
+            cause = f"The radio refused to report {name}."
+        return (
+            f"{cause} The control is unavailable until the radio answers. "
+            "The app is still connected."
+        )
+
+    def diagnostic(self, path: FieldPath) -> ReadRefusalDiagnostic:
+        failure = self.failure
+        return {
+            "status": "unavailable",
+            "message": self.message(path),
+            "command": "" if failure is None else failure.command,
+            "frame": "" if failure is None else failure.frame,
+            "detail": "" if failure is None else failure.detail,
+        }
+
+
+class ReadRefusalDiagnostic(TypedDict):
+    """Wire evidence for an unavailable field in the runtime diagnostics."""
+
+    status: Literal["unavailable"]
+    message: str
+    command: str
+    frame: str
+    detail: str
 
 
 class AcquisitionScheduler:
@@ -591,6 +627,7 @@ class AcquisitionScheduler:
         "_prime_cursor",
         "_profile",
         "_refused_paths",
+        "_reported_read_failures",
         "_unanswered_paths",
         "_requests_by_key",
         "_startup_defect",
@@ -619,6 +656,7 @@ class AcquisitionScheduler:
         # MOR-4058: paths whose read the radio refused (NAK); any answer for
         # the path drops it.
         self._refused_paths: dict[FieldPath, _ReadRefusal] = {}
+        self._reported_read_failures: set[FieldPath] = set()
         # MOR-3856: paths whose read got no answer within its declared
         # window; any answer for the path drops it the same way.
         self._unanswered_paths: dict[FieldPath, _ReadRefusal] = {}
@@ -791,14 +829,20 @@ class AcquisitionScheduler:
         """Atomically bind one pending request flight to its dispatch seat."""
 
         # Another seat may complete this envelope while a drain awaits an
-        # earlier entry from the same per-pass snapshot.
-        key = _request_key(
-            request.paths[0],
-            acquisition_method=request.acquisition_method,
-            policy=request.policy,
+        # earlier entry from the same per-pass snapshot. The lookup is by
+        # request id, not by the key recomputed from ``paths[0]``: the
+        # dispatch view may narrow a mixed automatic request to its askable
+        # paths (MOR-4063), so the view's first path need not be the one
+        # the queued entry is stored under.
+        pending = next(
+            (
+                queued
+                for queued in self._requests_by_key.values()
+                if queued.id == request.id
+            ),
+            None,
         )
-        pending = self._requests_by_key.get(key)
-        if pending is None or pending.id != request.id:
+        if pending is None:
             return False
 
         existing = self._claims_by_request_id.get(request.id)
@@ -1168,10 +1212,18 @@ class AcquisitionScheduler:
         Requests a caller asked for by name (``NORMAL``/``COMMAND``/
         ``USER``) are never gated here. Requests re-queued by
         :meth:`resume_external_cat` pass through the same gate.
+
+        MOR-4063: a MIXED automatic request -- one refused or contradicted
+        path queued beside an eligible sibling -- is returned narrowed to
+        the paths that may be asked now, so the refused path is not sent
+        inside its retry delay while the sibling still goes out. The queued
+        request itself keeps every path (withheld, not deleted): once the
+        refusal's retry delay expires the path joins the dispatch again.
         """
 
+        now = self._clock.now()
         eligible = (
-            request
+            self._askable_view(request, now=now)
             for request in self._requests_by_key.values()
             if self.is_dispatchable(request)
         )
@@ -1258,6 +1310,31 @@ class AcquisitionScheduler:
             or self._unavailable_withheld(path, now)
             for path in request.paths
         )
+
+    def _askable_view(
+        self, request: AcquisitionRequest, *, now: float
+    ) -> AcquisitionRequest:
+        """The dispatch view of ``request``: its askable paths only (MOR-4063).
+
+        An automatic request queued with a sibling mix -- one path refused
+        or contradicted, one eligible -- is narrowed to the eligible paths
+        so the drain does not send the refused path inside its retry delay.
+        Requests a caller asked for by name keep every path they asked for;
+        the narrowing never applies to them. The id is kept, so the drain's
+        in-flight ledger, claims and dispatch records stay coherent.
+        """
+
+        if request.priority not in _AUTOMATIC_PRIORITIES:
+            return request
+        askable = tuple(
+            path
+            for path in request.paths
+            if self._availability.get(path, True) is not False
+            and not self._unavailable_withheld(path, now)
+        )
+        if not askable or askable == request.paths:
+            return request
+        return self._replace_request_paths(request, paths=askable)
 
     def due_requests(
         self,
@@ -1599,6 +1676,33 @@ class AcquisitionScheduler:
             return True
         return False
 
+    def record_declared_read_failure(
+        self, defect: DeclaredCommandDefect, *, reason: DeclaredReadFailure, now: float
+    ) -> None:
+        """Retain critical failures for startup and back off optional reads."""
+
+        critical = tuple(path for path in defect.paths if startup_critical_path(path))
+        optional = tuple(path for path in defect.paths if path not in critical)
+        if critical:
+            if optional:
+                self.record_startup_defect(
+                    DeclaredCommandDefect(
+                        label=defect.label,
+                        paths=critical,
+                        command=defect.command,
+                        frame=defect.frame,
+                        detail=defect.detail,
+                    )
+                )
+            else:
+                self.record_startup_defect(defect)
+        if reason == "timeout":
+            self.record_read_timeout(optional, now=now)
+        else:
+            self.record_read_refusal(
+                optional, now=now, failure=defect, malformed=reason == "malformed"
+            )
+
     def record_startup_defect(self, defect: DeclaredCommandDefect) -> None:
         """Keep the first declared-command defect a backend reports.
 
@@ -1821,6 +1925,14 @@ class AcquisitionScheduler:
 
         return frozenset(self._refused_paths)
 
+    def declared_read_refusals(self) -> dict[FieldPath, str]:
+        """Return the active declared-read failures for the public field status."""
+        return {
+            path: refusal.message(path)
+            for path, refusal in self._refused_paths.items()
+            if refusal.failure is not None
+        }
+
     def unanswered_paths(self) -> frozenset[FieldPath]:
         """Return the paths whose last read got no answer (MOR-3856)."""
 
@@ -1864,6 +1976,8 @@ class AcquisitionScheduler:
         paths: Iterable[FieldPath],
         *,
         now: float,
+        failure: DeclaredCommandDefect | None = None,
+        malformed: bool = False,
     ) -> None:
         """The radio answered a read of *paths* with a refusal (MOR-4058).
 
@@ -1888,8 +2002,19 @@ class AcquisitionScheduler:
             self._refused_paths[path] = _ReadRefusal(
                 count=self.consecutive_refusals(path) + 1,
                 retry_at=now + self._refusal_retry_seconds(path),
+                failure=failure,
+                malformed=malformed,
             )
-        if newly:
+            if failure is not None and path not in self._reported_read_failures:
+                self._reported_read_failures.add(path)
+                logger.warning(
+                    "acquisition: %s (%s, command %r, frame %r)",
+                    self._refused_paths[path].message(path),
+                    path,
+                    failure.command,
+                    failure.frame,
+                )
+        if newly and failure is None:
             logger.info(
                 "acquisition: the radio refused the read of %s; "
                 "treating it as answered (unavailable) until it answers",
@@ -1989,6 +2114,13 @@ class AcquisitionScheduler:
     def _refusal_withheld(self, path: FieldPath, now: float) -> bool:
         refusal = self._refused_paths.get(path)
         return refusal is not None and refusal.retry_at > now
+
+    def declared_read_deferred(
+        self, paths: tuple[FieldPath, ...], *, now: float
+    ) -> bool:
+        """Defer a lane read if all its outputs are inside their retry window."""
+
+        return bool(paths) and all(self._refusal_withheld(path, now) for path in paths)
 
     def _unavailable_withheld(self, path: FieldPath, now: float) -> bool:
         """Whether an automatic ask of *path* waits (MOR-4058/MOR-3856).
@@ -2139,6 +2271,10 @@ class AcquisitionScheduler:
             "deferredRequestCount": len(self._deferred),
             "failedRequestCount": self._failed_request_count,
             "failureCountByReason": dict(self._failure_count_by_reason),
+            "readRefusals": {
+                str(path): mark.diagnostic(path)
+                for path, mark in self._refused_paths.items()
+            },
             "cadenceByPath": cadence_by_path,
             "cadenceByGroup": cadence_by_group,
             "requestPressureByPriorityFamily": self._request_pressure(),

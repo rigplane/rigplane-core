@@ -94,6 +94,60 @@ def test_accepts_approved_light_pool(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
 
 
+@pytest.mark.parametrize(
+    "runs_on",
+    [
+        "runs-on: [self-hosted, linux, arm64, light]",
+        "runs-on: [SELF-HOSTED, LiNuX, ArM64, light]",
+        "runs-on:\n  group: rigplane-ci\n  labels: [self-hosted, linux, arm64, heavy]",
+        "runs-on:\n  group: rigplane-ci\n  labels: [self-hosted, Linux, ARM64, heavy]",
+    ],
+)
+def test_accepts_scheme_pools(tmp_path: Path, runs_on: str) -> None:
+    write_workflow(
+        tmp_path,
+        "scheme.yml",
+        f"""
+        jobs:
+          job:
+            {_indent(runs_on)}
+            steps:
+              - run: echo ok
+        """,
+    )
+    result = run_checker(tmp_path)
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "runs_on",
+    [
+        "runs-on: [self-hosted, linux, arm64, heavy]",
+        "runs-on:\n  group: private-persistent\n"
+        "  labels: [self-hosted, linux, arm64, heavy]",
+        "runs-on:\n  group: rigplane-ci\n  labels: [self-hosted, linux, x64, heavy]",
+        "runs-on:\n  group: rigplane-ci\n"
+        "  labels: [self-hosted, linux, arm64, heavy, docker]",
+        "runs-on:\n  group: rigplane-ci\n  labels: [self-hosted, linux, arm64, light]",
+    ],
+)
+def test_rejects_unverified_scheme_destinations(tmp_path: Path, runs_on: str) -> None:
+    write_workflow(
+        tmp_path,
+        "unverified.yml",
+        f"""
+        jobs:
+          job:
+            # runs-on-allowlist: a comment cannot waive a static pool mismatch.
+            {_indent(runs_on)}
+            steps:
+              - run: echo no
+        """,
+    )
+    result = run_checker(tmp_path)
+    assert result.returncode == 1
+
+
 def test_dynamic_runs_on_requires_allowlist_comment(tmp_path: Path) -> None:
     write_workflow(
         tmp_path,
@@ -142,6 +196,9 @@ def test_allowlisted_dynamic_runs_on_passes(tmp_path: Path) -> None:
         "[self-hosted, Linux, ARM64, queue-arm64]",
         "[self-hosted, Linux, queue]",
         "[self-hosted, macOS, ARM64, bench]",
+        "[self-hosted, linux, queue]",
+        "[self-hosted, linux, arm64, queue-arm64]",
+        "[self-hosted, macos, arm64, platform]",
     ],
 )
 def test_accepts_each_verified_pool(tmp_path: Path, labels: str) -> None:

@@ -197,6 +197,14 @@ class FilterWidthReading:
     radio_default: bool
 
 
+class CatReadParseError(CatParseError):
+    """A parse error with the actual CAT command that got the bad reply."""
+
+    def __init__(self, command: str, error: CatParseError) -> None:
+        self.command = command
+        super().__init__(error.template, error.response, error.reason)
+
+
 class YaesuCatRadio:
     """Radio backend for Yaesu FTX-1 (and compatible) transceivers.
 
@@ -352,6 +360,14 @@ class YaesuCatRadio:
         for name, code in zip(self._config.modes, self._config.mode_codes, strict=True):
             self._code_to_mode[code] = name
             self._mode_to_code[name] = code
+        self._plain_by_data_mode = {
+            name: entry.data_partner
+            for name, entry in self._config.mode_entries.items()
+            if entry.data_partner is not None
+        }
+        self._data_by_plain_mode = {
+            plain: data for data, plain in self._plain_by_data_mode.items()
+        }
 
         # MOR-561: poll-lane fields whose field-level CAT failure has already
         # been warned about once. Persists across poll cycles (the observation
@@ -445,16 +461,15 @@ class YaesuCatRadio:
                 await self._transport.connect()
             except (CatTransportError, OSError) as exc:
                 cause = exc if isinstance(exc, OSError) else exc.__cause__
-                if not isinstance(cause, OSError) or not serial_open_diagnostic(
-                    cause
-                ).startswith("serial_not_found"):
+                if not isinstance(cause, OSError):
                     raise
-                message = (
-                    f"Radio not connected, waiting for the port {self._device}: {exc}"
-                )
+                diagnostic = serial_open_diagnostic(cause)
+                if not diagnostic.startswith("serial_not_found"):
+                    raise
+                logger.debug("Waiting for CAT serial port %s: %s", self._device, exc)
                 if generation == self._identity_generation:
-                    self.last_error = message
-                raise RadioConnectionError(message) from cause
+                    self.last_error = diagnostic
+                raise RadioConnectionError(diagnostic) from cause
             if generation != self._identity_generation:
                 await self._transport.close()
                 return
@@ -548,6 +563,10 @@ class YaesuCatRadio:
         if not self._transport.connected:
             return False
         return self._identity_permits_commands()
+
+    @property
+    def control_connected(self) -> bool:
+        return self._transport.connected
 
     @property
     def radio_ready(self) -> bool:
@@ -1502,7 +1521,10 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no parse template")
 
         # Transport strips trailing ';'; add it back for the parser.
-        result = parser.parse(raw + ";")
+        try:
+            result = parser.parse(raw + ";")
+        except CatParseError as exc:
+            raise CatReadParseError(read_cmd, exc) from exc
         if cmd_name == "get_memory_channel":
             self._mode_name(result["mode"])
         elif cmd_name in {"get_agc", "get_agc_sub"}:
@@ -1806,21 +1828,17 @@ class YaesuCatRadio:
         except ValueError as exc:  # includes CatParseError
             raise CommandError(f"unreadable relative {label}: {exc}") from exc
 
-    @staticmethod
-    def _relative_mode_value(mode: str) -> tuple[str, int]:
+    def _relative_mode_value(self, mode: str) -> tuple[str, int]:
+        plain = self._plain_by_data_mode.get(mode, mode)
+        entry = self._config.mode_entries.get(plain)
+        name = (entry.hamlib if entry else None) or plain
         base = {
-            "DATA-U": "USB",
-            "DATA-L": "LSB",
-            "DATA-FM": "FM",
-            "DATA-FM-N": "FMN",
             "FM-N": "FMN",
             "AM-N": "AMN",
-            "CW-U": "CW",
-            "CW-L": "CW_R",
-            "RTTY-L": "RTTY",
-            "RTTY-U": "RTTY_R",
-        }.get(mode, mode)
-        return base, int(is_data_mode(mode))
+            "CWR": "CW_R",
+            "RTTYR": "RTTY_R",
+        }.get(name, name)
+        return base, int(self._is_data_mode(mode))
 
     async def _read_relative_receiver(self, receiver: int) -> RelativeVfoState:
         freq = await self._relative_readback(
@@ -1855,13 +1873,15 @@ class YaesuCatRadio:
             base = Mode(mode).name
         except ValueError as exc:
             raise CommandError(f"unsupported relative mode {mode!r}") from exc
-        native = {
-            "CW": "CW-U",
-            "CW_R": "CW-L",
-            "RTTY": "RTTY-L",
-            "RTTY_R": "RTTY-U",
-        }.get(base, base)
-        if native not in self._mode_to_code:
+        native = next(
+            (
+                name
+                for name in self._mode_to_code
+                if self._relative_mode_value(name) == (base, 0)
+            ),
+            None,
+        )
+        if native is None:
             raise CommandError(f"relative mode {base!r} is absent from this profile")
         if data is None:
             pass
@@ -1882,15 +1902,14 @@ class YaesuCatRadio:
                 current, _ = await self._relative_readback(
                     "mode", lambda: self.read_mode(receiver, require_assigned=True)
                 )
-                data = is_data_mode(current)
+                data = self._is_data_mode(current)
             if data:
-                native = {"USB": "DATA-U", "LSB": "DATA-L", "FM": "DATA-FM"}.get(
-                    base, ""
-                )
-                if native not in self._mode_to_code:
+                partner = self._data_by_plain_mode.get(native)
+                if partner is None:
                     raise CommandError(
                         f"relative DATA partner unavailable for {base!r}"
                     )
+                native = partner
 
             # MOR-3754: a before_set refusal at the transport's final
             # currency check is wrapped in CatTransportError; restore the
@@ -1984,6 +2003,9 @@ class YaesuCatRadio:
 
     # -- Data mode ---------------------------------------------------------
 
+    def _is_data_mode(self, mode: str) -> bool:
+        return mode in self._plain_by_data_mode or is_data_mode(mode)
+
     async def get_data_mode(self) -> bool:
         """Whether DATA mode is active.
 
@@ -1999,7 +2021,7 @@ class YaesuCatRadio:
         (MOR-434).
         """
         mode, _ = await self.read_mode(0)
-        return is_data_mode(mode)
+        return self._is_data_mode(mode)
 
     async def set_data_mode(self, on: int | bool, receiver: int = 0) -> None:
         """Select the profile's DATA partner of the live receiver mode."""
@@ -2012,19 +2034,13 @@ class YaesuCatRadio:
             mode, _ = await self.read_mode(receiver)
             if mode == UNKNOWN_STATUS:
                 raise CommandError("cannot select a DATA partner for an unknown mode")
-            pairs = {
-                "USB": "DATA-U",
-                "LSB": "DATA-L",
-                "FM": "DATA-FM",
-                "FM-N": "DATA-FM-N",
-            }
             if on:
-                if mode in pairs.values():
+                if mode in self._plain_by_data_mode:
                     return
-                target = pairs.get(mode)
+                target = self._data_by_plain_mode.get(mode)
             else:
-                target = {data: plain for plain, data in pairs.items()}.get(mode)
-                if target is None and not is_data_mode(mode):
+                target = self._plain_by_data_mode.get(mode)
+                if target is None and not self._is_data_mode(mode):
                     return
             if target is None or target not in self._mode_to_code:
                 raise CommandError(

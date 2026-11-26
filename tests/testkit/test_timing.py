@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 import types
@@ -130,6 +131,75 @@ async def test_the_loop_gets_its_own_clock_back_after_the_fixture() -> None:
     clock.uninstall(loop)
     assert "time" not in vars(loop)
     assert abs(loop.time() - time.monotonic()) < 60
+
+
+@pytest.mark.timeout(30)
+async def test_install_swaps_the_loop_timer_resolution_and_uninstall_restores_it() -> (
+    None
+):
+    """MOR-3938: the virtual time comes with a virtual timer resolution.
+
+    ``_run_once`` fires a timer while its deadline is inside ``time() +
+    _clock_resolution``, so the install must not leave the host clock's
+    resolution (Windows: 1/64 s) on the loop, and the uninstall must put the
+    real one back.
+    """
+    loop = asyncio.get_running_loop()
+    real_resolution = loop._clock_resolution  # type: ignore[attr-defined]
+    clock = VirtualClock(start=0.0)
+    clock.install(loop)
+    try:
+        assert 0 < loop._clock_resolution <= 1e-6  # type: ignore[attr-defined]
+    finally:
+        clock.uninstall(loop)
+    assert loop._clock_resolution == real_resolution  # type: ignore[attr-defined]
+
+
+@pytest.mark.timeout(30)
+async def test_an_exactly_due_timer_completes_at_a_large_clock_offset() -> None:
+    """MOR-3938 review follow-up: the resolution must stay representable.
+
+    ``on_running_loop()`` starts at the host monotonic offset, which on a
+    long-running host sits at ``2**24`` seconds and beyond. There the float
+    ulp (~3.7 ns) exceeds ``1e-9``: ``time() + _clock_resolution`` rounded
+    back to ``time()``, so an exactly-due timer stayed scheduled and
+    ``elapse()`` kept advancing by zero until the real-time watchdog
+    tripped."""
+    loop = asyncio.get_running_loop()
+    clock = VirtualClock(start=2**24)
+    clock.install(loop)
+    try:
+        assert loop._clock_resolution >= 2 * math.ulp(2**24)  # type: ignore[attr-defined]
+        done = asyncio.Event()
+        loop.call_later(0.0, done.set)
+        await clock.elapse(0.0)
+        assert done.is_set()
+    finally:
+        clock.uninstall(loop)
+
+
+@pytest.mark.timeout(30)
+async def test_a_coarse_host_resolution_does_not_fire_virtual_timers_early() -> None:
+    """MOR-3938 regression: a Windows-scale host resolution must not leak
+    into virtual time. With the real resolution left on the loop, a settle
+    after ``elapse(0.005)`` fires a 10 ms ``wait_for`` inside the coarse
+    window; with the virtual resolution it waits for its own deadline."""
+    loop = asyncio.get_running_loop()
+    real_resolution = loop._clock_resolution  # type: ignore[attr-defined]
+    loop._clock_resolution = 0.01  # type: ignore[attr-defined]
+    clock = VirtualClock(start=0.0)
+    clock.install(loop)
+    try:
+        waiter = asyncio.ensure_future(
+            asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+        )
+        await clock.elapse(0.005)
+        assert not waiter.done()
+        await clock.elapse(0.006)
+        assert waiter.done()
+    finally:
+        clock.uninstall(loop)
+        loop._clock_resolution = real_resolution  # type: ignore[attr-defined]
 
 
 def test_scope_to_changes_only_the_named_module(

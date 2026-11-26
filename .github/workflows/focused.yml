@@ -37,7 +37,9 @@ concurrency:
 
 jobs:
   focused:
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    runs-on:
+      group: rigplane-ci
+      labels: [self-hosted, linux, arm64, heavy]
     timeout-minutes: 15
     steps:
       - name: Check out trusted workflow controls

@@ -17,7 +17,8 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
-import type { ServerState } from '$lib/types/state';
+import type { FieldStatusPublic, ServerState } from '$lib/types/state';
+import stateGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
@@ -458,6 +459,27 @@ afterEach(() => {
 });
 
 describe('L1 hosted desktop TX auxiliary composition', () => {
+  it('renders mic gain unavailable after a refused read even with a cached level', async () => {
+    const state = liveState(true);
+    h.state = {
+      ...state,
+      fieldStatus: {
+        ...state.fieldStatus,
+        micGain: stateGoldens['FTX-1'].refusedMicGainFieldStatus as FieldStatusPublic,
+      },
+    } satisfies ServerState;
+    renderHostedDesktop();
+    q<HTMLButtonElement>('[aria-label="MIC GAIN settings"]')!.click();
+    await tick();
+
+    const row = q<HTMLElement>('[data-testid="tx-aux-micGain"]')!;
+    const slider = row.querySelector('[role="slider"]')!;
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    expect(slider.getAttribute('data-command-phase')).toBe('unavailable');
+    expect(row.querySelector('[data-canonical-value]')?.textContent).toBe('');
+    expect(row.title).toBe('Not yet observed');
+  });
+
   it('places finite controls separately and groups scalar handles under their disclosures', async () => {
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();

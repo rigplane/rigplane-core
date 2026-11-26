@@ -201,18 +201,19 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // the build set. This observer only binds pull_request runs (see
 // assertCanonicalRun), which request the build set for every worker except
 // the visual leg, so a queue request on any other observed worker is a mismatch.
-const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'Linux', 'build']);
-const ARM64_VISUAL_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'queue-arm64']);
-const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
+// MOR-4789: lowercase scheme spelling; build/queue remain reservation exceptions.
+const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'linux', 'build']);
+const ARM64_VISUAL_LABELS = Object.freeze(['self-hosted', 'linux', 'arm64', 'queue-arm64']);
+const LIGHT_LABELS = Object.freeze(['self-hosted', 'linux', 'arm64', 'light']);
 const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
 const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey-1)', 'quick-frontend-e2e (journey-2)', 'quick-frontend-e2e (journey-3)']);
-function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
+function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.some((actual) => typeof actual === 'string' && actual.toLowerCase() === label)); }
 // Neutral or ARM64 build request (the pre-2026-11-20 frontend shape) is
 // valid; an X64 request on a frontend worker is not.
-const frontendWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('X64'));
+const frontendWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !hasLabels(job, ['x64']);
 // Neutral or X64 build request (the pre-2026-11-20 python shape) is valid;
 // an ARM64 request on a python worker is not.
-const pythonWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('ARM64'));
+const pythonWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !hasLabels(job, ['arm64']);
 // The visual leg keeps the ARM64 pin (arm64 pixel baselines) on the
 // queue-arm64 lane, so its request must include that lane's labels.
 const visualLegPool = (job) => hasLabels(job, ARM64_VISUAL_LABELS);

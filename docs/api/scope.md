@@ -97,6 +97,19 @@ Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
 grant has neither field and behaves as before. See
 `src/rigplane/runtime/scope_session.py: ScopeSession.span_settled` and
 `tests/fixtures/scope-control/control.json`.
+
+### Setting the span from an API client
+
+`set_scope_span` over the control WebSocket or `POST /api/v1/commands` is
+refused with `unsupported_command` by design: since the ScopeHub work the span
+is a per-client subscription view, so the supported way to change it is a
+radio follow subscription (`{"follow":"vfo","spanHz":<full width in Hz>}`,
+see above). The direct SDK call `Radio.set_scope_span` is unchanged.
+`scopeControls.span` in `GET /api/v1/state` is the radio-wide side of the
+same setting: the last span preset index the radio acknowledged, published
+within one update of the acknowledgement (MOR-4713) — not a per-client
+value. Concurrent clients share the one radio span; the last acknowledged
+write wins and the served index follows it.
 Send another subscription with the same key to change its view, width or rate;
 `maxFps: 0` pauses that subscription. To release one stream, send
 `{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare

@@ -136,3 +136,6 @@ logs/
 # tracked; never committed to the public repo — MOR-1790)
 /output/
 /tmp/
+
+# Offline builder lane checkpoint (never commit the note).
+/NOTES.md

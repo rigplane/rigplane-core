@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -743,3 +744,68 @@ class TestYaesuCatTransportEdgeCases:
         assert mode == "MD02"
         assert power == "PC2005"
         assert writer.written == [b"FA;", b"MD0;", b"PC;"]
+
+
+class FakeSerialPort:
+    """Fake pyserial object behind ``writer.transport.serial``.
+
+    Records baud retunes and OS input-buffer discards so a test can pin
+    that retuning drops whatever the OS buffered at the old rate.
+    """
+
+    def __init__(self, baudrate: int = 38400) -> None:
+        self.baudrate = baudrate
+        self.reset_input_buffer_calls = 0
+
+    def reset_input_buffer(self) -> None:
+        """Record the OS/driver input-buffer discard."""
+        self.reset_input_buffer_calls += 1
+
+
+class SerialBackedWriter(FakeStreamWriter):
+    """Writer whose asyncio transport exposes a pyserial object."""
+
+    def __init__(self, serial: object) -> None:
+        super().__init__()
+        self.transport = SimpleNamespace(serial=serial)
+
+
+class TestSetBaudrate:
+    """MOR-4216: retuning must also drop input the OS buffered at the old rate."""
+
+    async def test_retune_discards_os_input_buffer(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """``set_baudrate`` clears the OS/driver buffer, not just the reader's.
+
+        ``flush_rx`` touches only the asyncio StreamReader buffer; a late
+        reply sent at the old baud can already sit in the OS buffer and be
+        misread at the new rate, establishing the wrong baud during the
+        connect-time sweep (``discovery.sweep_serial_bauds``).
+        """
+        port = FakeSerialPort(baudrate=38400)
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(FakeStreamReader([]), SerialBackedWriter(port))
+        )
+
+        transport = YaesuCatTransport(device="/dev/test", baudrate=38400)
+        await transport.connect()
+
+        assert transport.set_baudrate(19200)
+        assert port.baudrate == 19200
+        assert port.reset_input_buffer_calls == 1
+
+    async def test_retune_without_pyserial_reset_keeps_working(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """A port exposing no ``reset_input_buffer`` (test fakes) still retunes."""
+        port = SimpleNamespace(baudrate=38400)  # no reset_input_buffer
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(FakeStreamReader([]), SerialBackedWriter(port))
+        )
+
+        transport = YaesuCatTransport(device="/dev/test", baudrate=38400)
+        await transport.connect()
+
+        assert transport.set_baudrate(19200)
+        assert port.baudrate == 19200

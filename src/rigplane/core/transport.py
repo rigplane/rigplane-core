@@ -208,6 +208,13 @@ class IcomTransport:
         # Consecutive numbered packets seen behind the delivery anchor; a run
         # past ``REORDER_WINDOW`` re-anchors (MOR-4416, ``_accept_in_order``).
         self._rx_behind_run = 0
+        # The sequence number of the last packet of the current behind run:
+        # copies of one old number are one step, not one each (MOR-4447).
+        self._rx_behind_run_seq: int | None = None
+        # The delivery anchor a re-anchor displaced. A delayed copy of that
+        # number still sits far above the live stream and so reads as a
+        # forward jump; it is a replay, never an epoch change (MOR-4447).
+        self._rx_retired_anchor: int | None = None
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
         self._udp_close_event: asyncio.Event | None = None
@@ -332,6 +339,8 @@ class IcomTransport:
         self._rx_held.clear()
         self._rx_given_up.clear()
         self._rx_behind_run = 0
+        self._rx_behind_run_seq = None
+        self._rx_retired_anchor = None
         self.remote_id = 0
         while True:
             try:
@@ -783,28 +792,43 @@ class IcomTransport:
         if is_current is not None:
             self._tx_guards[seq] = is_current
 
-    def _record_rx_seq(self, seq: int) -> None:
-        """Record a received sequence number and detect gaps."""
+    def _record_rx_seq(self, seq: int) -> bool:
+        """Record a received sequence number and detect gaps.
+
+        Returns True when the packet needs no further handling: a delayed
+        copy of a retired anchor is counted here and dropped, so neither
+        the ordering nor the routing must see it again (MOR-4447).
+        """
         seq &= 0xFFFF
         if seq in self.rx_missing:
             del self.rx_missing[seq]
 
         if self.rx_last_seq is None:
             self.rx_last_seq = seq
-            return
+            return False
 
         last_seq = self.rx_last_seq
         delta = (seq - last_seq) & 0xFFFF
 
         if delta == 0:
             # Duplicate packet.
-            return
+            return False
 
         if 1 <= delta <= 0x7FFF:
             # Forward progress in uint16 sequence space.
             if delta > RENUMBER_JUMP:
+                if seq == self._rx_retired_anchor:
+                    # A delayed copy of the anchor a re-anchor retired: the
+                    # dead epoch's number still sits far above the live
+                    # stream, so the copy looks like a forward jump. It is
+                    # a replay — counted once as a duplicate, never a
+                    # reason to move the anchor back onto the dead epoch
+                    # and clear the live packets held for ordering
+                    # (MOR-4447).
+                    self._rx_duplicate += 1
+                    return True
                 self._reanchor_rx(seq, forward_jump=delta)
-                return
+                return False
             if delta > MAX_MISSING:
                 self.rx_missing.clear()
                 if self.ordered_ingress:
@@ -821,13 +845,16 @@ class IcomTransport:
                     last_seq,
                     seq,
                 )
-                return
+                return False
 
             for offset in range(1, delta):
                 missing = (last_seq + offset) & 0xFFFF
                 if missing not in self.rx_missing:
                     self.rx_missing[missing] = 0
             self.rx_last_seq = seq
+        # A backward or half-range delta (>= 0x8000): the frontier stands;
+        # the ordering decision belongs to ``_accept_in_order``.
+        return False
 
     def _build_retransmit_requests(self) -> list[bytes]:
         """Build retransmit request packets for missing sequences."""
@@ -987,7 +1014,10 @@ class IcomTransport:
             arrived_after_later = (
                 last is not None and 0 < ((last - seq) & 0xFFFF) < 0x8000
             )
-            self._record_rx_seq(seq)
+            if self._record_rx_seq(seq):
+                # A delayed copy of a retired anchor: counted and dropped
+                # whole (MOR-4447).
+                return
             if self.ordered_ingress:
                 self._accept_in_order(
                     (data, ptype, seq, sender_id), arrived_after_later
@@ -1006,19 +1036,29 @@ class IcomTransport:
         else:
             nxt = self._rx_next
         behind = (nxt - seq) & 0xFFFF
-        if 0 < behind < 0x8000:
+        if 0 < behind <= 0x8000:
             # Older than the next number, however far: a duplicate, or late
             # after its number was given up. One such packet — even far
             # behind — is never a reason to move the anchor: a stray old
             # datagram must never be redelivered
-            # (test_an_old_duplicate_far_behind_is_never_redelivered). But a
-            # RUN of them past the window is no reorder: the anchor itself is
-            # stale. A first packet from the previous session's numbering
-            # (the radio may track numbering per client across processes,
-            # MOR-3418) or a radio that restarted its numbering on the live
-            # link (MOR-4416) otherwise drops every fresh packet until the
-            # counter climbs past the anchor — past the CI-V data watchdog.
-            self._rx_behind_run += 1
+            # (test_an_old_duplicate_far_behind_is_never_redelivered). The
+            # exactly-half-range case (behind == 0x8000) is
+            # indistinguishable from half a range ahead; it takes this same
+            # old-number path — holding it as ahead would release a ~32k
+            # skip as burst loss and later redeliver an ancient packet
+            # (MOR-4447). But a RUN of them past the window is no reorder:
+            # the anchor itself is stale. A first packet from the previous
+            # session's numbering (the radio may track numbering per client
+            # across processes, MOR-3418) or a radio that restarted its
+            # numbering on the live link (MOR-4416) otherwise drops every
+            # fresh packet until the counter climbs past the anchor — past
+            # the CI-V data watchdog. The run counts sequence PROGRESS:
+            # copies of one old number are one step, not one each, so a
+            # replay storm of a single datagram cannot outvote the window
+            # (MOR-4447).
+            if seq != self._rx_behind_run_seq:
+                self._rx_behind_run += 1
+                self._rx_behind_run_seq = seq
             if self._rx_behind_run <= REORDER_WINDOW:
                 if seq in self._rx_given_up:
                     self._rx_late += 1
@@ -1030,6 +1070,7 @@ class IcomTransport:
             arrived_after_later = False  # the frontier just reset
         else:
             self._rx_behind_run = 0
+            self._rx_behind_run_seq = None
         if seq in self._rx_held:
             self._rx_duplicate += 1
             return
@@ -1057,6 +1098,12 @@ class IcomTransport:
         self.rx_missing.clear()
         self._rx_given_up.clear()
         self._rx_behind_run = 0
+        self._rx_behind_run_seq = None
+        # The number the displaced epoch last consumed (its anchor packet,
+        # when the epoch was a single stale-high marker): a delayed copy of
+        # it reads as a forward jump from the live stream and must be
+        # rejected as a replay, not re-anchor the stream back (MOR-4447).
+        self._rx_retired_anchor = None if old_next is None else (old_next - 1) & 0xFFFF
         self.rx_last_seq = seq
         self._rx_next = seq
         self._rx_reanchored += 1
