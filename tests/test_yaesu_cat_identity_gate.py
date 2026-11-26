@@ -32,6 +32,7 @@ from rigplane.core.radio_protocol import (
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
 from rigplane.testing.timing import await_until
+from rigplane.web.server import WebConfig, WebServer
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 # Bench-measured FTX-1 IF; frame (see tests/test_ftx1_radio.py,
@@ -178,6 +179,26 @@ async def test_answer_without_expected_metadata_stays_unverified() -> None:
     assert identity.answered_model is None
     assert radio.connected is True
     assert transport.queries[:2] == ["ID;", "IF;"]
+
+
+@pytest.mark.parametrize(("answer", "ready"), [("ID0840", True), ("ID1234", False)])
+async def test_public_control_connection_tracks_transport(
+    answer: str, ready: bool
+) -> None:
+    radio, transport = make_radio(expected_ids=("0840",), answers=[answer, _IF_FRAME])
+    await radio.connect()
+    try:
+        server = WebServer(radio, WebConfig())
+        live = server.build_public_state()["connection"]
+        assert live["radioReady"] is ready
+        assert live["controlConnected"] is True
+
+        await transport.close()
+        lost = server.build_public_state()["connection"]
+        assert lost["radioReady"] is False
+        assert lost["controlConnected"] is False
+    finally:
+        await radio.disconnect()
 
 
 async def test_profile_without_identity_read_connects_unverified() -> None:

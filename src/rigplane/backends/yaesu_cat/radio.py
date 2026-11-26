@@ -558,6 +558,10 @@ class YaesuCatRadio:
         return self._identity_permits_commands()
 
     @property
+    def control_connected(self) -> bool:
+        return self._transport.connected
+
+    @property
     def radio_ready(self) -> bool:
         """Whether the backend is ready for commands."""
         return self.connected
