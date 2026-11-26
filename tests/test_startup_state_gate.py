@@ -4881,7 +4881,7 @@ async def test_station_waits_for_missing_yaesu_port(
             health = server.build_public_state()["radioHealth"]
             assert health["likelyCause"] == "radio_not_connected"
             assert health["radioLink"] == "reconnecting"
-            assert "waiting for the port" in health["lastError"]
+            assert health["lastError"] == "serial_not_found: ENOENT"
             authority = radio._managed_tx_composition.authority
             assert await authority.transmit_on() is ManagedTxOutcome.REJECTED
 
