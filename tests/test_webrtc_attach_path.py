@@ -2736,7 +2736,9 @@ async def test_rigctl_served_frame_queue_overflow(
     await path.assert_cat_handed_back()
 
 
-async def test_rigctl_command_queue_overflow(cat_limit_path: _CatLimitPath) -> None:
+async def test_rigctl_command_queue_waits_then_resumes(
+    cat_limit_path: _CatLimitPath,
+) -> None:
     path = cat_limit_path
     await path.key_cat()
     path.commands.clear()
@@ -2747,7 +2749,16 @@ async def test_rigctl_command_queue_overflow(cat_limit_path: _CatLimitPath) -> N
     path.cat.deliver("f\n" * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
     await path.clock.elapse(0)
     assert path.cat.readyState == "open"
-    path.cat.deliver("f\n")
+    path.cat.deliver("f\n" * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[3:] == []
+    assert path.tx.tx_holder_nowait() == path.owner
+    path.commands.set()
+    await path.clock.elapse(0)
+    assert path.cat.sent[3:] == [path.reply] * (2 * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
+    assert path.cat.readyState == "open"
+    path.cat.close()
     await path.assert_cat_handed_back()
 
 
