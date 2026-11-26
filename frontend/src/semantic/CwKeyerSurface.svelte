@@ -132,6 +132,7 @@
 </script>
 
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import {
     type ControlFeedbackPresentationInput,
@@ -456,6 +457,7 @@
                  KNOWN; the gate below is untouched (rule 2). -->
             <button
               type="button" class="cw-keyer-choice"
+              data-rp-capability={TRANSMIT_CAPABILITIES.cwBreakIn.id}
               data-testid={`cw-keyer-break-in-${decode ?? String(choice.value)}`}
               aria-pressed={cw.breakIn.reading.status === 'known'
                 ? cw.breakIn.reading.value === decode : undefined}
@@ -500,6 +502,7 @@
         || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
+          data-rp-capability={field === 'breakInDelay' ? TRANSMIT_CAPABILITIES.cwBreakIn.id : undefined}
           data-observed={usable(f)}
         >
           <span class="cw-keyer-name">{label}</span>
@@ -553,6 +556,7 @@
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
+        data-rp-capability={TRANSMIT_CAPABILITIES.txSettings.id}
         aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}
@@ -646,6 +650,7 @@
     {#if autoTuneAvailable}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-auto-tune"
+        data-rp-capability={TRANSMIT_CAPABILITIES.cwAutoTune.id}
         onclick={requestRxFrequencyCorrection}
       >{standard ? 'AUTO TUNE' : 'RX frequency correction'}</button>
     {/if}

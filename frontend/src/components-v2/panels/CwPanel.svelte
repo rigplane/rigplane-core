@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
@@ -250,7 +251,8 @@
       />
     </div>
 
-    <div class="cw-value-slot" style:--cw-value-min-width={speedSlotMinWidth}>
+    <div class="cw-value-slot" style:--cw-value-min-width={speedSlotMinWidth}
+      data-rp-capability={TRANSMIT_CAPABILITIES.txSettings.id}>
       <ValueControl
         {...feedbackIntegratedControl}
         label="Key Speed"
@@ -279,6 +281,7 @@
             indicator="edge-left" active={breakIn === choice.value}
             color={choice.value === 0 ? 'cyan' : 'orange'}
             onclick={() => onBreakInModeChange(choice.value)}
+            data={{ 'rp-capability': TRANSMIT_CAPABILITIES.cwBreakIn.id }}
           >
             {choice.label}
           </HardwareButton>
@@ -308,6 +311,7 @@
         </span>
         <input
           data-testid="cw-break-in-delay"
+          data-rp-capability={TRANSMIT_CAPABILITIES.cwBreakIn.id}
           type="range" min="0" max="255" step="1" value={breakInDelayView.displayed ?? undefined}
           {...feedbackIntegratedRange}
           disabled={!breakInDelayView.editable}
@@ -335,7 +339,8 @@
 
     {#if showAutoTune}
       <div class="toggle-row">
-        <HardwareButton indicator="edge-left" color="green" onclick={() => onAutoTune()}>
+        <HardwareButton indicator="edge-left" color="green" onclick={() => onAutoTune()}
+          data={{ 'rp-capability': TRANSMIT_CAPABILITIES.cwAutoTune.id }}>
           AUTO TUNE
         </HardwareButton>
       </div>

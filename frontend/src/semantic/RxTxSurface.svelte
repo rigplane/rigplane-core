@@ -11,6 +11,7 @@
   colors. Idle receiving and unknown states do not reserve an indicator row.
 -->
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import '../components-v2/controls/control-button.css';
   import { t } from '$lib/i18n';
@@ -188,6 +189,7 @@
     {#if momentary}
     {@const holdLabel = t('core.rxTx.holdToTalk')}
     <button
+      data-rp-capability={TRANSMIT_CAPABILITIES.txHold.id}
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={keyUnavailable && !held} aria-pressed={pressed}
@@ -197,6 +199,7 @@
     ><span class="rx-tx-hold-label">{holdLabel}</span></button>
     {:else}
     <button
+      data-rp-capability={TRANSMIT_CAPABILITIES.txKey.id}
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={keyUnavailable} aria-pressed={pressed}
@@ -205,7 +208,8 @@
       aria-label="Key transmitter"
     >{standard ? 'PTT' : 'Key transmitter'}</button>
     {/if}
-    <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
+    <!-- Unkey is never gated (NEVER_GUARDED.unkey): no capability attribute,
+         no `disabled`, no conditional rendering, no guard in the handler. -->
     <button
       type="button" class="rx-tx-unkey v2-control-button v2-control-button--pill" data-testid="rx-tx-unkey"
       data-surface="hardware"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { runtime } from '$lib/runtime';
   import { getHostUi } from '$lib/local-extensions/host-ui';
   import { t } from '$lib/i18n';
@@ -630,6 +631,7 @@
       </button>
       <span class="m-ls-filter">{activeVfo.filter}</span>
       {#if txCapable}
+        <!-- Unkey is never gated (NEVER_GUARDED.unkey). -->
         <button
           type="button"
           class="m-ls-unkey"
@@ -640,6 +642,7 @@
         {#if !latched}
           <button
             class="m-ls-ptt"
+            data-rp-capability={TRANSMIT_CAPABILITIES.txHold.id}
             class:m-ptt-held={owned}
             class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
             use:pttButton
@@ -962,7 +965,7 @@
                  entry reads as available (legacy no-entry fallback) while
                  `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
                  so finiteness decides with it. -->
-            <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
+            <button type="button" class="m-tx-info" data-rp-capability={TRANSMIT_CAPABILITIES.rfPower.id} disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
               <span class="m-tx-power-value">{valueText(tx.rfPowerAvailable ? finiteValue(tx.rfPower) : null, formatPower)}</span>
               {#if managedTxRf === 'on'}
                 <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
@@ -977,6 +980,7 @@
             <!-- ATU -->
             <button
               class="m-atu-btn"
+              data-rp-capability={TRANSMIT_CAPABILITIES.tune.id}
               class:m-atu-on={atuStatus === 'on'}
               class:m-atu-tuning={atuStatus === 'tuning'}
               ontouchstart={atuTouchStart}
@@ -1085,7 +1089,7 @@
        Remaining here: RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
   <BottomSheet bind:open={setupOpen} title={t('core.mobile.sheet.setup')}>
           {#if hasCapability('power_control') && !runtime.remoteController}
-            <button type="button" class="power-toggle-btn m-radio-power" disabled={radioPowerOn === null}
+            <button type="button" class="power-toggle-btn m-radio-power" data-rp-capability={TRANSMIT_CAPABILITIES.power.id} disabled={radioPowerOn === null}
               onclick={() => { if (radioPowerOn !== null) getHostUi()?.setRadioPower(!radioPowerOn); }}>
               {powerLabel}
             </button>
@@ -1138,6 +1142,7 @@
                   indicator="edge-left"
                   color="cyan"
                   onclick={() => { modeHandlers.onDataModeChange(d); }}
+                  data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txSettings.id }}
                 >
                   {d === 0 ? 'OFF' : `D${d}`}
                 </HardwareButton>
@@ -1153,6 +1158,7 @@
 
   <!-- ═══ POWER MODAL ═══ -->
   <BottomSheet bind:open={powerModalOpen} title={t('core.mobile.sheet.rfPower')} compact contentStyle="padding: 12px;">
+        <div style="display: contents" data-rp-capability={TRANSMIT_CAPABILITIES.rfPower.id}>
           <ValueControl
             label="RF Power"
             value={tx.rfPower}
@@ -1166,6 +1172,7 @@
             variant="hardware-illuminated"
             disabled={!tx.rfPowerAvailable}
           />
+        </div>
   </BottomSheet>
 
   <!-- ═══ TX SETTINGS MODAL ═══ -->

@@ -19,6 +19,7 @@
    * the parent just discards its late result.
    */
   import { t } from '$lib/i18n';
+  import type { TransmitCapability } from '$lib/transmit-capabilities';
 
   type Props = {
     open: boolean;
@@ -29,9 +30,10 @@
     onCancel: () => void;
     error?: string | null;
     busy?: boolean;
+    capability?: TransmitCapability;
   };
 
-  let { open, message, confirmLabel, cancelLabel, onConfirm, onCancel, error = null, busy = false }: Props =
+  let { open, message, confirmLabel, cancelLabel, onConfirm, onCancel, error = null, busy = false, capability }: Props =
     $props();
 
   let modalRoot = $state<HTMLDivElement | null>(null);
@@ -140,6 +142,7 @@
             onclick={() => void onConfirm()}
             disabled={busy}
             data-testid="confirm-dialog-confirm"
+            data-rp-capability={capability}
           >
             {busy ? t('common.action.working') : confirmLabel}
           </button>

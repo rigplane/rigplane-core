@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { HardwareButton } from '$lib/Button';
   import { getShortcutHint } from '../layout/shortcut-hints';
   import {
@@ -126,6 +127,7 @@
         armed={dataModeArmed.armed}
         describedBy={dataModeArmed.armed ? dataArmedId : undefined}
         onclick={() => onDataModeChange(dataMode !== null && dataMode > 0 ? 0 : 1)}
+        data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txSettings.id }}
       >
         DATA
       </HardwareButton>
@@ -149,6 +151,7 @@
             armed={isDataArmed}
             describedBy={isDataArmed ? dataArmedId : undefined}
             onclick={() => onDataModeChange(option.value)}
+            data={{ 'rp-capability': TRANSMIT_CAPABILITIES.txSettings.id }}
           >
             {option.label}
           </HardwareButton>
@@ -168,6 +171,7 @@
         <select
           class="mod-input-select"
           data-testid="mod-input-select"
+          data-rp-capability={TRANSMIT_CAPABILITIES.txSettings.id}
           aria-label={t('core.modePanel.modInputAria')}
           title={t('core.modePanel.modInputAria')}
           value={modInputSource === null ? '' : String(modInputSource)}
