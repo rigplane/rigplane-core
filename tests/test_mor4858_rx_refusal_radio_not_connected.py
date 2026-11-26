@@ -33,7 +33,6 @@ import json
 from collections.abc import Coroutine
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, TypeVar
 
 import pytest
@@ -45,15 +44,12 @@ from test_web_server import (
     _ws_recv_frame,
     _ws_send_text,
 )
+from test_yaesu_cat_identity_gate import FakeCatTransport
 
 from rigplane.audio.usb_driver import AudioDeviceSelectionError
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import (
-    CatTimeoutError,
-    CatTransportError,
-)
 from rigplane.core.radio_protocol import RadioIdentityStatus, serial_identity_hold
 from rigplane.rig_loader import load_rig
 from rigplane.testing.timing import VirtualClock
@@ -159,41 +155,6 @@ def _make_icom(*, silent: bool, refusing_audio: bool = False) -> Ic7300SerialRad
 # ---------------------------------------------------------------------------
 
 
-class _SilentCatTransport:
-    """CAT transport whose radio never answers (powered off)."""
-
-    def __init__(self) -> None:
-        self.connected = False
-        self.stats = SimpleNamespace(reconnects=0)
-        self.last_valid_frame_monotonic: float | None = None
-        self.queries: list[str] = []
-        self.baudrate = 38400
-
-    def bind_provider_generation(self, _capture) -> None:
-        pass
-
-    def set_baudrate(self, baudrate: int) -> bool:
-        self.baudrate = baudrate
-        return True
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
-        self.last_valid_frame_monotonic = None
-
-    async def query(self, command: str, **_: object) -> str:
-        self.queries.append(command)
-        if not self.connected:
-            raise CatTransportError("Transport not connected")
-        raise CatTimeoutError(f"Read timeout waiting for {command!r}")
-
-    async def write(self, command: str, **_: object) -> None:
-        if not self.connected:
-            raise CatTransportError("Transport not connected")
-
-
 def _make_yaesu(
     *,
     answers: list[str],
@@ -208,26 +169,14 @@ def _make_yaesu(
         profile=config,
         audio_driver=audio_driver,
     )
-    radio._transport = (
-        _SilentCatTransport() if not answers else _ScriptedCatTransport(answers)
-    )
+    # The shared scripted CAT fake from the identity-gate pins
+    # (``test_yaesu_cat_identity_gate.FakeCatTransport``): it tracks the real
+    # transport's interface — including the ``_writer`` connection fence the
+    # MOR-3845 liveness work added to the backend's query path — answers the
+    # scripted queries in order, and raises ``CatTimeoutError`` once the
+    # answers run out (the silent, powered-off radio).
+    radio._transport = FakeCatTransport(answers)
     return radio
-
-
-class _ScriptedCatTransport(_SilentCatTransport):
-    """Silent transport that answers the scripted queries, then goes silent."""
-
-    def __init__(self, answers: list[str]) -> None:
-        super().__init__()
-        self._answers = list(answers)
-
-    async def query(self, command: str, **_: object) -> str:
-        self.queries.append(command)
-        if not self.connected:
-            raise CatTransportError("Transport not connected")
-        if self._answers:
-            return self._answers.pop(0)
-        raise CatTimeoutError(f"Read timeout waiting for {command!r}")
 
 
 # ---------------------------------------------------------------------------
