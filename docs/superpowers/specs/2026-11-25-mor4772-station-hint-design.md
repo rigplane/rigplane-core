@@ -3,7 +3,7 @@
 Status: proposal for owner review; no product implementation in this note.
 Scope: public Core frontend and EiBi helper; display only, one policy for all radios.
 Evidence: source read at `5c794795365777377eca947928c834e73057cd30`.
-Line references below describe that snapshot; symbols identify the relevant code.
+References below name the file and the symbol in that snapshot.
 
 ## Decision
 
@@ -20,24 +20,25 @@ are outside this proposal.
 
 ## What Core already has
 
-- `frontend/src/components-v2/layout/StatusBar.svelte:271-305` (Now Playing effect)
-  waits 800 ms, ignores frequency changes below 500 Hz, and takes `stations[0]`.
-  Its rendering at lines 425-460 shows any selected entry; `on_air` gates only
-  the LIVE chip. An expanded popup pauses identification.
-- `frontend/src/lib/runtime/system-controller.ts:200` (`identifyFrequency`) calls
-  `GET /api/v1/eibi/identify`; failures return null.
-- Contrary to the ticket's backend assumption, `src/rigplane/web/eibi.py:765`
-  (`EiBiProvider.identify`) already filters `is_on_air`, sorts by frequency
-  distance, and truncates to five. `web_routing.py:601`
-  (`_handle_route_eibi_identify`) defaults to ±5 kHz and may fall back to FCC.
-- `src/rigplane/web/eibi.py:165` (`EiBiStation`) has frequency, UTC times, days,
+- `frontend/src/components-v2/layout/StatusBar.svelte` (the Now Playing
+  `$effect`) waits 800 ms, ignores frequency changes below 500 Hz, and takes
+  `stations[0]`. Its `now-playing` markup shows any selected entry; `on_air`
+  gates only the LIVE chip. An expanded popup pauses identification.
+- `frontend/src/lib/runtime/system-controller.ts: SystemController.identifyFrequency`
+  calls `GET /api/v1/eibi/identify`; failures return null.
+- Contrary to the ticket's backend assumption, `src/rigplane/web/eibi.py:
+  EiBiProvider.identify` already filters `is_on_air`, sorts by frequency
+  distance, and truncates to five. `src/rigplane/web/web_routing.py:
+  _handle_route_eibi_identify` defaults to ±5 kHz and may fall back to FCC.
+- `src/rigplane/web/eibi.py: EiBiStation` has frequency, UTC times, days,
   target, language, country, remarks and start/end dates, **no structured power**.
-  `to_dict` at line 257 does not expose those dates. `is_on_air` at line 199
+  `EiBiStation.to_dict` does not expose those dates. `EiBiStation.is_on_air`
   ignores dates; `_matches_day` accepts unknown/special day codes. A schedule
   match is not a measurement of a transmitter being on.
-- `eibi.py:332` (`_parse_fcc_pipe`) hardcodes `on_air=True` and puts a city/state
-  string in `target`. FCC records cannot satisfy the proposed EiBi evidence
-  contract; omit them from automatic hints, leaving the general lookup intact.
+- `src/rigplane/web/eibi.py: _parse_fcc_pipe` hardcodes `on_air=True` and puts
+  a city/state string in `target`. FCC records cannot satisfy the proposed EiBi
+  evidence contract; omit them from automatic hints, leaving the general lookup
+  intact.
 
 ## Receiver area: cheapest filter first
 
@@ -45,17 +46,18 @@ No station latitude/longitude, Maidenhead locator, or receiver-location setting
 was found by searching Core `src/rigplane` and `frontend/src` for location,
 locator, grid-square, latitude and longitude fields. Core does know a **band-plan
 selection**, not a verified receiver location:
-`frontend/src/lib/stores/band-plan-region.svelte.ts:25` (`getBandPlanRegion`),
-`src/rigplane/web/server.py:5314` (`_serve_band_plan_config`), and
-`src/rigplane/web/band_plan.py:101` (`_REGION_HAM_FILE`). The choices are US and
-IARU R1/R2/R3; `BandPlanRegistry.load` at line 154 can default to US when config
+`frontend/src/lib/stores/band-plan-region.svelte.ts: getBandPlanRegion`,
+`src/rigplane/web/server.py: WebServer._serve_band_plan_config`, and
+`src/rigplane/web/band_plan.py: _REGION_HAM_FILE`. The choices are US and
+IARU R1/R2/R3; `BandPlanRegistry.load` can default to US when config
 is missing. Do not infer reception geography from that fallback, UI language,
 browser location, transmitter country, or the operator's computer.
 
 Propose an explicit coarse “Receiver target area” choice in hint settings,
 initially unset, referring to **where the radio receives**. No locator is needed
-for v1. Workspace storage is browser-local (`presentation/workspace/repository.ts:32`,
-`WORKSPACE_STORAGE_KEY`), not per radio. Save the choice there but require session
+for v1. Workspace storage is browser-local
+(`frontend/src/presentation/workspace/repository.ts: WORKSPACE_STORAGE_KEY`),
+not per radio. Save the choice there but require session
 confirmation on connection and after a radio-context switch; a stored area alone
 cannot qualify a different receiver. This avoids adding a receiver-location store.
 An unset area hides hints and the settings explain how to enable them.
@@ -93,26 +95,30 @@ a carrier near a lower-ranked frequency must not validate the first candidate.
 
 Available data paths:
 
-- `frontend/src/lib/types/state.ts:182` (`ReceiverStatePublic.sMeter`) and
-  `frontend/src/lib/runtime/props/panel-props.ts:1212` (`toMeterProps`) expose the
+- `frontend/src/lib/types/state.ts: ReceiverStatePublic.sMeter` and
+  `frontend/src/lib/runtime/props/panel-props.ts: toMeterProps` expose the
   active receiver's S-meter, including an unobserved state. This is passband
   energy, not a frequency-resolved carrier or a local noise-floor comparison.
   Do not substitute a universal S-unit threshold.
-- `frontend/src/lib/runtime/frontend-runtime.ts:285` (`scope`),
-  `scope-controller.svelte.ts:146` (`stream`), and `scope-stream.ts:285`
-  (`ScopeStream.subscribe`) expose shared decoded frames. `ScopeFrame` in
-  `scope-frame.ts:3` carries pixels, RF view/coverage bounds, receiver, source,
+- `frontend/src/lib/runtime/frontend-runtime.ts: FrontendRuntime.scope`,
+  `frontend/src/lib/runtime/scope-controller.svelte.ts: ScopeController.stream`,
+  and `frontend/src/lib/runtime/scope-stream.ts: ScopeStream.subscribe` expose
+  shared decoded frames. `frontend/src/lib/runtime/scope-frame.ts: ScopeFrame`
+  carries pixels, RF view/coverage bounds, receiver, source,
   epoch and sequence. No new radio polling or spectrum acquisition is needed.
-- `frontend/src/lib/renderers/noise-floor.ts:12` (`estimateNoiseFloor`) estimates
+- `frontend/src/lib/renderers/noise-floor.ts: estimateNoiseFloor` estimates
   a floor in sample units; `followNoiseFloor` smooths it. Waterfall rendering
-  already uses them (`waterfall-renderer.ts:389-409`, `pushRow`). These are not
-  calibrated dBm. `SpectrumPanel.svelte:1231` uses amplitude maxima 80 for RF
+  already uses them (`frontend/src/lib/renderers/waterfall-renderer.ts:
+  WaterfallRenderer.pushRow`). These are not
+  calibrated dBm. `frontend/src/components/spectrum/SpectrumPanel.svelte:
+  spectrumOptions` passes `sampleAmplitudeMax` 80 for RF
   scope and 160 for audio FFT; never mix their sample scales.
 
 Propose a pure detector fed through the existing runtime scope adapter/stream,
 with qualified geometry, current receiver/session identity and monotonic receipt
-time. Keep metadata derivation in `adapters/scope-adapter.ts` (its declared
-ownership at lines 1-5). The status bar consumes only the resulting evidence.
+time. Keep metadata derivation in
+`frontend/src/lib/runtime/adapters/scope-adapter.ts` (its header declares it
+the `scope_metadata` owner). The status bar consumes only the resulting evidence.
 Reuse already-demanded radio/IQ RF frames; exclude audio FFT, whose demodulated
 audio can omit a carrier. Do not start a hidden scope subscription or audio stream
 to obtain a hint. No RF stream, stale stream or mismatched receiver means unknown.
@@ -130,8 +136,9 @@ clock, not frame count alone. Validate thresholds on recorded RF fixtures.
 
 Reset evidence immediately on frequency/receiver/provider/source/epoch change,
 TX, disconnect, missing pixels/coverage, or stale geometry. Reuse the existing
-500 ms silence boundary (`scope-adapter.ts:40`, `SCOPE_FRAME_SILENCE_MS`) and
-`ScopeStream.setFreshness` (`scope-stream.ts:337`); do not retain a hint through
+500 ms silence boundary (`frontend/src/lib/runtime/adapters/scope-adapter.ts:
+SCOPE_FRAME_SILENCE_MS`) and `ScopeStream.setFreshness`
+(`frontend/src/lib/runtime/scope-stream.ts`); do not retain a hint through
 loss of evidence. These conditions protect a listener from attributing another
 signal or an old frame to the current frequency; the simpler S-meter threshold
 cannot establish which RF frequency supplied that energy.
@@ -140,11 +147,13 @@ cannot establish which RF frequency supplied that energy.
 
 Use effective-region **ham segments**, independent of overlay visibility, from
 `/api/v1/band-plan/segments`: `BandPlanRegistry._load_file`
-(`src/rigplane/web/band_plan.py:231`) supplies start/end, layer, mode, license
+(`src/rigplane/web/band_plan.py`) supplies start/end, layer, mode, license
 and notes. They describe a plan, not actual occupancy or reception rights.
-`band-plans/arrl-hf.toml:114-152` includes 7.248 MHz in its phone segment;
-`iaru-r1.toml:80-107` and `iaru-r3.toml:157-184` end 40 m at 7.200 MHz.
-The broadcast plan also starts 41 m at 7.200 MHz (`broadcast.toml:87-96`).
+`band-plans/arrl-hf.toml` (the `[[band]]` "40m" phone segments) includes
+7.248 MHz in its phone segment; the `[[band]]` "40m" in
+`band-plans/iaru-r1.toml` and `band-plans/iaru-r3.toml` ends at 7.200 MHz.
+The broadcast plan also starts 41 m at 7.200 MHz (`band-plans/broadcast.toml`,
+the `[[band]]` "41m").
 Do not equate a broadcast-band label with absence of amateur use, or use a
 radio's TX limits as geography. Apply half-open segment intervals consistently.
 
@@ -156,10 +165,12 @@ data-mode state or band-plan coverage hides the hint. Thus 7.248 MHz LSB is
 hidden with the US plan; AM there can still identify a plausible broadcast.
 
 Add “Show broadcast station hints”, default on, to Settings → Workspace beside
-the receiver-area choice. Existing host: `RadioLayout.svelte:950`
-(`WorkspaceSettingsPanel`); existing persistence: `presentation/workspace/`
-`store.svelte.ts:73,149` (`defaultStorage`, `commit`) and `contract.ts:109`
-(`WorkspaceV1`). Extend that validated contract with typed preference setters;
+the receiver-area choice. Existing host:
+`frontend/src/components-v2/layout/RadioLayout.svelte` (the WORKSPACE
+`CollapsiblePanel` rendering `WorkspaceSettingsPanel`); existing persistence:
+`frontend/src/presentation/workspace/store.svelte.ts` (`defaultStorage`,
+`commit`) and `frontend/src/presentation/workspace/contract.ts: WorkspaceV1`.
+Extend that validated contract with typed preference setters;
 do not add ad hoc component storage. Disabled means no identify requests, no
 detector listener, immediate hint/popup removal, and persistence across reload.
 Host embeddings must be able to expose the same control through their settings.
