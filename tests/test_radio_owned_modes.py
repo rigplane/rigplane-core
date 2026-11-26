@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, create_autospec
 
 import pytest
@@ -34,28 +35,47 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("model", ["ftx1", "ft991a"])
-def test_refusal_evidence_does_not_attach_a_canonical_store(model: str) -> None:
+@pytest.mark.asyncio
+async def test_refusal_evidence_does_not_attach_a_canonical_store(model: str) -> None:
     from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
     from rigplane.core.state_pipeline_contracts import FieldPath
-    from rigplane.web.server import WebConfig, WebServer
 
-    radio = YaesuCatRadio(
-        "/dev/null",
-        profile=model,
-        audio_driver=create_autospec(UsbAudioDriver, instance=True),
-    )
-    assert not isinstance(radio, StateStoreCapable)
-    assert not hasattr(radio, "_state_store")
-    adapter = YaesuObservationAdapter.from_radio(radio)
-    power = FieldPath.global_("meters", "power")
-    if model == "ft991a":
-        assert adapter.profile.policy_for(power).available_when
-    assert adapter._available(power)
-    first = WebServer(radio, WebConfig(radio_model=radio.profile.model))
-    second = WebServer(radio, WebConfig(radio_model=radio.profile.model))
-    assert first.command_state_store is not second.command_state_store
-    assert not hasattr(radio, "_state_store")
-    assert adapter._available(power)
+    fake = FakeCatRadio(profile=model)
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(
+            fake.device_url,
+            profile=model,
+            audio_driver=create_autospec(UsbAudioDriver, instance=True),
+        )
+        assert not isinstance(radio, StateStoreCapable)
+        assert not hasattr(radio, "_state_store")
+        assert not hasattr(radio, "state_store")
+        adapter = YaesuObservationAdapter.from_radio(radio)
+        power = FieldPath.global_("meters", "power")
+        if model == "ft991a":
+            assert adapter.profile.policy_for(power).available_when
+        assert adapter._available(power)
+        try:
+            await radio.connect()
+            assert not isinstance(radio, StateStoreCapable)
+            assert not hasattr(radio, "_state_store")
+            assert not hasattr(radio, "state_store")
+            fake.reject_set("set_mode")
+            with pytest.raises(CommandRejectedError):
+                await radio.set_mode("FM")
+            if model == "ftx1":
+                assert radio._mode_write_evidence.project()[0].evidence
+            else:
+                assert radio._mode_write_evidence.project() == ()
+            assert not isinstance(radio, StateStoreCapable)
+            assert not hasattr(radio, "_state_store")
+            assert not hasattr(radio, "state_store")
+            assert adapter._available(power)
+        finally:
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 def test_radio_state_projection_does_not_mutate_cached_state() -> None:
@@ -95,8 +115,8 @@ async def test_refusal_projection_keeps_live_state_unchanged(
     import rigplane.core.radio_owned_modes as modes
     import rigplane.core.state_store as state_store
 
-    virtual_clock.scope_to(monkeypatch, modes)
-    virtual_clock.scope_to(monkeypatch, state_store)
+    monkeypatch.setattr(modes, "time", SimpleNamespace(monotonic=virtual_clock))
+    monkeypatch.setattr(state_store, "time", SimpleNamespace(monotonic=virtual_clock))
     radio = YaesuCatRadio(
         "/dev/null",
         profile="ftx1",
@@ -165,7 +185,7 @@ async def test_successful_set_clears_refusal_before_failed_readback(
         await radio.set_mode("FM")
     assert radio._mode_write_evidence.project()[0].evidence
     write.side_effect = None
-    read_error = CatParseError("Readback failed")
+    read_error = CatParseError("MD0{mode};", "MD0G;", "Readback failed")
     monkeypatch.setattr(radio, "get_mode", AsyncMock(side_effect=read_error))
     with pytest.raises(CatParseError) as caught:
         await radio.set_mode("FM")
@@ -180,8 +200,8 @@ async def test_isolated_evidence_expires_and_fences_old_attempts(
     import rigplane.core.radio_owned_modes as modes
     import rigplane.core.state_store as state_store
 
-    virtual_clock.scope_to(monkeypatch, modes)
-    virtual_clock.scope_to(monkeypatch, state_store)
+    monkeypatch.setattr(modes, "time", SimpleNamespace(monotonic=virtual_clock))
+    monkeypatch.setattr(state_store, "time", SimpleNamespace(monotonic=virtual_clock))
     definitions = load_rig(ROOT / "rigs/ftx1.toml").to_profile().radio_owned_modes
     evidence = modes.ModeWriteEvidence(definitions)
     evidence.begin(0).finish(refused=True)
