@@ -4524,7 +4524,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 wait_response=True,
                 is_current=is_current,
             )
-        except TimeoutError:
+        except (TimeoutError, StaleBeforeWireError):
             reply = None
         acknowledged = None if reply is None else parse_ack_nak(reply)
         unclaimed = self._civ_request_tracker.ack_unclaimed_at

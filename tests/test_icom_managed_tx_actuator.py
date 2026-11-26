@@ -15,7 +15,8 @@ from rigplane.core.civ import CivRequestKey
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
-from rigplane.core.exceptions import ConnectionError
+from rigplane.core.exceptions import ConnectionError, StaleBeforeWireError, TimeoutError
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import CivFrame
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
@@ -229,6 +230,32 @@ async def test_force_receive_settles_on_the_radio_answer(
 async def _force_receive(radio: IcomRadio) -> ActuationResult:
     return await radio.actuate(
         _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+    )
+
+
+@pytest.mark.parametrize("error", [TimeoutError, StaleBeforeWireError])
+@pytest.mark.parametrize("verified_rx", [False, True])
+async def test_pre_wire_release_failure_still_requires_verified_rx_readback(
+    error, verified_rx
+):
+    radio = _profile_bound_radio()
+    radio._send_civ_raw = AsyncMock(side_effect=error("unavailable before dispatch"))
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(
+            value=False if verified_rx else None,
+            verified_readback=verified_rx,
+            failure=None if verified_rx else "read-error",
+        )
+    )
+
+    def current():
+        return True
+
+    assert await radio.actuate(
+        _token(), ActuationOperation.FORCE_RECEIVE, is_current=current
+    ) is (ActuationResult.ACCEPTED if verified_rx else ActuationResult.UNCERTAIN)
+    radio.read_transmit_state.assert_awaited_once_with(
+        priority=Priority.FORCE_RELEASE, is_current=current
     )
 
 

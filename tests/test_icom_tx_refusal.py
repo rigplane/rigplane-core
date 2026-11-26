@@ -18,7 +18,7 @@ from rigplane.command_map import CommandMap
 from rigplane.commands.bound import BoundCommands
 from rigplane.core import civ as civ_module
 from rigplane.core.civ import PttReplyLedger
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, StaleBeforeWireError, TimeoutError
 from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime._poller_types import (
@@ -466,6 +466,172 @@ async def _http_key(server, writer):
         headers=headers,
         reader=reader,
     )
+
+
+@pytest.mark.parametrize("control_alive", [False, True])
+@virtual_clock
+async def test_transport_down_release_is_uncertain_keeps_debt_and_retries_on_rearm(
+    clock, monkeypatch, tmp_path, control_alive
+):
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        async with _managed_virtual_server(radio, clock, tmp_path) as (_, composition):
+            transport.emitted.clear()
+            transport.ptt_on = True
+            radio._civ_transport = None
+            radio._connected = False
+            radio._ctrl_transport = (
+                SimpleNamespace(_udp_transport=object()) if control_alive else None
+            )
+            radio._civ_recovering = control_alive
+            radio._civ_recovery_wait_timeout = 0.5
+            reconnect = AsyncMock()
+            monkeypatch.setattr(radio, "soft_reconnect", reconnect)
+            readback = AsyncMock(wraps=radio.read_transmit_state)
+            monkeypatch.setattr(radio, "read_transmit_state", readback)
+            off = asyncio.create_task(composition.authority.submit_force_off())
+            retired = rearmed = None
+            try:
+                await clock.elapse(1.3)
+                assert off.done(), "a failed recovery must settle the release"
+                settlement = await (await off).wait_settlement()
+                assert settlement.operation is ActuationOperation.FORCE_RECEIVE
+                assert settlement.result is ActuationResult.UNCERTAIN
+                state = (await composition.authority.snapshot()).state
+                assert state.release_required
+                assert state.release_plan is ReleasePlan.FORCE_RELEASE
+                assert state.intent.kind is ManagedTxIntentKind.RX
+                assert transport.ptt_on
+                assert transport.emitted == []
+                readback.assert_awaited_once()
+                if control_alive:
+                    assert reconnect.await_count > 0
+                else:
+                    reconnect.assert_not_awaited()
+
+                retired = asyncio.create_task(composition.transport_unavailable(radio))
+                await clock.elapse(1.3)
+                assert retired.done()
+                await retired
+                offline = await composition.authority.snapshot()
+                assert offline.provider_generation is None
+                assert offline.state.release_required
+                assert offline.state.release_plan is ReleasePlan.FORCE_RELEASE
+
+                radio._civ_transport = transport
+                fake_connected(radio)
+                rearmed = asyncio.create_task(composition.transport_ready(object()))
+                await clock.elapse(0.3)
+                assert rearmed.done(), "rearm must retry the owed release"
+                await rearmed
+                state = (await composition.authority.snapshot()).state
+                assert not state.release_required
+                assert state.release_plan is None
+                assert (
+                    state.last_actuation.operation is ActuationOperation.FORCE_RECEIVE
+                )
+                assert state.last_actuation.result is ActuationResult.ACCEPTED
+                assert not transport.ptt_on
+                assert [
+                    (frame.command, frame.sub, frame.data)
+                    for _, frame in transport.emitted
+                ] == [(0x1C, 0, b"\x00")]
+            finally:
+                radio._civ_transport = transport
+                fake_connected(radio)
+                for task in (off, retired, rearmed):
+                    if task is not None:
+                        task.cancel()
+                await asyncio.gather(
+                    *(task for task in (off, retired, rearmed) if task is not None),
+                    return_exceptions=True,
+                )
+
+
+@pytest.mark.parametrize(
+    "cause", ["not-started", "stopped", "shutdown", "disconnected", "recovery-timeout"]
+)
+@pytest.mark.parametrize("preserve", [False, True])
+@virtual_clock
+async def test_split_mode_unavailable_commander_or_transport_ends_without_retry(
+    clock, monkeypatch, cause, preserve
+):
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        fake_connected(radio)
+        monkeypatch.setattr(radio, "_check_connected", lambda: None)
+        attempt = AsyncMock(wraps=radio._write_relative_vfo_mode_once)
+        monkeypatch.setattr(radio, "_write_relative_vfo_mode_once", attempt)
+        reconnect = AsyncMock()
+        monkeypatch.setattr(radio, "soft_reconnect", reconnect)
+        busy = None
+        if cause in ("not-started", "stopped"):
+            await radio._commander.stop()
+            if cause == "not-started":
+                radio._commander = IcomCommander(radio._execute_civ_raw)
+        if cause in ("disconnected", "recovery-timeout"):
+            radio._civ_transport = None
+            radio._connected = False
+            radio._ctrl_transport = (
+                SimpleNamespace(_udp_transport=object())
+                if cause == "recovery-timeout"
+                else None
+            )
+            radio._civ_recovery_wait_timeout = 0.5
+        if cause == "shutdown":
+            transport.silent_commands.add(0x0F)
+            busy = asyncio.create_task(
+                radio._send_civ_raw(
+                    build_civ_frame(
+                        radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"
+                    )
+                )
+            )
+            await clock.elapse(0)
+            assert [frame.command for _, frame in transport.emitted] == [0x0F]
+        started = clock()
+        write = asyncio.create_task(
+            radio.write_relative_vfo_mode(
+                0x01,
+                selected=False,
+                **({} if preserve else {"data": False, "filter_width": 1}),
+            )
+        )
+        try:
+            if cause == "shutdown":
+                await clock.elapse(0)
+                assert not write.done()
+                await radio._commander.stop()
+            await clock.elapse(0.7 if cause == "recovery-timeout" else 0)
+            assert write.done(), (
+                "pre-wire unavailability must not leave a retry running"
+            )
+            with pytest.raises(StaleBeforeWireError) as failed:
+                await write
+            if cause == "recovery-timeout":
+                assert isinstance(failed.value.__cause__, TimeoutError)
+                assert (
+                    str(failed.value.__cause__) == "CI-V transport recovery timed out"
+                )
+                assert reconnect.await_count == 1
+            else:
+                assert clock() == started
+                reconnect.assert_not_awaited()
+                if cause == "shutdown":
+                    assert str(failed.value) == "Commander stopped before dispatch"
+            assert attempt.await_count == 1
+            assert [frame.command for _, frame in transport.emitted] == (
+                [0x0F] if cause == "shutdown" else []
+            )
+            assert radio._commander._interference_scopes == set()
+        finally:
+            write.cancel()
+            if busy is not None:
+                busy.cancel()
+            await asyncio.gather(
+                *(task for task in (write, busy) if task is not None),
+                return_exceptions=True,
+            )
+            radio._civ_transport = transport
+            fake_connected(radio)
 
 
 @pytest.mark.parametrize("dispatch", [True, False])
