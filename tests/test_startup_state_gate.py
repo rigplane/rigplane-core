@@ -2936,6 +2936,69 @@ async def test_yaesu_unanswered_tx_state_opens_after_the_non_critical_deadline(
 
 
 @pytest.mark.asyncio
+async def test_ftx1_refused_mic_gain_does_not_abort_startup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4819: replay the reported startup failure, with MG; refused."""
+    path = FieldPath.global_("operator_controls", "mic_gain")
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
+    fake.hold("TX", "0")
+    fake.reject("MG")
+    await fake.start()
+    radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+    try:
+        await asyncio.wait_for(radio.connect(), 30)
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        try:
+            with caplog.at_level(logging.INFO):
+                await asyncio.wait_for(server.start(), timeout=60)
+            assert server._server is not None
+            port = server._server.sockets[0].getsockname()[1]
+            assert fake.commands.count("MG;") >= 2
+            scheduler = radio._acquisition_scheduler
+            assert scheduler.startup_defect is None
+            assert path in scheduler.refused_paths()
+            observed = _observed_paths(server, scheduler)
+            assert FREQ in observed
+            assert FieldPath.active("main", "freq_mode", "mode") in observed
+            assert path not in observed
+            reports = [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno >= logging.INFO and "'MG;'" in record.getMessage()
+            ]
+            assert len(reports) == 1
+            assert str(path) in reports[0]
+            assert "'?;'" in reports[0]
+            status, runtime = await _http_get_json(port, "/api/v1/runtime")
+            assert status == 200
+            refusal = runtime["stateAcquisition"]["scheduler"]["readRefusals"][
+                str(path)
+            ]
+            assert refusal["status"] == "unavailable"
+            assert refusal["command"] == "MG;"
+            assert refusal["frame"] == "?;"
+            assert "the radio refused to report mic gain" in refusal["message"]
+
+            fake._rejected_verbs.remove("MG")
+            await await_until(
+                lambda: path in _observed_paths(server, scheduler),
+                timeout=30,
+                description="mic gain observed on a later CAT poll",
+            )
+            assert path not in scheduler.refused_paths()
+            assert server.command_state_store.snapshot().field(path).value == 50
+        finally:
+            await server.stop()
+    finally:
+        await radio.disconnect()
+        await fake.stop()
+
+
+
+@pytest.mark.asyncio
 async def test_yaesu_refused_ptt_read_opens_after_the_non_critical_deadline(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
