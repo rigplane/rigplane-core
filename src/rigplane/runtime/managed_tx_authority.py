@@ -789,9 +789,27 @@ class ManagedTxAuthority:
         )
         return self._publish_started_submission(worker, admitted, started)
 
-    async def submit_force_off(self) -> ManagedTxSubmission:
+    async def submit_force_off(
+        self, *, binding_never_attached: Callable[[], bool] | None = None
+    ) -> ManagedTxSubmission:
         """Advance the abort fence and return before provider settlement."""
-        return await self._submit_ingress("force_off")
+        async with self._lock:
+            self._require_ingress_open_locked(release=True)
+            never_attached = (
+                self._generation_high_water < 0
+                and binding_never_attached is not None
+                and binding_never_attached()
+            )
+            transition = self._force_off_locked(never_attached=never_attached)
+            self._wakeup.wake()
+
+        async def settle() -> tuple[ManagedTxTransition, ActuationSettled | None]:
+            result = await self._execute(transition.effects, full_force=True)
+            return transition, result
+
+        completion = asyncio.create_task(settle())
+        self._own_submission(completion)
+        return ManagedTxSubmission(transition, completion)
 
     async def admit_managed_write(self, intent: CommandIntent) -> bool:
         """Apply the sole managed-intent relay policy without altering ``intent``."""
@@ -1242,33 +1260,10 @@ class ManagedTxAuthority:
         with contextlib.suppress(asyncio.CancelledError):
             await scheduler
 
-    async def _submit_ingress(
-        self, action: str, owner: str | None = None
-    ) -> ManagedTxSubmission:
-        async with self._lock:
-            self._require_ingress_open_locked(release=action == "force_off")
-            transition, full_force = self._transition_locked(action, owner)
-            if transition is None:
-                transition = ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
-            self._wakeup.wake()
-
-        async def settle() -> tuple[ManagedTxTransition, ActuationSettled | None]:
-            result = await self._execute(
-                transition.effects,
-                full_force=full_force,
-            )
-            return transition, result
-
-        completion = asyncio.create_task(settle())
-        self._own_submission(completion)
-        return ManagedTxSubmission(transition, completion)
-
     def _transition_locked(
         self, action: str, owner: str | None
     ) -> tuple[ManagedTxTransition | None, bool]:
         generation = self._provider_generation
-        if action == "force_off":
-            return self._force_off_locked(), True
         if owner is not None and self._state.intent == ManagedTxIntent.ptt(owner):
             if action == "ptt_down":
                 return self._reduce_locked(
@@ -1321,11 +1316,15 @@ class ManagedTxAuthority:
                 self._transmit_owner = owner
         return self._reduce_locked(event), False
 
-    def _force_off_locked(self) -> ManagedTxTransition:
+    def _force_off_locked(self, *, never_attached: bool = False) -> ManagedTxTransition:
         self._retry_due = None
         self._pending_abort_cleanup.append(self._abort_fence.force_off())
         return self._reduce_locked(
-            ForceOff(self._provider_generation, self._attempt_id_locked())
+            ForceOff(
+                self._provider_generation,
+                self._attempt_id_locked(),
+                never_attached=never_attached,
+            )
         )
 
     def _reduce_locked(self, event: ManagedTxEvent) -> ManagedTxTransition:

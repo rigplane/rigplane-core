@@ -84,6 +84,7 @@ from .radio_protocol import (  # noqa: F401, E402
     VoiceControlCapable,
 )
 from .radio_state import RadioState, VfoSlotState, YaesuStateExtension  # noqa: F401, E402
+from .runtime.managed_tx_state import ManagedTransmitReleaseDisposition  # noqa: F401, E402
 from .runtime.session_lifecycle import (  # noqa: F401, E402
     LifecycleErrorReason,
     LifecycleEvent,
@@ -420,6 +421,7 @@ def __dir__() -> list[str]:
 # Public API surface — tier-1 (semver-stable) + tier-2 (best-effort lazy).
 __all__ = [
     "__version__",
+    "ManagedTransmitReleaseDisposition",
     # --- Tier 1: Factory ---
     "create_radio",
     # --- Tier 1: Backend configs ---

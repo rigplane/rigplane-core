@@ -410,6 +410,7 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
     },
     "/api/v1/managed-transmit/command": {
         "required": ("ok", "operation", "result"),
+        "optional": ("releaseDisposition",),
         # HTTP 202 pending retains force_off debt until a provider rearms.
         "result_values": ("accepted", "pending", "rejected"),
     },

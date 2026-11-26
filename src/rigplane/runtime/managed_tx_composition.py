@@ -75,6 +75,8 @@ class ManagedTxCompositionPort(Protocol):
 
     async def bind_state_store(self, store: StateStore) -> None: ...
 
+    def note_transport_opened(self) -> None: ...
+
     async def transport_ready(self, identity: object) -> None: ...
 
     async def transport_unavailable(self, identity: object) -> None: ...
@@ -154,6 +156,7 @@ class ManagedTxComposition:
         self._unsubscribe: Callable[[], None] | None = None
         self._observation_generation: int | None = None
         self._live_transport_identity: object | None = None
+        self._ever_had_transport = False
         self._stale_transport_identities: list[object] = []
         self._active_provider: _ProviderEvent | None = None
         self._events: dict[int, _ProviderEvent] = {}
@@ -217,7 +220,12 @@ class ManagedTxComposition:
         self._live_transport_identity = None
         self._poison_active()
 
+    def note_transport_opened(self) -> None:
+        # The serial open edge precedes identity checks and provider publication.
+        self._ever_had_transport = True
+
     async def transport_ready(self, identity: object) -> None:
+        self.note_transport_opened()
         async with self._transition_lock:
             if self._shutdown_task is not None:
                 return
@@ -232,6 +240,9 @@ class ManagedTxComposition:
             self._live_transport_identity = identity
             await self._join_transition_locked()
             await self._ensure_current_locked()
+
+    def never_had_transport(self, store: StateStore) -> bool:
+        return self._state_store is store and not self._ever_had_transport
 
     async def transport_unavailable(self, identity: object) -> None:
         async with self._transition_lock:

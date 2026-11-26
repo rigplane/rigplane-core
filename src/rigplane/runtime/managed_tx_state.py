@@ -20,6 +20,12 @@ class ManagedTxOutcome(StrEnum):
     STALE = "stale"
 
 
+class ManagedTransmitReleaseDisposition(StrEnum):
+    """Disposition of a force-off requested for an owned binding's detach."""
+
+    NOT_APPLICABLE = "not_applicable"
+
+
 class ReleasePlan(StrEnum):
     PTT_RELEASE = "ptt_release"
     FORCE_RELEASE = "force_release"
@@ -146,6 +152,7 @@ class TransmitOn:
 class ForceOff:
     provider_generation: int | None
     attempt_id: str
+    never_attached: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +192,7 @@ class ManagedTxTransition:
     state: ManagedTxState
     outcome: ManagedTxOutcome
     effects: tuple[ManagedTxEffect, ...] = ()
+    release_disposition: ManagedTransmitReleaseDisposition | None = None
 
 
 def submission_refused_for_release_debt(submission: object) -> bool:
@@ -347,6 +355,17 @@ def reduce_managed_tx(
         return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, (effect,))
 
     if isinstance(event, ForceOff):
+        if (
+            event.never_attached
+            and event.provider_generation is None
+            and not state.release_required
+            and state.pending_effect is None
+        ):
+            return ManagedTxTransition(
+                state,
+                ManagedTxOutcome.ACCEPTED,
+                release_disposition=ManagedTransmitReleaseDisposition.NOT_APPLICABLE,
+            )
         epoch = state.effect_epoch + 1
         force_effect = (
             None

@@ -470,6 +470,8 @@ class YaesuCatRadio:
                 if generation == self._identity_generation:
                     self.last_error = diagnostic
                 raise RadioConnectionError(diagnostic) from cause
+            if self._managed_tx_composition is not None:
+                self._managed_tx_composition.note_transport_opened()
             if generation != self._identity_generation:
                 await self._transport.close()
                 return

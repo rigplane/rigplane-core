@@ -6,21 +6,30 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
 from rigplane.core.state_pipeline_contracts import Observation, SourceMetadata
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_state import (
+    ActuationOperation,
     ManagedTxIntent,
     ManagedTxIntentKind,
     ManagedTxOutcome,
     ManagedTxState,
     ReleasePlan,
 )
+from rigplane.testing.timing import virtual_clock
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import attach_managed_tx_composition
+from test_managed_tx_production_composition import LegacyRadio, RecordingActuator
 
 
 class _Writer:
@@ -160,6 +169,82 @@ def _observe(server: WebServer, value: ObservedPtt) -> None:
             max_age=30.0,
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("scenario", "detach", "expected_disposition", "expected_result"),
+    [
+        ("never_attached", True, "not_applicable", "accepted"),
+        ("never_attached", False, None, "pending"),
+        ("keyed", True, None, "accepted"),
+        ("release_debt", True, None, "pending"),
+        ("attached_ptt_unknown", True, None, "accepted"),
+        ("retired_provider", True, None, "pending"),
+        ("port_opened_before_provider", True, None, "pending"),
+        ("observed_tx_without_provider", True, None, "pending"),
+    ],
+)
+@virtual_clock
+async def test_detach_force_off_uses_attachment_history(
+    clock, tmp_path, scenario, detach, expected_disposition, expected_result
+) -> None:
+    actuator = RecordingActuator()
+    radio = SimpleNamespace(
+        capabilities=(),
+        conn_state="reconnecting",
+        last_error="serial_not_found",
+        serial_open_error="serial_not_found",
+        control_connected=False,
+        set_ptt=LegacyRadio().set_ptt,
+    )
+    composition = ManagedTxComposition(
+        actuator, config_path=tmp_path / "managed-tx.json"
+    )
+    install_managed_tx_composition(radio, composition)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    attach_managed_tx_composition(server, composition)
+    authority = composition.authority
+    if scenario == "port_opened_before_provider":
+        composition.note_transport_opened()
+    await composition.bind_state_store(server.command_state_store)
+    if scenario in {"keyed", "attached_ptt_unknown", "retired_provider"}:
+        await composition.transport_ready(radio)
+    if scenario == "retired_provider":
+        await composition.transport_unavailable(radio)
+    if scenario == "keyed":
+        await (await authority.submit_transmit_on()).wait_settlement()
+    if scenario in {"keyed", "observed_tx_without_provider"}:
+        _observe(server, ObservedPtt.ON)
+    if scenario == "release_debt":
+        await (await authority.submit_force_off()).wait_settlement()
+    actuator.operations.clear()
+
+    reader, headers = _reader({"operation": "force_off"})
+    if detach:
+        headers["x-rigplane-release-for-detach"] = "1"
+    writer = _Writer()
+    termination = asyncio.Event()
+    try:
+        await server._handle_http(
+            writer,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/managed-transmit/command",
+            headers=headers,
+            reader=reader,
+        )
+        await clock.elapse(0)
+        assert writer.status == 202
+        assert writer.payload.get("releaseDisposition") == expected_disposition
+        assert writer.payload["result"] == expected_result
+        assert (await authority.snapshot()).state.release_required is (
+            expected_result == "pending"
+        )
+        assert (ActuationOperation.FORCE_RECEIVE in actuator.operations) is (
+            scenario in {"keyed", "attached_ptt_unknown"}
+        )
+    finally:
+        termination.set()
+        await composition.shutdown(termination)
 
 
 @pytest.mark.asyncio

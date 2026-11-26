@@ -101,7 +101,8 @@ from ..runtime.controller_authority import (
     ControllerError,
     ControllerTicket,
 )
-from ..runtime.managed_tx_authority import ManagedTxAuthority
+from ..runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
+from ..runtime.managed_tx_composition import ManagedTxComposition
 from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..runtime.tx_gate import tx_gate_open
 from ..runtime.tx_interlock import (
@@ -5909,6 +5910,21 @@ class WebServer:
             },
         )
 
+    def _managed_tx_never_attached(self, authority: ManagedTxAuthority) -> bool:
+        from .web_startup import _serial_port_unopened  # noqa: TID251
+
+        port = self._production_managed_tx_port
+        return (
+            isinstance(port, ManagedTxComposition)
+            and port.authority is authority
+            and port.never_had_transport(self.command_state_store)
+            and _serial_port_unopened(self)
+            and isinstance(getattr(self._radio, "serial_open_error", None), str)
+            and getattr(self._radio, "control_connected", None) is False
+            and project_observed_ptt(self.command_state_store.snapshot())
+            is not ObservedPtt.ON
+        )
+
     async def _handle_http_managed_tx(
         self,
         path: str,
@@ -5981,6 +5997,14 @@ class WebServer:
                         expires_at_monotonic=expires_at,
                         connection_generation=connection_generation,
                     )
+                elif (headers or {}).get(
+                    "x-rigplane-release-for-detach"
+                ) == "1" and isinstance(authority, ManagedTxAuthority):
+                    submission = await authority.submit_force_off(
+                        binding_never_attached=functools.partial(
+                            self._managed_tx_never_attached, authority
+                        )
+                    )
                 else:
                     submission = await authority.submit_force_off()
             except RuntimeError:
@@ -6003,19 +6027,24 @@ class WebServer:
                 and operation == "force_off"
                 and getattr(submission, "pending_release", False)
             )
+            receipt = {
+                "ok": accepted,
+                "operation": operation,
+                "result": "pending"
+                if pending
+                else "accepted"
+                if accepted
+                else "rejected",
+            }
+            if isinstance(submission, ManagedTxSubmission):
+                disposition = submission.transition.release_disposition
+                if disposition is not None:
+                    receipt["releaseDisposition"] = disposition.value
             await self._send_json(
                 writer,
                 202 if accepted else 409,
                 "Accepted" if accepted else "Conflict",
-                {
-                    "ok": accepted,
-                    "operation": operation,
-                    "result": "pending"
-                    if pending
-                    else "accepted"
-                    if accepted
-                    else "rejected",
-                },
+                receipt,
             )
             return
 
