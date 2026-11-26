@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Callable
 from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -32,6 +33,7 @@ from rigplane.core.radio_protocol import (
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
 from rigplane.testing.timing import await_until
+from rigplane.web.server import WebConfig, WebServer
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 # Bench-measured FTX-1 IF; frame (see tests/test_ftx1_radio.py,
@@ -68,6 +70,10 @@ class FakeCatTransport:
         self.probe_gate: asyncio.Event | None = None
         self.on_probe: Callable[[], None] | None = None
         self.baudrate = 38400
+        self.timeout = 1.0
+
+    def bind_provider_generation(self, _capture: Callable[[], int]) -> None:
+        """Accept the poller's binding; scripted exchanges resolve inline."""
 
     def set_baudrate(self, baudrate: int) -> bool:
         """``YaesuCatTransport.set_baudrate`` on a port with no pyserial object.
@@ -178,6 +184,42 @@ async def test_answer_without_expected_metadata_stays_unverified() -> None:
     assert identity.answered_model is None
     assert radio.connected is True
     assert transport.queries[:2] == ["ID;", "IF;"]
+
+
+@pytest.mark.parametrize(
+    ("answers", "identity_status", "ready"),
+    [
+        (["ID0840", _IF_FRAME], "verified", True),
+        (["ID1234"], "identity_mismatch", False),
+    ],
+)
+async def test_http_state_control_connection_tracks_transport(
+    answers: list[str], identity_status: str, ready: bool
+) -> None:
+    radio, transport = make_radio(expected_ids=("0840",), answers=answers)
+    async with radio:
+        server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+        try:
+            await server.start()
+            url = f"http://127.0.0.1:{server.port}/api/v1/state"
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5.0)
+            ) as session:
+                async with session.get(url) as response:
+                    assert response.status == 200
+                    live = (await response.json())["connection"]
+                assert live["controlConnected"] is True
+                assert live["radioReady"] is ready
+                assert live["identity"]["status"] == identity_status
+
+                await transport.close()
+                async with session.get(url) as response:
+                    assert response.status == 200
+                    lost = (await response.json())["connection"]
+                assert lost["controlConnected"] is False
+                assert lost["radioReady"] is False
+        finally:
+            await server.stop()
 
 
 async def test_profile_without_identity_read_connects_unverified() -> None:
