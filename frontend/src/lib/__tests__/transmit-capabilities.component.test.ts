@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { TRANSMIT_CAPABILITIES, NEVER_GUARDED, CAPABILITY_ATTRIBUTE } from '../transmit-capabilities';
 import { setLocale } from '../i18n';
@@ -199,11 +199,6 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
   });
 });
 
-afterAll(() => {
-  // A newly added capability cannot silently be absent from every fixture.
-  expect([...seen].sort()).toEqual(Object.values(TRANSMIT_CAPABILITIES).map(({ id }) => id).sort());
-});
-
 describe('operation variants and composite renderers', () => {
   it.each([false, true])('only marks phone setup power-on (radio on=%s)', async (on) => {
     setRadioPowerOn(on);
@@ -226,6 +221,7 @@ describe('operation variants and composite renderers', () => {
       const power = target.querySelector<HTMLButtonElement>('.m-tx-info')!;
       expect(power).not.toBeNull();
       expect(power.disabled).toBe(false);
+      expect(power.closest(markerSelector), 'opening the RF-power editor is not a TX operation').toBeNull();
       power.click();
       flushSync();
       const slider = target.querySelector('[role="slider"]');
@@ -508,4 +504,10 @@ describe('antenna renderer and wrapper styling', () => {
     expect(button).not.toBeNull();
     expect(button!.matches(rule![1].trim())).toBe(true);
   });
+});
+
+it('every listed capability has a harness case', () => {
+  const missing = Object.values(TRANSMIT_CAPABILITIES)
+    .map(({ id }) => id).filter((id) => !seen.has(id));
+  expect(missing, `Missing capability harness cases: ${missing.join(', ')}`).toEqual([]);
 });

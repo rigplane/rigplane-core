@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from 'svelte/compiler';
-import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '../transmit-capabilities';
+import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES, MARKED_CONTROL_HANDLERS, NON_DOM_TX_PATHS } from '../transmit-capabilities';
+import defaultKeymap from '../../../../rigs/_keyboard-default.toml?raw';
 
 const sources = import.meta.glob('../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const product = Object.entries(sources).filter(([path]) =>
@@ -67,6 +68,7 @@ const NOT_TX: Record<string, Record<string, { count: number; reason: string }>> 
     "button class=\"m-tune-btn\"": notTx("Ordinary VFO frequency/step adjustment; outside the TX-operation marker contract.", 2),
     "button class=\"m-tune-step\"": notTx("Opens an editor; the operation controls inside carry their own markers."),
     "button class=\"m-tx-settings-btn\"": notTx("Opens an editor; the operation controls inside carry their own markers."),
+    "button class=\"m-tx-info\"": notTx("Opens the RF-power editor; the ValueControl inside carries the operation marker."),
   },
   "../../components-v2/layout/RadioLayout.svelte": {
     "button class=\"settings-close\"": notTx("Dismisses UI; sends no TX command."),
@@ -178,6 +180,39 @@ function unmarkedButtons(source: string): string[] {
 }
 
 describe('transmit capability source ownership', () => {
+  it('documents every default keyboard action that calls a marked-control handler', () => {
+    // Resolve action aliases from the real switch, rather than maintaining a
+    // second action allow-list in this test. The contract owns the shared
+    // handlers used by marked controls and their capability mapping.
+    const commands = sources['../../lib/runtime/commands/panel-commands.ts'];
+    expect(commands).toBeDefined();
+    const keyboard = commands.slice(commands.indexOf('export function dispatchKeyboardRadioAction'));
+    const cases = [...keyboard.matchAll(/case '([^']+)':([\s\S]*?)(?=\n\s*case '|\n\s*default:|$)/gu)];
+    const bound = [...defaultKeymap.matchAll(/^action\s*=\s*"([^"]+)"/gmu)].map((match) => match[1]);
+    const handlers = Object.keys(MARKED_CONTROL_HANDLERS);
+    expect(cases.length).toBeGreaterThan(0);
+    expect(bound.length).toBeGreaterThan(0);
+    const affected = cases.filter(([, , body]) => handlers.some((handler) => body.includes(handler)))
+      .map(([, action]) => action);
+    expect(affected).toContain('toggle_split');
+    const missing = [...new Set(bound.filter((action) => affected.includes(action)))]
+      .filter((action) => !(action in NON_DOM_TX_PATHS));
+    expect(missing, `Undocumented non-DOM TX actions: ${missing.join(', ')}`).toEqual([]);
+    for (const [handler, capability] of Object.entries(MARKED_CONTROL_HANDLERS)) {
+      expect(keyboard, handler).toContain(handler);
+      expect(Object.values(TRANSMIT_CAPABILITIES).map(({ id }) => id)).toContain(capability);
+    }
+    for (const [action, entry] of Object.entries(NON_DOM_TX_PATHS)) {
+      expect(entry.reason.trim(), action).not.toBe('');
+      expect(entry.triggers.length, action).toBeGreaterThan(0);
+      for (const trigger of entry.triggers) {
+        const source = sources[`../../${trigger.file}`];
+        expect(source, trigger.file).toBeDefined();
+        expect(source, `${action}: ${trigger.file}`).toContain(trigger.symbol);
+      }
+    }
+  });
+
   it('keeps ID and attribute literals in the contract, with imports at consumers', () => {
     const ids = Object.values(TRANSMIT_CAPABILITIES).map(({ id }) => id);
     const literals = [...ids, CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY];

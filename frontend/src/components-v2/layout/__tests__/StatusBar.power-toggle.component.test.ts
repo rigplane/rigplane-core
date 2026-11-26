@@ -173,6 +173,12 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     await tick();
     const confirm = dialogButton(host, 'confirm-dialog-confirm');
     expect(confirm.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(on ? null : TRANSMIT_CAPABILITIES.powerOn.id);
+    if (on) {
+      expect(confirm.closest(marker), NEVER_GUARDED.powerOff.reason).toBeNull();
+      expect(confirm.disabled).toBe(false);
+    } else {
+      expect(confirm.closest(marker)?.getAttribute(CAPABILITY_ATTRIBUTE)).toBe(TRANSMIT_CAPABILITIES.powerOn.id);
+    }
     confirm.click();
     await tick();
     expect(on ? sys.powerOff : sys.powerOn).toHaveBeenCalledOnce();

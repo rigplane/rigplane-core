@@ -188,6 +188,8 @@
          `pressed`, the same value `aria-pressed` already carries. -->
     {#if momentary}
     {@const holdLabel = t('core.rxTx.holdToTalk')}
+    <!-- The momentary hold button is marked unconditionally. The separate
+         rx-tx-unkey button below keeps emergency release reachable. -->
     <button
       {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txHold.id }}
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"

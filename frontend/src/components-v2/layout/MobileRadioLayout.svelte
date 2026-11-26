@@ -965,7 +965,7 @@
                  entry reads as available (legacy no-entry fallback) while
                  `toTxProps` reports NaN, and `formatPower(NaN)` is "NaNW" —
                  so finiteness decides with it. -->
-            <button type="button" class="m-tx-info" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.rfPower.id }} disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
+            <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
               <span class="m-tx-power-value">{valueText(tx.rfPowerAvailable ? finiteValue(tx.rfPower) : null, formatPower)}</span>
               {#if managedTxRf === 'on'}
                 <!-- MOR-2658: an unread SWR renders EMPTY in the reserved
