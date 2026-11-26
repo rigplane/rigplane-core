@@ -26,6 +26,7 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -40,6 +41,7 @@
     type CommandScalarFeedback,
     type ContinuousScalarInput,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { CwKeyerField, RadioViewModel } from './radio-view-model';
 
@@ -196,7 +198,7 @@
     {@const form = presentation?.form ?? 'hbar'}
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
-    {@const disabledReason = usable(current) ? undefined : 'Not yet observed'}
+    {@const disabledReason = disabledFieldReasonText(current)}
     {@const accessibility = {
       description: disabledReason ?? null,
       valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
@@ -205,6 +207,7 @@
       class="cw-keyer-level"
       class:cw-keyer-level--presented={explicitPresentation}
       data-testid={`cw-keyer-${field}`}
+      {...{ [CAPABILITY_ATTRIBUTE]: field === 'keyerSpeed' ? TRANSMIT_CAPABILITIES.txSettings.id : undefined }}
       data-field={field}
       data-scalar-form={form}
       data-observed={usable(current) && canonical(field) !== null}

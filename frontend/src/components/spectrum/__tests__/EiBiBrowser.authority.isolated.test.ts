@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { readFileSync } from 'node:fs';
+import { controllerClient } from '$lib/transport/controller-client';
 
 type Slot =
   | { kind: 'slotted'; id: 'A' | 'B' }
@@ -107,6 +108,7 @@ afterEach(() => {
   target.remove();
   vi.unstubAllGlobals();
   localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe('MOR-1409 A05b EiBi tune authority', () => {
@@ -152,7 +154,10 @@ describe('MOR-1409 A05b EiBi tune authority', () => {
     }
   });
 
-  it('omits retired credentials from the fetch POST and preserves its body and content type', async () => {
+  it('sends the controller credential on the fetch POST and omits retired credentials', async () => {
+    const controllerKey = 'a'.repeat(64);
+    vi.spyOn(controllerClient, 'remote', 'get').mockReturnValue(true);
+    vi.spyOn(controllerClient, 'headers').mockReturnValue({ 'X-RigPlane-Controller': controllerKey });
     localStorage.setItem('rigplane-auth-token', 'fetch-token');
     h.fetch.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -177,13 +182,17 @@ describe('MOR-1409 A05b EiBi tune authority', () => {
     target.querySelector<HTMLButtonElement>('.eibi-fetch-btn')!.click();
 
     await vi.waitFor(() => {
-      expect(h.fetch).toHaveBeenCalledWith('/api/v1/eibi/fetch', {
+      const call = h.fetch.mock.calls.find(([url]) => url === '/api/v1/eibi/fetch');
+      expect(call).toBeDefined();
+      const init = call![1] as RequestInit;
+      expect(init).toMatchObject({
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({ force: false }),
       });
+      const headers = new Headers(init.headers);
+      expect(headers.get('X-RigPlane-Controller')).toBe(controllerKey);
+      expect(headers.get('Content-Type')).toBe('application/json');
+      expect(headers.has('Authorization')).toBe(false);
     });
   });
 

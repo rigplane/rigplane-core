@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -159,7 +158,8 @@ def _server(
 
 
 def _observe(server: WebServer, value: ObservedPtt) -> None:
-    now = time.monotonic()
+    # Stamp the evidence with the store's own freshness time, not a wall-clock read.
+    now = server.command_state_store.snapshot().generated_at_monotonic
     server.command_state_store.apply_current(
         Observation(
             path=OBSERVED_PTT_PATH,
@@ -335,6 +335,7 @@ async def test_rejected_transmit_admission_maps_to_conflict() -> None:
         "ok": False,
         "operation": "transmit_on",
         "result": "rejected",
+        "code": "other",
     }
     assert authority.submissions[0].settlement_waits == 0
 

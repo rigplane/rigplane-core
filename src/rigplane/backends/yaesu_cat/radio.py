@@ -40,6 +40,7 @@ from ...profiles.control_domain import (
     validate_control_raw_value,
 )
 from ...radio_state import RadioState
+from ...core.radio_owned_modes import ModeWriteEvidence
 from ...runtime.callable_support import supports_callable
 from ...runtime._connection_state import RadioConnectionState
 from ...runtime.local_tx_work import LocalTxWorkRunner
@@ -310,6 +311,7 @@ class YaesuCatRadio:
             device=device, baudrate=baudrate, reply_heads=frozenset(reply_heads)
         )
         self._state = RadioState()
+        self._mode_write_evidence = ModeWriteEvidence(self.profile.radio_owned_modes)
         self._audio_bus: AudioBus | None = None
         self._audio_session: AudioSession | None = None
         self._audio_seq = 0
@@ -450,6 +452,7 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
+        self._mode_write_evidence.reset()
         # MOR-4207: the first open and the first byte at the head of the
         # connect order (the profile baud); the rest is asked on silence.
         connect_bauds = self._serial_connect_bauds()
@@ -539,6 +542,7 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
+        self._mode_write_evidence.reset()
         self._audio_reestablish_generation = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
@@ -1777,7 +1781,24 @@ class YaesuCatRadio:
         self, mode: str, receiver: int, *, is_current: Callable[[], bool] | None = None
     ) -> None:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
-        await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
+        generation = self._identity_generation
+        write_attempt = self._mode_write_evidence.begin(receiver)
+        try:
+            await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
+        except CommandRejectedError:
+            try:
+                write_attempt.finish(
+                    refused=True, current=generation == self._identity_generation
+                )
+            except Exception:
+                logger.exception("Could not record mode-write refusal evidence")
+            raise
+        try:
+            write_attempt.finish(
+                refused=False, current=generation == self._identity_generation
+            )
+        except Exception:
+            logger.exception("Could not clear mode-write refusal evidence")
         for attempt in range(5):
             observed, _ = await self.get_mode(receiver, require_assigned=True)
             if observed == mode:

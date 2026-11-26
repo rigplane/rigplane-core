@@ -128,11 +128,13 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { ValueControl } from '../components-v2/controls/value-control';
   import { bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import {
@@ -271,10 +273,13 @@
 
 {#snippet offsetSlot()}
   <label class="offset" data-testid="ritxit-offset"
+    {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
     data-observed={offset !== undefined && usable(offset)}>
     <span>Offset</span>
     <ValueControl
       binding={offsetBinding} label="Offset" renderer="bipolar"
+      title={disabledFieldReasonText(offset)}
+      accessibility={{ description: disabledFieldReasonText(offset) ?? null }}
       showLabel={false} showValue={false} compact={true}
       variant={fader ? 'hardware-illuminated' : 'modern'}
       accentColor={fader ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
@@ -309,7 +314,7 @@
           <span class="row-label">SCAN</span>
           {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{readingText(sc.scanning)}</span>{/if}
           <button
-            type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
+            type="button" data-testid="scan-toggle" title={disabledFieldReasonText(sc.scanning)} aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
           >{readingValue(sc.scanning) === true ? 'STOP' : 'START'}</button>

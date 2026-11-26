@@ -207,6 +207,7 @@ def test_to_dict_structure() -> None:
         "data3_mod_input",
         "tx_band_edges",
         "scope_controls",
+        "radio_owned_modes",
         "main",
         "sub",
     }

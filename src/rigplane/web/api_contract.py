@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final, Literal, NotRequired, TypedDict
 
+from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
+
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
 
@@ -200,6 +202,23 @@ class ManagedTransmitDocument(TypedDict):
     sampledAt: str
     managedTransmit: ManagedTransmitBlockRecord
     txObservation: TxObservationRecord
+
+
+class ManagedTransmitCommandReply(TypedDict):
+    """Managed command admission body; rejected replies add ``code``.
+
+    The producer vocabulary is ``ManagedTxRefusalReason``. Receivers must
+    tolerate unknown codes, display a generic refusal, and retain the raw
+    code for support diagnostics. Existing ``result`` values are unchanged.
+    """
+
+    ok: bool
+    operation: Literal["transmit_on", "force_off"]
+    result: Literal["accepted", "pending", "rejected"]
+    code: NotRequired[ManagedTxRefusalReason]
+    # Detach force-off only: Core proved the binding never attached a radio and owes no
+    # release. Receivers treat an unknown value as the unconfirmed-release path.
+    releaseDisposition: NotRequired[Literal["not_applicable"]]
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
@@ -410,9 +429,9 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
     },
     "/api/v1/managed-transmit/command": {
         "required": ("ok", "operation", "result"),
-        "optional": ("releaseDisposition",),
         # HTTP 202 pending retains force_off debt until a provider rearms.
         "result_values": ("accepted", "pending", "rejected"),
+        "optional": ("code", "releaseDisposition"),
     },
     "/api/v1/managed-transmit/tot": {
         "required": (

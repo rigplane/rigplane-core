@@ -136,6 +136,25 @@ function currentLease(binding: unknown): ContinuousScalarRendererLease {
 }
 
 describe('TxAuxScalarHost independent composition', () => {
+  it.each(['The radio refused to report mic gain.', undefined])('renders the control own explanation %j and clears it on recovery', (message) => {
+    activation.selected = undefined;
+    const view = withTxAux(topologyFixtures['1/single']);
+    view.txAux!.micGain = { reading: { status: 'unknown' },
+      availability: { structural: true, operational: false, message } };
+    const r = render({ view, levelFeedback: undefined });
+    const input = () => r.row('micGain').querySelector<HTMLElement>('[role="slider"]')!;
+    const expected = message ?? 'Not yet observed';
+    expect(r.row('micGain').title).toBe(expected);
+    const description = input().getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(description.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ')).toContain(expected);
+    expect(input().getAttribute('aria-disabled')).toBe('true');
+    r.props.view = withTxAux(topologyFixtures['1/single']);
+    flushSync();
+    expect(r.row('micGain').title).not.toContain(expected);
+    expect(input().getAttribute('aria-disabled')).not.toBe('true');
+    r.dispose();
+  });
   it('provides all eight structural scalar handles through the selected appearance', () => {
     const r = render();
     expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(8);

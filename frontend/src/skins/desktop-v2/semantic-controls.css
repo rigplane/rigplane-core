@@ -203,6 +203,12 @@
   flex: 1 1 0;
 }
 
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-row, .filter-choice-group, .rx-audio-row, .dsp-row, .cw-keyer-row, .tx-aux-row, .antenna-row
+) > .rp-capability-renderer > button {
+  flex: 1 1 0;
+}
+
 .desktop-control-face .semantic-control-panel .filter-choice-group:first-child {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { ValueControl } from '../controls/value-control';
   import { HardwareButton, HardwarePlainButton } from '../../lib/Button';
@@ -116,7 +117,7 @@
 </script>
 
 {#if visible}
-    <div class="panel-body">
+    <div class="panel-body" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}>
       {#if hasRit}
         <div class="row">
           <HardwareButton indicator="dot" active={ritActive} pressed={ritKnown ? ritActive : undefined} disabled={!ritKnown} color="cyan" onclick={onRitToggle} shortcutHint={ritShortcut} title={ritShortcut}>RIT</HardwareButton>

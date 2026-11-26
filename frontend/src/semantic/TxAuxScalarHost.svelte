@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, type Snippet } from 'svelte';
   import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -18,9 +19,9 @@
   import {
     rawToPercentDisplay, rfPowerDisplay, validRfPowerScale, type RfPowerScale,
   } from '../primitives/scalar/value-control-core';
-  import { disabledReasonText } from './disabled-reason';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
-  import type { RadioViewModel, TxAuxField } from './radio-view-model';
+  import type { RadioViewModel } from './radio-view-model';
   import {
     TX_AUX_FEEDBACK_LEVELS,
     TX_AUX_LEVELS,
@@ -58,10 +59,7 @@
   };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: TxAuxLevelField) => TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
-  const reasonText = (field: TxAuxField<unknown>): string | undefined =>
-    (!field.availability.structural
-      ? disabledReasonText(field.availability)
-      : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false }));
+  const reasonText = disabledFieldReasonText;
   // MOR-2647: an unread value renders no text. Every consumer of this —
   // the readout, the canonical output, aria-valuetext and the feedback
   // status — inherits the empty string, so none of them can print `?`.
@@ -199,9 +197,9 @@
   }
   function reason(field: TxAuxLevelField): string | undefined {
     const current = txAux?.[field];
-    if (current === undefined) return 'Not yet observed';
+    if (current === undefined) return disabledFieldReasonText(current);
     if (feedbackOf(field)?.availability === 'unavailable') {
-      return reasonText(current) ?? 'Not yet observed';
+      return disabledFieldReasonText({ ...current, availability: { ...current.availability, operational: false } });
     }
     return reasonText(current);
   }
@@ -231,6 +229,7 @@
     }}
     <div
       class="tx-aux-level"
+      {...{ [CAPABILITY_ATTRIBUTE]: field === 'rfPower' ? TRANSMIT_CAPABILITIES.rfPower.id : TRANSMIT_CAPABILITIES.txSettings.id }}
       class:tx-aux-level--presented={explicitPresentation}
       data-testid={`tx-aux-${field}`}
       data-field={field}

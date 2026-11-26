@@ -1,15 +1,12 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
-  import { disabledReasonText } from './disabled-reason';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   const reasonOf = (field: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(field) ? undefined : 'field-not-observed';
 
-  const reasonTextOf = (field: TxAuxField<unknown>): string | undefined =>
-    !field.availability.structural
-      ? disabledReasonText(field.availability)
-      : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false });
+  const reasonTextOf = disabledFieldReasonText;
 
   // MOR-2647: a key carries no value text. The only reading that still
   // needs words is ATU `tuning`, and that lives in the title, not the label.
@@ -21,6 +18,7 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, type Snippet } from 'svelte';
   import '../components-v2/controls/control-button.css';
   import {
@@ -54,6 +52,9 @@
     view, tx, onToggle, onAtuTune, children, finiteAppearance, rendererContext,
   }: Props = $props();
   let txAux = $derived(view?.txAux);
+  const capabilityOf = (field: TxAuxToggleField) => field === 'atu'
+    ? TRANSMIT_CAPABILITIES.atu.id : field === 'vox'
+      ? TRANSMIT_CAPABILITIES.vox.id : TRANSMIT_CAPABILITIES.txSettings.id;
   let tuneBlocked = $derived(view === null ? [] : keyBlockedReasons(view, tx));
 
   const blockedId = `tx-aux-blocked-${++sequence}`;
@@ -135,11 +136,13 @@
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
         seat={toggleSeats[field]} renderer={finiteAppearance.toggle}
+        capability={capabilityOf(field)}
       />{/key}{/key}
     {:else}
       <button
         type="button" class="tx-aux-toggle v2-control-button v2-control-button--compact"
         data-testid={`tx-aux-${field}`} data-field={field}
+        {...{ [CAPABILITY_ATTRIBUTE]: capabilityOf(field) }}
         data-surface="hardware" data-indicator-style="dot" data-indicator-color="cyan"
         data-active={behavior.confirmed} data-disabled-reason={reasonOf(source)}
         title={reasonTextOf(source) ?? tuningTitle(source)} aria-label={label}
@@ -166,11 +169,13 @@
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
         seat={tuneSeat} renderer={finiteAppearance.action}
+        capability={TRANSMIT_CAPABILITIES.tune.id}
       />{/key}{/key}
     {:else}
       <button
         type="button" class="tx-aux-tune v2-control-button v2-control-button--compact"
         data-surface="hardware" data-testid="tx-aux-atu-tune"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.tune.id }}
         title={tuneReason} aria-describedby={tuneDescribedBy}
         disabled={!tuneBehavior.available} onclick={() => tuneBehavior.invoke()}
       >TUNE</button>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { runtime } from '$lib/runtime';
   import { getHostUi } from '$lib/local-extensions/host-ui';
   import { t } from '$lib/i18n';
@@ -630,6 +631,7 @@
       </button>
       <span class="m-ls-filter">{activeVfo.filter}</span>
       {#if txCapable}
+        <!-- Unkey is never gated (NEVER_GUARDED.unkey). -->
         <button
           type="button"
           class="m-ls-unkey"
@@ -640,6 +642,7 @@
         {#if !latched}
           <button
             class="m-ls-ptt"
+            {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txHold.id }}
             class:m-ptt-held={owned}
             class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
             use:pttButton
@@ -977,6 +980,7 @@
             <!-- ATU -->
             <button
               class="m-atu-btn"
+              {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.tune.id }}
               class:m-atu-on={atuStatus === 'on'}
               class:m-atu-tuning={atuStatus === 'tuning'}
               ontouchstart={atuTouchStart}
@@ -1014,6 +1018,17 @@
       </section>
     {/if}
   </main>
+  <!-- ═══ TX SETTINGS MODAL ═══ -->
+  <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
+          <!-- MOR-1245 — while this sheet is open, the fixed overlay below
+               stays the one banner: TxPanel's inline copy is suppressed. -->
+          <TxPanel showManagedTotControl={true} suppressModInputTxWarning
+            scalarHandles={instruments.txAuxScalars} finiteHandles={instruments.txAuxInstruments} />
+          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
+               is positioned from the panel's viewport box and opens below this
+               bottom-anchored sheet; the phone gets the switch here instead. -->
+          <TxMicProcessingControl />
+  </BottomSheet>
     {/snippet}
   </SemanticRadioSurfaces>
 
@@ -1085,7 +1100,7 @@
        Remaining here: RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
   <BottomSheet bind:open={setupOpen} title={t('core.mobile.sheet.setup')}>
           {#if hasCapability('power_control') && !runtime.remoteController}
-            <button type="button" class="power-toggle-btn m-radio-power" disabled={radioPowerOn === null}
+            <button type="button" class="power-toggle-btn m-radio-power" {...{ [CAPABILITY_ATTRIBUTE]: radioPowerOn === false ? TRANSMIT_CAPABILITIES.powerOn.id : undefined }} disabled={radioPowerOn === null}
               onclick={() => { if (radioPowerOn !== null) getHostUi()?.setRadioPower(!radioPowerOn); }}>
               {powerLabel}
             </button>
@@ -1138,6 +1153,7 @@
                   indicator="edge-left"
                   color="cyan"
                   onclick={() => { modeHandlers.onDataModeChange(d); }}
+                  data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txSettings.id }}
                 >
                   {d === 0 ? 'OFF' : `D${d}`}
                 </HardwareButton>
@@ -1153,6 +1169,7 @@
 
   <!-- ═══ POWER MODAL ═══ -->
   <BottomSheet bind:open={powerModalOpen} title={t('core.mobile.sheet.rfPower')} compact contentStyle="padding: 12px;">
+        <div style="display: contents" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.rfPower.id }}>
           <ValueControl
             label="RF Power"
             value={tx.rfPower}
@@ -1166,18 +1183,9 @@
             variant="hardware-illuminated"
             disabled={!tx.rfPowerAvailable}
           />
+        </div>
   </BottomSheet>
 
-  <!-- ═══ TX SETTINGS MODAL ═══ -->
-  <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
-          <!-- MOR-1245 — while this sheet is open, the fixed overlay below
-               stays the one banner: TxPanel's inline copy is suppressed. -->
-          <TxPanel showManagedTotControl={true} suppressModInputTxWarning />
-          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
-               is positioned from the panel's viewport box and opens below this
-               bottom-anchored sheet; the phone gets the switch here instead. -->
-          <TxMicProcessingControl />
-  </BottomSheet>
 </div>
 {/if}
 

@@ -23,6 +23,7 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import '../components-v2/controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
@@ -125,11 +126,9 @@
     return value === null ? undefined : value === 'off' ? 'false' : 'true';
   }
 
-  /** Present but unoperational is unobserved — the same wording family the
-   *  TX aux toggles draw from (`TxAuxFiniteHost`'s `reasonTextOf`). */
   function functionReason(operation: VfoRadioFunctionOperation): string | undefined {
     if (operation.availability.operational || !operation.availability.structural) return undefined;
-    return disabledReasonText({ structural: true, operational: false });
+    return disabledReasonText(operation.availability);
   }
 
   function reasonId(name: string, reason: string | undefined): string | undefined {
@@ -176,7 +175,7 @@
                 describedBy={id}
                 title={projection.swap.availability.reason}
                 disabled={!projection.swap.availability.operational}
-                data={{ 'vfo-swap': true, 'dual-action': 'swap', op: 'swap', color: 'muted' }}
+                data={{ 'vfo-swap': true, 'dual-action': 'swap', op: 'swap', color: 'muted', [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
                 onclick={() => emit({ kind: 'swap' })}
               >{vfoSwapLabel(scheme)}</HardwareButton>
               {#if id}<span {id} class="sr-only">{projection.swap.availability.reason}</span>{/if}
@@ -191,7 +190,7 @@
                 describedBy={id}
                 title={projection.equalize.availability.reason}
                 disabled={!projection.equalize.availability.operational}
-                data={{ 'vfo-equalize': true, 'dual-action': 'equalize', op: 'copy', color: 'muted' }}
+                data={{ 'vfo-equalize': true, 'dual-action': 'equalize', op: 'copy', color: 'muted', [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
                 onclick={() => emit({ kind: 'equalize' })}
               >{vfoEqualLabel(scheme)}</HardwareButton>
               {#if id}<span {id} class="sr-only">{projection.equalize.availability.reason}</span>{/if}
@@ -214,7 +213,7 @@
                 describedBy={splitReasonId}
                 title={projection.split.availability.reason}
                 disabled={!projection.split.availability.operational}
-                data={{ 'vfo-split': true, op: 'split', color: 'cyan' }}
+                data={{ 'vfo-split': true, op: 'split', color: 'cyan', [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.split.id }}
                 onclick={() => emit({ kind: 'toggle-split' })}
               >SPLIT</HardwareButton>
               {#if splitReasonId}<span id={splitReasonId} class="sr-only">{projection.split.availability.reason}</span>{/if}
@@ -257,7 +256,7 @@
                 describedBy={id}
                 title={functionReason(functions.tuner)}
                 disabled={!functions.tuner.availability.operational}
-                data={{ 'vfo-tuner': true }}
+                data={{ 'vfo-tuner': true, [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.atu.id }}
                 onclick={() => emit({ kind: 'toggle-tuner' })}
               >TUNER</HardwareButton>
               {#if id}<span {id} class="sr-only">{functionReason(functions.tuner)}</span>{/if}
@@ -276,7 +275,7 @@
                 describedBy={id}
                 title={functionReason(functions.vox)}
                 disabled={!functions.vox.availability.operational}
-                data={{ 'vfo-vox': true }}
+                data={{ 'vfo-vox': true, [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vox.id }}
                 onclick={() => emit({ kind: 'toggle-vox' })}
               >VOX</HardwareButton>
               {#if id}<span {id} class="sr-only">{functionReason(functions.vox)}</span>{/if}
@@ -314,6 +313,7 @@
         class="fact-toggle"
         class:v2-control-button={appearance !== 'semantic'}
         data-vfo-split
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.split.id }}
         data-op="split"
         data-active={triState(projection.split.reading)}
         data-color="cyan"
@@ -377,6 +377,7 @@
         <button type="button" class="vfo-op" class:v2-control-button={appearance !== 'semantic'}
           data-op="copy" data-color="muted" data-active="false"
           data-vfo-equalize data-dual-action="equalize" aria-label={vfoEqualLabel(scheme)}
+          {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
           aria-describedby={id} title={projection.equalize.availability.reason} disabled={!projection.equalize.availability.operational}
           onclick={() => emit({ kind: 'equalize' })}>{vfoEqualLabel(scheme)}</button>
         {#if id}<span {id} class="sr-only">{projection.equalize.availability.reason}</span>{/if}
@@ -387,6 +388,7 @@
         <button type="button" class="vfo-op" class:v2-control-button={appearance !== 'semantic'}
           data-op="swap" data-color="muted" data-active="false"
           data-vfo-swap data-dual-action="swap" aria-label={vfoSwapLabel(scheme)}
+          {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}
           aria-describedby={id} title={projection.swap.availability.reason} disabled={!projection.swap.availability.operational}
           onclick={() => emit({ kind: 'swap' })}>{vfoSwapLabel(scheme)}</button>
         {#if id}<span {id} class="sr-only">{projection.swap.availability.reason}</span>{/if}

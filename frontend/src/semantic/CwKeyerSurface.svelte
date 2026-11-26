@@ -132,6 +132,8 @@
 </script>
 
 <script lang="ts">
+  import { disabledFieldReasonText } from './disabled-reason';
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import {
     type ControlFeedbackPresentationInput,
@@ -456,12 +458,14 @@
                  KNOWN; the gate below is untouched (rule 2). -->
             <button
               type="button" class="cw-keyer-choice"
+              {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.cwBreakIn.id }}
               data-testid={`cw-keyer-break-in-${decode ?? String(choice.value)}`}
               aria-pressed={cw.breakIn.reading.status === 'known'
                 ? cw.breakIn.reading.value === decode : undefined}
               aria-describedby={breakInPosture(cw.breakIn) === 'unknown'
                 ? (!breakInPermitted && breakInReason ? breakInReasonId : undefined)
                 : `${breakInPostureId}${!breakInPermitted && breakInReason ? ` ${breakInReasonId}` : ''}`}
+              title={breakInPermitted ? disabledFieldReasonText(cw.breakIn) : undefined}
               disabled={!usable(cw.breakIn) || !breakInPermitted}
               onclick={() => (standard && decode !== 'off'
                 ? toggleBreakIn(decode!, choice.value) : setBreakIn(choice.value))}
@@ -500,6 +504,7 @@
         || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
+          {...{ [CAPABILITY_ATTRIBUTE]: field === 'breakInDelay' ? TRANSMIT_CAPABILITIES.cwBreakIn.id : undefined }}
           data-observed={usable(f)}
         >
           <span class="cw-keyer-name">{label}</span>
@@ -507,6 +512,7 @@
             <input
               {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
               value={breakInDelayView.displayed ?? (hasBreakInDelayFeedback ? undefined : min)}
+              title={disabledFieldReasonText(f)}
               disabled={hasBreakInDelayFeedback ? !breakInDelayView.editable : !usable(f)}
               data-command-phase={hasBreakInDelayFeedback
                 ? breakInDelayView.presentation.attributes['data-command-phase'] : undefined}
@@ -553,7 +559,9 @@
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         aria-pressed={pressedOf(cw.reversePaddle)}
+        title={disabledFieldReasonText(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}
       >Reverse paddle</button>
@@ -594,6 +602,7 @@
               type="button" class="cw-keyer-toggle" data-testid="cw-keyer-apf-on"
               aria-pressed={apfChoice.selected === undefined ? undefined : apfChoice.isSelected(true)}
               aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+              title={mutexed('apf') ? MUTEX_LABEL.apf : disabledFieldReasonText(cw.apf)}
               disabled={!apfChoice.available}
               onclick={() => apfChoice.invoke(!apfChoice.isSelected(true))}
             >APF</button>
@@ -604,6 +613,7 @@
                 data-testid={`cw-keyer-apf-${label}`}
                 aria-checked={apfChoice.isSelected(on)}
                 aria-describedby={mutexed('apf') ? 'cw-keyer-apf-reason' : undefined}
+                title={mutexed('apf') ? MUTEX_LABEL.apf : disabledFieldReasonText(cw.apf)}
                 disabled={!apfChoice.available}
                 onclick={() => apfChoice.invoke(on)}
               >APF {label}</button>
@@ -627,6 +637,7 @@
             type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
             aria-pressed={pressedOf(cw.twinPeak)}
             aria-describedby={mutexed('twinPeak') ? 'cw-keyer-twin-peak-reason' : undefined}
+            title={mutexed('twinPeak') ? MUTEX_LABEL.twinPeak : disabledFieldReasonText(cw.twinPeak)}
             disabled={!twinPeakToggle.available}
             onclick={() => twinPeakToggle.invoke()}
           >TPF</button>

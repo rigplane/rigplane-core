@@ -1,11 +1,11 @@
-import { validateManagedTransmitDocument, type ManagedTransmitDocument } from '../types/managed-transmit';
+import { managedTxRefusalToastCode, validateManagedTransmitDocument, type ManagedTransmitDocument } from '../types/managed-transmit';
 import { apiFetch } from '../api/api-fetch';
 import { getAuthHeaders } from './http-client';
 import { controllerClient } from './controller-client';
 const BASE = '/api/v1/managed-transmit';
 
 export class ManagedTransmitError extends Error {
-  constructor(readonly code: string, readonly status: number) {
+  constructor(readonly code: string, readonly status: number, readonly reason?: string) {
     super(`managed transmit command: ${status} (${code})`);
   }
 }
@@ -26,9 +26,15 @@ export class ManagedTransmitClient {
       body: JSON.stringify({ operation }),
     });
     if (response.status === 202) return 'accepted';
-    if (response.status === 409) return 'rejected';
     const body: unknown = await response.json().catch(() => null);
+    const reason = (body as { code?: unknown } | null)?.code;
     const error = (body as { error?: unknown } | null)?.error;
+    if (typeof reason === 'string') {
+      const code = typeof error === 'string' && managedTxRefusalToastCode(error) !== 'txStartRefused'
+        ? error : reason;
+      throw new ManagedTransmitError(code, response.status, reason);
+    }
+    if (response.status === 409) return 'rejected';
     const code = typeof error === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(error)
       ? error : 'tx_request_failed';
     throw new ManagedTransmitError(code, response.status);

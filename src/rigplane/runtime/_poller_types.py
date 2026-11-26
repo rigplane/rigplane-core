@@ -14,6 +14,7 @@ from typing import Any, Literal, TypeAlias
 
 from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
 from rigplane.core.exceptions import CommandError
+from rigplane.core.radio_owned_modes import ModeWriteCorrelation, mode_write_correlation
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -26,6 +27,7 @@ __all__ = [
     "CommandQueue",
     "CommandQueueEntry",
     "LEGACY_COMMAND_NAMES",
+    "POSITIVE_TX_ADMISSION_REJECTED",
     "execute_positive_tx_queue_entry",
     "validate_command_queue_entry_currency",
     "canonicalize_level_command",
@@ -1173,6 +1175,9 @@ def validate_command_queue_entry_currency(
         entry.controller_ticket.authority.validate(entry.controller_ticket)
 
 
+POSITIVE_TX_ADMISSION_REJECTED = "positive TX admission was rejected"
+
+
 async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
     """Release one pre-registered positive transition and join its wire result."""
     ready, submission = entry.positive_tx_ready, entry.positive_tx_submission
@@ -1192,7 +1197,7 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
         raise CommandError("positive TX admission was revoked") from exc
     outcome = getattr(receipt, "outcome", None)
     if getattr(outcome, "value", outcome) != "accepted":
-        raise CommandError("positive TX admission was rejected")
+        raise CommandError(POSITIVE_TX_ADMISSION_REJECTED)
     await receipt.wait_settlement()
 
 
@@ -1212,7 +1217,16 @@ async def execute_command_queue_entry(
     async def invoke() -> Any:
         if reply is not None and reply.cancelled():
             return None
-        return await execute(entry)
+        correlation = (
+            None
+            if entry.command_id is None
+            else ModeWriteCorrelation(entry.command_id, entry.source, entry.session_id)
+        )
+        token = mode_write_correlation.set(correlation)
+        try:
+            return await execute(entry)
+        finally:
+            mode_write_correlation.reset(token)
 
     owner = asyncio.current_task()
     cancelling = owner.cancelling() if owner is not None else 0

@@ -1,0 +1,12 @@
+{
+  "codes": ["tx_held_by_other", "release_in_progress", "authority_unavailable", "read_only", "controller_refused", "radio_refused", "other"],
+  "httpHeld": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "tx_held_by_other"},
+  "httpReleasing": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "release_in_progress"},
+  "httpOther": {"ok": false, "operation": "transmit_on", "result": "rejected", "code": "other"},
+  "httpReadOnly": {"error": "read_only", "message": "Server is in read-only mode", "code": "read_only"},
+  "httpUnavailable": {"error": "managed_tx_unavailable", "message": "Managed transmit authority unavailable", "code": "authority_unavailable"},
+  "httpController": {"error": "controller_tx_unsupported", "code": "controller_refused"},
+  "wsHeld": {"type": "response", "id": "refusal-1", "ok": false, "error": "radio_nak", "message": "another client is transmitting", "code": "tx_held_by_other"},
+  "wsReleasing": {"type": "response", "id": "refusal-1", "ok": false, "error": "radio_nak", "message": "the previous transmission is still being released", "code": "release_in_progress"},
+  "wsUnavailable": {"type": "response", "id": "refusal-1", "ok": false, "error": "radio_nak", "message": "managed transmit authority unavailable", "code": "authority_unavailable"}
+}

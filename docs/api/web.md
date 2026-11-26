@@ -1503,6 +1503,53 @@ Server publishes `state_update` messages in two shapes:
   {"type":"state_update","data":{"type":"delta","changed":{"main":{"freqHz":14075000}},"revision":2}}
   ```
 
+### Managed-transmit refusals
+
+`POST /api/v1/managed-transmit/command` keeps its admission fields and adds a
+typed `code` on rejected admissions (`409`):
+
+```json
+{"ok":false,"operation":"transmit_on","result":"rejected","code":"tx_held_by_other"}
+```
+
+Managed PTT commands (`ptt`, `ptt_on`, `ptt_off`) on the control WebSocket
+add the same `code` to their existing failure response. Existing `error` and
+`message` fields remain, including `radio_nak` for a rejected PTT admission:
+
+```json
+{"type":"response","id":"42","ok":false,"error":"radio_nak","message":"another client is transmitting","code":"tx_held_by_other"}
+```
+
+The closed producer vocabulary is
+`runtime/managed_tx_state.py: ManagedTxRefusalReason`. The SDK body record is
+`web/api_contract.py: ManagedTransmitCommandReply`.
+
+| Code | Meaning |
+|------|---------|
+| `tx_held_by_other` | The refused admission identifies another TX holder. |
+| `release_in_progress` | A previous transmission still owes a release. |
+| `authority_unavailable` | Managed transmit authority is unavailable. |
+| `read_only` | The server is in read-only mode. |
+| `controller_refused` | Controller currency or remote-mode policy refused the request. |
+| `radio_refused` | Reserved for a radio refusal; an admission rejection alone does not establish this reason. |
+| `other` | The refusal has no more specific reason. |
+
+HTTP permission/unavailable responses also add `code` while retaining their
+existing status and fields: read-only remains `403` with `error: "read_only"`,
+controller refusals retain `controller_*` in `error`, and missing authority
+remains `503` with `error: "managed_tx_unavailable"`. An existing
+`radio_tx_unowned` refusal uses `other`; it is not a radio NAK.
+
+Receivers must tolerate unknown codes, show a generic refusal, and retain the
+original code for support reports. The frontend maps known codes to localized
+toasts and keeps the raw code in browser diagnostics. Older responses without
+`code` remain valid. Accepted command replies keep their existing shape.
+
+The shared golden `tests/fixtures/managed-tx-refusal-wire.json` is replayed by
+`tests/test_managed_tx_refusal_contract.py` through the HTTP/WS handlers and by
+`frontend/src/lib/transport/__tests__/managed-tx-refusal.isolated.test.ts`
+through the browser WS consumer.
+
 ### Pushed fact records (`/api/v1/ws`, MOR-4279)
 
 Three fact groups that `GET /api/v1/managed-transmit` and `GET /api/v1/info`

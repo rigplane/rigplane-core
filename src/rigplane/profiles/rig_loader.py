@@ -22,6 +22,10 @@ from rigplane.core.capabilities import (
     KNOWN_CAPABILITIES,
 )
 from rigplane.core.hamlib_modes import HAMLIB_MODE_MASKS
+from rigplane.core.radio_owned_modes import (
+    RadioOwnedModeDefinition,
+    parse_radio_owned_modes,
+)
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     AdaptiveDecayPolicy,
@@ -1019,6 +1023,9 @@ class RigConfig:
     transport_capability_gaps: TransportCapabilityGaps = field(
         default_factory=TransportCapabilityGaps, kw_only=True
     )
+    radio_owned_modes: tuple[RadioOwnedModeDefinition, ...] = field(
+        default=(), kw_only=True
+    )
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -1132,6 +1139,7 @@ class RigConfig:
 
         return RadioProfile(
             id=self.id,
+            radio_owned_modes=self.radio_owned_modes,
             model=self.model,
             civ_addr=self.civ_addr,
             receiver_count=self.receiver_count,
@@ -4343,6 +4351,7 @@ def load_rig(path: Path) -> RigConfig:
 
     return RigConfig(
         id=radio["id"],
+        radio_owned_modes=parse_radio_owned_modes(data.get("radio_owned_modes", [])),
         model=radio["model"],
         civ_addr=civ_addr,
         xiegu_model_id=xiegu_model_id,
