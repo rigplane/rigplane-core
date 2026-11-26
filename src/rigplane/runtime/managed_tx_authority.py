@@ -35,6 +35,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxIntent,
     ManagedTxIntentKind,
     ManagedTxOutcome,
+    ManagedTxRefusalReason,
     ManagedTxState,
     ManagedTxTransition,
     PttDown,
@@ -435,7 +436,9 @@ class ManagedTxAuthority:
                         transition, full_force = self._transition_locked(action, owner)
                         if transition is None:
                             transition = ManagedTxTransition(
-                                self._state, ManagedTxOutcome.REJECTED
+                                self._state,
+                                ManagedTxOutcome.REJECTED,
+                                reason=ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE,
                             )
                     hook_ran = False
                     if (
@@ -1293,7 +1296,9 @@ class ManagedTxAuthority:
         ):
             if owner != self._transmit_owner:
                 return ManagedTxTransition(
-                    self._state, ManagedTxOutcome.REJECTED
+                    self._state,
+                    ManagedTxOutcome.REJECTED,
+                    reason=ManagedTxRefusalReason.TX_HELD_BY_OTHER,
                 ), False
             return self._reduce_locked(
                 TransmitOn(

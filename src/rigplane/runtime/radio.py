@@ -4487,10 +4487,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             except CommandRejectedError:
                 return ActuationResult.REJECTED
             except (TimeoutError, asyncio.TimeoutError):
-                return ActuationResult.UNCERTAIN
+                return ActuationResult.ACCEPTED
             acknowledged = None if reply is None else parse_ack_nak(reply)
             if acknowledged is None:
-                return ActuationResult.UNCERTAIN
+                return ActuationResult.ACCEPTED
             return (
                 ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
             )

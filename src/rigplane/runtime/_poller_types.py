@@ -20,13 +20,18 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
 )
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerTicket
-from rigplane.runtime.managed_tx_state import ActuationResult
+from rigplane.runtime.managed_tx_state import (
+    ActuationResult,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
+)
 
 __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
     "LEGACY_COMMAND_NAMES",
+    "POSITIVE_TX_ADMISSION_REJECTED",
     "execute_positive_tx_queue_entry",
     "validate_command_queue_entry_currency",
     "canonicalize_level_command",
@@ -1174,6 +1179,9 @@ def validate_command_queue_entry_currency(
         entry.controller_ticket.authority.validate(entry.controller_ticket)
 
 
+POSITIVE_TX_ADMISSION_REJECTED = "positive TX admission was rejected"
+
+
 async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
     """Release one pre-registered positive transition and join its wire result."""
     ready, submission = entry.positive_tx_ready, entry.positive_tx_submission
@@ -1193,10 +1201,14 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
         raise CommandError("positive TX admission was revoked") from exc
     outcome = getattr(receipt, "outcome", None)
     if getattr(outcome, "value", outcome) != "accepted":
-        raise CommandError("positive TX admission was rejected")
+        raise CommandError(POSITIVE_TX_ADMISSION_REJECTED)
     settlement = await receipt.wait_settlement()
     if settlement is not None and settlement.result is ActuationResult.REJECTED:
-        raise CommandError("positive TX actuation was rejected")
+        raise ManagedTxActuationRefused(
+            ManagedTxRefusalReason.RADIO_REFUSED
+            if settlement.error in (None, ActuationResult.REJECTED.value)
+            else ManagedTxRefusalReason.OTHER
+        )
 
 
 async def execute_command_queue_entry(

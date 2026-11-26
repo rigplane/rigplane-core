@@ -185,19 +185,27 @@ describe('RX/TX status mirrors the server TX projection', () => {
 describe('fault display without a second authority', () => {
   it.each([
     ['en-US', 'The radio refused to transmit.'],
-    ['ru-RU', 'Радиостанция отказалась включить передачу.'],
+    ['ru-RU', 'Радио отказалось перейти на передачу.'],
     ['ja-JP', '無線機が送信を拒否しました。'],
   ] as const)('renders a radio refusal in %s', (locale, message) => {
     const previous = getLocale();
     setLocale(locale);
     try {
       withSurface(topologyFixtures['1/single'], snap({
-        phase: 'failed', fault: 'The radio refused to transmit.',
+        phase: 'failed', fault: 'radio_refused',
       }), () => {
         const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
         expect(fault.textContent).toBe(message);
       });
     } finally { setLocale(previous); }
+  });
+
+  it('renders an unknown diagnostic generically and retains the code for support', () => {
+    withSurface(topologyFixtures['1/single'], snap({ phase: 'failed', fault: 'future_refusal' }), () => {
+      const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
+      expect(fault.textContent).toBe(t('core.rxTx.fault.code', { code: 'future_refusal' }));
+      expect(fault.dataset.fault).toBe('future_refusal');
+    });
   });
 
   it('displays the authority fault verbatim', () => {

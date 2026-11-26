@@ -1,3 +1,19 @@
+/** Producer vocabulary: runtime/managed_tx_state.py: ManagedTxRefusalReason.
+ * Keep received codes as strings, including unknown codes, for support reports.
+ */
+export function managedTxRefusalToastCode(code: string): string {
+  switch (code) {
+    case 'tx_held_by_other': return 'txHeldByOther';
+    case 'release_in_progress': return 'txReleaseInProgress';
+    case 'authority_unavailable': return 'txAuthorityUnavailable';
+    case 'read_only': return 'txReadOnly';
+    case 'controller_refused': return 'txControllerRefused';
+    case 'radio_refused': return 'txRadioRefused';
+    case 'controller_tx_unsupported': return 'txPressToTalkRequired';
+    default: return 'txStartRefused';
+  }
+}
+
 export type ManagedTransmitIntent = { kind: 'rx' } | { kind: 'transmit' } | { kind: 'ptt'; owner: string };
 export type ManagedTransmitDocument = Readonly<{ schemaVersion: 1; sampledAt: string; managedTransmit: { status: 'available'; intent: ManagedTransmitIntent; releaseRequired: boolean; lastError: string | null; lastActuation: { operation: 'ptt_on' | 'transmit_on' | 'force_receive'; result: 'accepted' | 'rejected' | 'uncertain'; attemptId: string } | null; abortErrors: readonly { operation: 'stop_cw' | 'stop_tune'; error: string }[]; tot: { configuredSeconds: number | null; active: boolean; remainingMs: number | null; expiresAt: string | null } } | { status: 'unavailable'; reason: 'authority_not_composed' }; txObservation: { observedPtt: 'on' | 'off' | 'unknown' } }>;
 

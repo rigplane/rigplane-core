@@ -52,7 +52,7 @@ from ...profiles import (
     resolve_radio_profile,
 )
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
-from ...runtime._poller_types import SetNarrow
+from ...runtime._poller_types import POSITIVE_TX_ADMISSION_REJECTED, SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
 from ...runtime.tx_interlock import (
     RfState,
@@ -66,8 +66,11 @@ from ...runtime.tx_interlock import (
 from ...runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 from ...runtime.managed_tx_state import (
     ActuationOperation,
+    ManagedTxActuationRefused,
     ManagedTxIntentKind,
     ManagedTxOutcome,
+    ManagedTxRefusalReason,
+    submission_refusal_reason,
     submission_refused_for_release_debt,
 )
 from ..protocol import (  # noqa: TID251
@@ -232,11 +235,14 @@ logger = logging.getLogger(__name__)
 _TX_OWNER_PARAM = "_tx_owner"
 # Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
 _PTT_HOLDER_CONFLICT = "another client is transmitting"
-# The only queue exception a rejected receipt may translate (MOR-3684):
-# `execute_positive_tx_queue_entry` collapsing a refused admission.
-_QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
 # Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
 _PTT_RELEASING = "the previous transmission is still being released"
+
+
+class _ManagedPttRefused(CommandRejectedError):
+    def __init__(self, message: str, reason: ManagedTxRefusalReason) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ControlHello(TypedDict):
@@ -309,7 +315,7 @@ def _queue_refused_for_ptt_holder(
     if (
         not isinstance(exc, CommandError)
         or isinstance(exc, CommandRejectedError)
-        or str(exc) != _QUEUE_ADMISSION_REJECTED
+        or str(exc) != POSITIVE_TX_ADMISSION_REJECTED
     ):
         return False
     return (
@@ -328,7 +334,7 @@ def _queue_refused_for_release_debt(
     if (
         not isinstance(exc, CommandError)
         or isinstance(exc, CommandRejectedError)
-        or str(exc) != _QUEUE_ADMISSION_REJECTED
+        or str(exc) != POSITIVE_TX_ADMISSION_REJECTED
     ):
         return False
     return (
@@ -1099,6 +1105,7 @@ class ControlHandler:
         # coalesce_key -> the single deferred-flush task scheduled for it
         # (one handle per (session, key) — this session owns them all).
         self._cmd_flush_tasks: dict[str, asyncio.Task[None]] = {}
+        self._managed_ptt_responses: set[asyncio.Task[None]] = set()
         # coalesce_key -> count of frames coalesced (superseded before they
         # could flush) in the current burst — reset once that burst flushes.
         self._cmd_coalesced: dict[str, int] = {}
@@ -1178,6 +1185,7 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            self._cancel_pending_command_flushes()
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
                 controller.disconnect_control(self._session_id)
@@ -1201,7 +1209,6 @@ class ControlHandler:
                         exc_info=True,
                     )
             self._publish_session_liveness(live=False)
-            self._cancel_pending_command_flushes()
             event_task.cancel()
             teardown_error: Exception | None = None
             if self._server is not None:
@@ -1556,7 +1563,32 @@ class ControlHandler:
                 return
             self._cmd_last[key] = now
 
+        if name == "ptt_on" or (name == "ptt" and params.get("state") is True):
+            submitted = asyncio.Event()
+
+            def finished(task: asyncio.Task[None]) -> None:
+                submitted.set()
+                self._finish_managed_ptt_response(task)
+
+            response = asyncio.create_task(
+                self._dispatch_command(cmd_id, name, params, ptt_submitted=submitted)
+            )
+            self._managed_ptt_responses.add(response)
+            response.add_done_callback(finished)
+            try:
+                await submitted.wait()
+            except asyncio.CancelledError:
+                response.cancel()
+                raise
+            return
         await self._dispatch_command(cmd_id, name, params)
+
+    def _finish_managed_ptt_response(self, task: asyncio.Task[None]) -> None:
+        self._managed_ptt_responses.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.warning(
+                "control: managed PTT response failed: %s", type(error).__name__
+            )
 
     def _coalesce_key(self, name: str, params: dict[str, Any]) -> str:
         """Coalescing-bucket key for a SET command (MOR-1499).
@@ -1704,20 +1736,21 @@ class ControlHandler:
             )
 
     def _cancel_pending_command_flushes(self) -> None:
-        """Cancel in-flight coalesced-flush tasks on session teardown (MOR-1427).
-
-        A flush firing after the socket is gone would enqueue a stale
-        command on behalf of a session that no longer exists and try to
-        write an ack to a dead transport. Bookkeeping only — the command
-        queue and radio state are untouched; this never enqueues anything.
-        """
+        """Cancel session-owned deferred commands and managed PTT responses."""
         for task in self._cmd_flush_tasks.values():
             task.cancel()
         self._cmd_flush_tasks.clear()
         self._cmd_pending.clear()
+        for response in self._managed_ptt_responses:
+            response.cancel()
 
     async def _dispatch_command(
-        self, cmd_id: Any, name: str, params: dict[str, Any]
+        self,
+        cmd_id: Any,
+        name: str,
+        params: dict[str, Any],
+        *,
+        ptt_submitted: asyncio.Event | None = None,
     ) -> None:
         """Validate, enqueue, and ACK a single command.
 
@@ -1738,6 +1771,11 @@ class ControlHandler:
                         "ok": False,
                         "error": "no_radio",
                         "message": "no radio connected",
+                        **(
+                            {"code": ManagedTxRefusalReason.OTHER}
+                            if name in self._MANAGED_PTT_COMMANDS
+                            else {}
+                        ),
                     }
                 ),
             )
@@ -1749,6 +1787,11 @@ class ControlHandler:
                 params,
                 command_id=str(cmd_id),
                 source="websocket",
+                **(
+                    {"ptt_submitted": ptt_submitted}
+                    if ptt_submitted is not None
+                    else {}
+                ),
             )
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
@@ -1811,6 +1854,17 @@ class ControlHandler:
             error = "unsupported_command"
         else:
             error = "command_failed"
+        refusal: dict[str, object] = {}
+        if name in self._MANAGED_PTT_COMMANDS:
+            reason = ManagedTxRefusalReason.OTHER
+            if isinstance(exc, _ManagedPttRefused):
+                reason = exc.reason
+            elif isinstance(exc, ControllerError):
+                if exc.code.startswith("controller_"):
+                    reason = ManagedTxRefusalReason.CONTROLLER_REFUSED
+            elif isinstance(exc, PermissionError) and self._read_only:
+                reason = ManagedTxRefusalReason.READ_ONLY
+            refusal["code"] = reason
         await self._send_direct(
             encode_json(
                 {
@@ -1819,6 +1873,7 @@ class ControlHandler:
                     "ok": False,
                     "error": error,
                     "message": message,
+                    **refusal,
                 }
             ),
         )
@@ -1924,10 +1979,13 @@ class ControlHandler:
         *,
         command_id: str | None = None,
         source: CommandSource = "websocket",
+        ptt_submitted: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         tx_owner = self._validate_controller_command(name, params)
         if name in self._MANAGED_PTT_COMMANDS:
-            return await self._enqueue_managed_ptt(name, params, source=source)
+            return await self._enqueue_managed_ptt(
+                name, params, source=source, ptt_submitted=ptt_submitted
+            )
         intent_params = dict(params)
         # MOR-3537: the executor re-checks a TX start as this owner. Server
         # stamped only; a client-sent value never survives.
@@ -2000,6 +2058,7 @@ class ControlHandler:
         params: dict[str, Any],
         *,
         source: CommandSource,
+        ptt_submitted: asyncio.Event | None = None,
     ) -> dict[str, Any]:
         if self._read_only:
             raise PermissionError(f"read-only mode: {name} rejected")
@@ -2010,7 +2069,10 @@ class ControlHandler:
             )
         authority = self._managed_tx_authority
         if authority is None:
-            raise CommandRejectedError("managed transmit authority unavailable")
+            raise _ManagedPttRefused(
+                "managed transmit authority unavailable",
+                ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE,
+            )
         if name == "ptt":
             on = params.get("state")
             if type(on) is not bool:
@@ -2037,6 +2099,8 @@ class ControlHandler:
                     ready=ready,
                     expires_at_monotonic=expires_at,
                 )
+                if ptt_submitted is not None:
+                    ptt_submitted.set()
                 submission = await self._server.enqueue_managed_positive_tx(
                     ready=ready,
                     submission=pending,
@@ -2048,19 +2112,48 @@ class ControlHandler:
             else:
                 submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
+            if isinstance(exc, ManagedTxActuationRefused):
+                raise _ManagedPttRefused(
+                    "positive TX actuation was rejected", exc.reason
+                ) from exc
             if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
-                raise CommandRejectedError(_PTT_HOLDER_CONFLICT) from exc
+                raise _ManagedPttRefused(
+                    _PTT_HOLDER_CONFLICT, ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                ) from exc
             if _queue_refused_for_release_debt(exc, pending):
-                raise CommandRejectedError(_PTT_RELEASING) from exc
-            raise CommandRejectedError(
-                "managed transmit authority unavailable"
+                raise _ManagedPttRefused(
+                    _PTT_RELEASING, ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                ) from exc
+            reason = (
+                ManagedTxRefusalReason.OTHER
+                if isinstance(exc, CommandError)
+                else ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE
+            )
+            if (
+                type(exc) is CommandError
+                and str(exc) == POSITIVE_TX_ADMISSION_REJECTED
+                and pending is not None
+                and pending.done()
+                and not pending.cancelled()
+                and pending.exception() is None
+            ):
+                reason = submission_refusal_reason(pending.result(), self._tx_owner)
+            raise _ManagedPttRefused(
+                "managed transmit authority unavailable", reason
             ) from exc
         if submission.outcome is not ManagedTxOutcome.ACCEPTED:
             if _ptt_refusal_names_holder(submission, self._tx_owner):
-                raise CommandRejectedError(_PTT_HOLDER_CONFLICT)
+                raise _ManagedPttRefused(
+                    _PTT_HOLDER_CONFLICT, ManagedTxRefusalReason.TX_HELD_BY_OTHER
+                )
             if submission_refused_for_release_debt(submission):
-                raise CommandRejectedError(_PTT_RELEASING)
-            raise CommandRejectedError("managed PTT admission rejected")
+                raise _ManagedPttRefused(
+                    _PTT_RELEASING, ManagedTxRefusalReason.RELEASE_IN_PROGRESS
+                )
+            raise _ManagedPttRefused(
+                "managed PTT admission rejected",
+                submission_refusal_reason(submission, self._tx_owner),
+            )
         server, radio = self._server, self._radio
         if (
             on
