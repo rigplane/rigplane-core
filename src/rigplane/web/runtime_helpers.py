@@ -1846,6 +1846,7 @@ def build_public_state_payload_from_snapshot(
     receiver_count: int,
     availability: Mapping[FieldPath, bool | None] | None = None,
     declared: Collection[FieldPath] | None = None,
+    read_refusals: Mapping[FieldPath, str] | None = None,
     updated_at: str | None = None,
     scope_clients: int = 0,
     control_clients: int = 0,
@@ -1856,14 +1857,37 @@ def build_public_state_payload_from_snapshot(
 ) -> dict[str, Any]:
     """Build the public web payload from one StateStore snapshot."""
 
-    snapshot = replace(snapshot, fields=_canonical_snapshot_fields(snapshot))
+    fields = _canonical_snapshot_fields(snapshot)
+    refused_public_fields = {
+        public_path: (path, message)
+        for path, message in (read_refusals or {}).items()
+        for public_path in _snapshot_field_public_paths(path)
+    }
+    if refused_public_fields:
+        # A refusal supersedes the last good reading, including snapshot
+        # aliases that project to the same public leaf.
+        fields = tuple(
+            field
+            for field in fields
+            if not any(
+                public_path in refused_public_fields
+                for public_path in _snapshot_field_public_paths(field.path)
+            )
+        )
+    snapshot = replace(snapshot, fields=fields)
     state = _project_snapshot_state_dict(snapshot, radio=radio)
-    state["field_status"] = _build_snapshot_field_status(
+    statuses = _build_snapshot_field_status(
         snapshot,
         receiver_count=receiver_count,
         availability=availability,
         declared=declared,
     )
+    for public_path, (path, message) in refused_public_fields.items():
+        statuses[public_path] = {
+            **_missing_field_status(path, "unavailable"),
+            "message": message,
+        }
+    state["field_status"] = statuses
     return _build_public_state_payload_from_dict(
         state,
         radio=radio,

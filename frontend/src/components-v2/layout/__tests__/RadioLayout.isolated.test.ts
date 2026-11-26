@@ -15,15 +15,12 @@ import {
 } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { hasEverConnected } from '$lib/stores/connection.svelte';
+import { stubResizeObserver } from './support/stub-resize-observer';
 
 const txHarness = new ManagedAppTxHarness({ stale: true });
 import { mount, unmount, flushSync } from 'svelte';
 
-vi.stubGlobal('ResizeObserver', class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-});
+stubResizeObserver();
 
 vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/ws-client')>(),

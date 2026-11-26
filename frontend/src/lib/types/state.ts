@@ -386,11 +386,9 @@ export interface AudioDeviceCandidatePublic {
 /**
  * Per-field freshness / availability entry (snapshot path only).
  *
- * ``observed=False`` entries carry only the first four fields; observed
- * entries add ``lastObservedMonotonic`` / ``maxAge`` / ``source`` /
- * ``quality``. All five extras are therefore optional. ``quality`` (a
- * ``string[]``) is emitted at runtime but was absent from the old TS
- * interface (MOR-881 contract correction).
+ * Observed entries can add ``lastObservedMonotonic``, ``maxAge``,
+ * ``source`` and ``quality``. A declared read failure adds a
+ * ``message`` to its unobserved entry.
  *
  * ``available`` and ``stale`` come from an observed entry's freshness
  * (``runtime_helpers._freshness_availability``). ``missing``,
@@ -400,17 +398,15 @@ export interface AudioDeviceCandidatePublic {
  * carry it, ``unavailable`` when the caller's resolved availability map
  * reads its ``available_when`` clauses as ``False`` or ``None``
  * (``acquisition_scheduler.resolve_available_when``), ``missing``
- * otherwise. ``unavailable`` needs the availability argument and
- * ``undeclared`` needs the declared argument at
- * ``runtime_helpers.build_public_state_payload_from_snapshot``; either can
- * be emitted when its corresponding argument is passed alone. A caller that
- * passes neither gets ``missing``.
+ * otherwise. ``runtime_helpers.build_public_state_payload_from_snapshot``
+ * also projects an active declared read refusal as ``unavailable``.
  */
 export interface FieldStatusPublic {
   storePath: string;
   observed: boolean;
   freshness: "unknown" | "fresh" | "stale";
   availability: "missing" | "available" | "stale" | "unavailable" | "undeclared";
+  message?: string | null;
   lastObservedMonotonic?: number | null;
   maxAge?: number | null;
   source?: {

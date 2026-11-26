@@ -21,12 +21,9 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import stateFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
+import { stubResizeObserver } from './support/stub-resize-observer';
 
-vi.stubGlobal('ResizeObserver', class {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-});
+stubResizeObserver();
 
 vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/ws-client')>(),
