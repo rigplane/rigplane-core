@@ -48,13 +48,22 @@ _ERROR_HINTS = {
 class RigctldCommandError(CommandError):
     """A nonzero ``RPRT`` result from external ``rigctld``."""
 
-    def __init__(self, command: str, code: int) -> None:
+    def __init__(self, command: str, code: int, *, frame: str = "") -> None:
         self.command = command
         self.code = code
+        self.frame = frame or f"RPRT {code}"
         hint = _ERROR_HINTS.get(code, "command failed")
         super().__init__(
             f"External rigctld command {command!r} failed with RPRT {code} ({hint})."
         )
+
+
+class RigctldReplyError(CommandError):
+    """A reply that arrived but could not be decoded."""
+
+    def __init__(self, detail: str, frame: str) -> None:
+        self.frame = frame
+        super().__init__(detail)
 
 
 class RigctldTransport:
@@ -257,10 +266,11 @@ class RigctldTransport:
                 if line.startswith("RPRT "):
                     code = _parse_rprt(line, command)
                     if code != 0:
-                        _raise_rprt(command, code)
-                    raise CommandError(
+                        raise RigctldCommandError(command, code, frame=line)
+                    raise RigctldReplyError(
                         f"External rigctld returned status {line!r} for query "
-                        f"{command!r}; expected {response_lines} data line(s)."
+                        f"{command!r}; expected {response_lines} data line(s).",
+                        line,
                     )
                 lines.append(line)
         return lines
@@ -295,7 +305,10 @@ class RigctldTransport:
             urgent=urgent,
             _on_admitted=record_admission,
         )
-        value = decode(lines)
+        try:
+            value = decode(lines)
+        except CommandError as exc:
+            raise RigctldReplyError(str(exc), "\n".join(lines)) from exc
         provenance = self._fresh_read_provenance
         if provenance is None or generation is None:
             return value
@@ -388,7 +401,7 @@ class RigctldTransport:
 
         code = _parse_rprt(line, command)
         if code != 0:
-            _raise_rprt(command, code)
+            raise RigctldCommandError(command, code, frame=line)
 
     async def _write_line(
         self,
@@ -464,24 +477,23 @@ class RigctldTransport:
         try:
             return raw.decode("ascii").rstrip("\r\n")
         except UnicodeDecodeError as exc:
-            raise CommandError(
-                f"External rigctld returned non-ASCII response to {command!r}."
+            raise RigctldReplyError(
+                f"External rigctld returned non-ASCII response to {command!r}.",
+                raw.decode("ascii", errors="backslashreplace").rstrip("\r\n"),
             ) from exc
 
 
 def _parse_rprt(line: str, command: str) -> int:
     parts = line.split()
     if len(parts) != 2 or parts[0] != "RPRT":
-        raise CommandError(
-            f"External rigctld returned malformed status for {command!r}: {line!r}."
+        raise RigctldReplyError(
+            f"External rigctld returned malformed status for {command!r}: {line!r}.",
+            line,
         )
     try:
         return int(parts[1])
     except ValueError as exc:
-        raise CommandError(
-            f"External rigctld returned malformed status for {command!r}: {line!r}."
+        raise RigctldReplyError(
+            f"External rigctld returned malformed status for {command!r}: {line!r}.",
+            line,
         ) from exc
-
-
-def _raise_rprt(command: str, code: int) -> None:
-    raise RigctldCommandError(command, code)

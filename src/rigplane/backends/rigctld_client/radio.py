@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
+from ...core.acquisition_scheduler import AcquisitionScheduler
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
@@ -575,16 +576,16 @@ async def _read_drained_slow_control_readbacks(
     from ..._poller_types import SetAttenuator, SetNB, SetNR, SetPreamp
 
     commands = tuple(entry.command for entry in entries)
-    observations: list[Observation] = []
+    observations: list[Observation | None] = []
     if any(isinstance(command, SetPreamp) for command in commands):
-        observations.append(await adapter.read_preamp())
+        observations.append(await adapter.read_preamp(force=True))
     if any(isinstance(command, SetAttenuator) for command in commands):
-        observations.append(await adapter.read_attenuator())
+        observations.append(await adapter.read_attenuator(force=True))
     if any(isinstance(command, SetNB) for command in commands):
-        observations.append(await adapter.read_nb())
+        observations.append(await adapter.read_nb(force=True))
     if any(isinstance(command, SetNR) for command in commands):
-        observations.append(await adapter.read_nr())
-    return tuple(observations)
+        observations.append(await adapter.read_nr(force=True))
+    return tuple(item for item in observations if item is not None)
 
 
 def _readback_correlation_for_entry(
@@ -773,6 +774,7 @@ class RigctldClientRadio:
         self._model = model or "External rigctld"
         self._state = RadioState()
         self._vfo_supported = False
+        self._acquisition_scheduler: AcquisitionScheduler | None = None
         # MOR-2757: consecutive unanswered reads per safety-critical path,
         # kept by the observation adapter (rebuilt every poll cycle) across
         # cycles — the same "state lives on the radio" idiom as the Yaesu
@@ -945,10 +947,13 @@ class RigctldClientRadio:
             resolve_external_rigctld_poll_intervals,
         )
 
+        profile = build_external_rigctld_acquisition_profile(
+            vfo_supported=self._vfo_supported
+        )
+        if self._acquisition_scheduler is None:
+            self._acquisition_scheduler = AcquisitionScheduler(profile=profile)
         medium_interval, slow_interval = resolve_external_rigctld_poll_intervals(
-            build_external_rigctld_acquisition_profile(
-                vfo_supported=self._vfo_supported
-            )
+            profile
         )
         return RigctldClientObservationPoller(
             self,
@@ -1376,18 +1381,17 @@ def _float_to_level_255(value: float) -> int:
 
 def _parse_level_255(line: str, name: str) -> int:
     try:
-        value = float(line)
-    except ValueError as exc:
+        return _float_to_level_255(float(line))
+    except (OverflowError, ValueError) as exc:
         raise CommandError(
             f"External rigctld returned malformed {name}: {line!r}."
         ) from exc
-    return _float_to_level_255(value)
 
 
 def _parse_int_level(line: str, name: str) -> int:
     try:
         return int(float(line))
-    except ValueError as exc:
+    except (OverflowError, ValueError) as exc:
         raise CommandError(
             f"External rigctld returned malformed {name}: {line!r}."
         ) from exc

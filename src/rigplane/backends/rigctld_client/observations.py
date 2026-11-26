@@ -10,6 +10,7 @@ from typing import Protocol, TypeVar
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     DeclaredCommandDefect,
+    DeclaredReadFailure,
 )
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -27,6 +28,8 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.exceptions import TimeoutError as RadioTimeoutError
+
+from .transport import RigctldCommandError, RigctldReplyError
 
 Clock = Callable[[], float]
 _T = TypeVar("_T")
@@ -259,12 +262,13 @@ class RigctldClientObservationAdapter:
         self.clock = clock
 
     async def read_freq_mode_controls(self) -> tuple[Observation, ...]:
-        return (
+        observations = (
             await self.read_freq(),
             *(await self.read_mode()),
             await self.read_rf_gain(),
             await self.read_af_level(),
         )
+        return tuple(item for item in observations if item is not None)
 
     async def read_ptt(self) -> Observation:
         radio = self._require_radio()
@@ -307,56 +311,36 @@ class RigctldClientObservationAdapter:
             adapter.observation(_FILTER, filter_width, native_id="m"),
         )
 
-    async def read_rf_gain(self) -> Observation:
+    async def read_rf_gain(self) -> Observation | None:
         radio = self._require_radio()
-        return self._observation(
-            _RF_GAIN,
-            await radio.get_rf_gain(),
-            native_id="l RF",
+        return await self._read_optional(_RF_GAIN, radio.get_rf_gain, command="l RF")
+
+    async def read_af_level(self) -> Observation | None:
+        radio = self._require_radio()
+        return await self._read_optional(_AF_LEVEL, radio.get_af_level, command="l AF")
+
+    async def read_preamp(self, *, force: bool = False) -> Observation | None:
+        radio = self._require_radio()
+        return await self._read_optional(
+            _PREAMP, radio.get_preamp, command="l PREAMP", force=force
         )
 
-    async def read_af_level(self) -> Observation:
+    async def read_attenuator(self, *, force: bool = False) -> Observation | None:
         radio = self._require_radio()
-        return self._observation(
-            _AF_LEVEL,
-            await radio.get_af_level(),
-            native_id="l AF",
+        return await self._read_optional(
+            _ATT, radio.get_attenuator_level, command="l ATT", force=force
         )
 
-    async def read_preamp(self) -> Observation:
+    async def read_nb(self, *, force: bool = False) -> Observation | None:
         radio = self._require_radio()
-        return self._observation(
-            _PREAMP,
-            await radio.get_preamp(),
-            native_id="l PREAMP",
-        )
+        return await self._read_optional(_NB, radio.get_nb, command="u NB", force=force)
 
-    async def read_attenuator(self) -> Observation:
+    async def read_nr(self, *, force: bool = False) -> Observation | None:
         radio = self._require_radio()
-        return self._observation(
-            _ATT,
-            await radio.get_attenuator_level(),
-            native_id="l ATT",
-        )
-
-    async def read_nb(self) -> Observation:
-        radio = self._require_radio()
-        return self._observation(
-            _NB,
-            await radio.get_nb(),
-            native_id="u NB",
-        )
-
-    async def read_nr(self) -> Observation:
-        radio = self._require_radio()
-        return self._observation(
-            _NR,
-            await radio.get_nr(),
-            native_id="u NR",
-        )
+        return await self._read_optional(_NR, radio.get_nr, command="u NR", force=force)
 
     async def read_slow_controls(self) -> tuple[Observation, ...]:
-        return (
+        observations = (
             await self.read_rf_gain(),
             await self.read_af_level(),
             await self.read_preamp(),
@@ -364,16 +348,13 @@ class RigctldClientObservationAdapter:
             await self.read_nb(),
             await self.read_nr(),
         )
+        return tuple(item for item in observations if item is not None)
 
     async def read_active_vfo(self) -> Observation | None:
         if not self.profile.capability_for(_ACTIVE_VFO).can_poll:
             return None
         radio = self._require_radio()
-        return self._observation(
-            _ACTIVE_VFO,
-            await radio.get_vfo_slot(),
-            native_id="v",
-        )
+        return await self._read_optional(_ACTIVE_VFO, radio.get_vfo_slot, command="v")
 
     def command_response(
         self,
@@ -435,6 +416,31 @@ class RigctldClientObservationAdapter:
             raise ValueError("radio is required for backend read observations")
         return self.radio
 
+    async def _read_optional(
+        self,
+        path: FieldPath,
+        read: Callable[[], Awaitable[object]],
+        *,
+        command: str,
+        force: bool = False,
+    ) -> Observation | None:
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if (
+            not force
+            and isinstance(scheduler, AcquisitionScheduler)
+            and scheduler.declared_read_deferred((path,), now=self.clock())
+        ):
+            return None
+        try:
+            value = await read()
+        except (RigctldCommandError, RigctldReplyError) as exc:
+            if not self._record_declared_failure(path.name, exc, path, command=command):
+                raise
+            return None
+        if isinstance(scheduler, AcquisitionScheduler):
+            scheduler.end_refusals((path,))
+        return self._observation(path, value, native_id=command)
+
     async def _read_critical(
         self,
         label: str,
@@ -465,6 +471,10 @@ class RigctldClientObservationAdapter:
         except RadioTimeoutError as exc:
             self._count_unanswered_critical_reads(label, exc, path, command=command)
             raise
+        except (RigctldCommandError, RigctldReplyError) as exc:
+            if startup_critical_path(path):
+                self._record_declared_failure(label, exc, path, command=command)
+            raise
         self._note_critical_read_answers(path)
         return value
 
@@ -494,7 +504,7 @@ class RigctldClientObservationAdapter:
     def _count_unanswered_critical_reads(
         self,
         label: str,
-        exc: Exception,
+        exc: RadioTimeoutError,
         path: FieldPath,
         *,
         command: str,
@@ -521,34 +531,34 @@ class RigctldClientObservationAdapter:
         count = counts.get(path, 0) + 1
         counts[path] = count
         if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
-            self._record_declared_defect(label, exc, path, command=command)
+            self._record_declared_failure(label, exc, path, command=command)
 
-    def _record_declared_defect(
+    def _record_declared_failure(
         self,
         label: str,
-        exc: Exception,
+        exc: RadioTimeoutError | RigctldCommandError | RigctldReplyError,
         path: FieldPath,
         *,
         command: str,
-    ) -> None:
-        """Record the defect for a declared read the radio never answered.
-
-        The recording is what the startup gate reads: it checks the
-        scheduler's record before and during its wait, so the unanswered
-        read that reaches the attempt limit refuses the bind; no second
-        failure mechanism is added.
-        """
-
+    ) -> bool:
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return False
+        reason: DeclaredReadFailure = "timeout"
+        frame = ""
+        if isinstance(exc, RigctldCommandError):
+            reason, frame = "refused", exc.frame
+        elif isinstance(exc, RigctldReplyError):
+            reason, frame = "malformed", exc.frame
         defect = DeclaredCommandDefect(
             label=label,
             paths=(path,),
             command=command,
-            frame="",
+            frame=frame,
             detail=str(exc),
         )
-        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
-        if isinstance(scheduler, AcquisitionScheduler):
-            scheduler.record_startup_defect(defect)
+        scheduler.record_declared_read_failure(defect, reason=reason, now=self.clock())
+        return True
 
 
 def _normalize_command_path(path: FieldPath) -> FieldPath:
