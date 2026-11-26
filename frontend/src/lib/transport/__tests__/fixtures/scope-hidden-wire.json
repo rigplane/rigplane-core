@@ -1644,6 +1644,7 @@
     "serverReachable": true,
     "sinceMs": 0
    },
+   "radioOwnedModes": [],
    "refAdjust": null,
    "revision": 11,
    "ritFreq": null,

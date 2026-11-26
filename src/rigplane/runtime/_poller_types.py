@@ -14,6 +14,7 @@ from typing import Any, Literal, TypeAlias
 
 from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
 from rigplane.core.exceptions import CommandError
+from rigplane.core.radio_owned_modes import ModeWriteCorrelation, mode_write_correlation
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -1212,7 +1213,16 @@ async def execute_command_queue_entry(
     async def invoke() -> Any:
         if reply is not None and reply.cancelled():
             return None
-        return await execute(entry)
+        correlation = (
+            None
+            if entry.command_id is None
+            else ModeWriteCorrelation(entry.command_id, entry.source, entry.session_id)
+        )
+        token = mode_write_correlation.set(correlation)
+        try:
+            return await execute(entry)
+        finally:
+            mode_write_correlation.reset(token)
 
     owner = asyncio.current_task()
     cancelling = owner.cancelling() if owner is not None else 0

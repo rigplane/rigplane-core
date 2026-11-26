@@ -1617,3 +1617,17 @@ memory_channel = 5
 # Advance Manual FTX-1_AM_ENG_2506-B printed p.62, CW MEMORY 1-5: "Default
 # Setting: TEXT". NOT verified on radio (live check item 6 pending).
 memory_type = "text"
+
+# MOR-4777: panel guidance, not an accepted CAT discriminator or actuator.
+[[radio_owned_modes]]
+id = "wires_x_hri"
+label = "WIRES-X/HRI"
+scope = "main"
+restrictions = [{ operation = "mode_write", receiver = "main", certainty = "suspected" }]
+enter_instruction = "To enter HRI mode: hold FUNC, open PAGE 3/3 FM/C4FM, then select HRI MODE."
+enter_provenance = "manufacturer_documented"
+leave_instruction = "To leave: hold GM/X on the radio and verify the normal display returns. HRI OFF has not been independently verified."
+leave_provenance = "owner_observed"
+refusal_hint = "WIRES-X/HRI mode may be active. Check the radio's display."
+translation_key = "radioOwnedModes.wiresXHri"
+evidence_refs = ["FTX-1_WIRES-X_ENG_2603-B: opening HRI instructions", "MOR-4777: owner-reported mode SET refusals and GM/X exit; no controlled A/B test"]
