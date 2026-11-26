@@ -191,9 +191,15 @@ class FakeIqSource:
 
     def _emit_block(self) -> None:
         callback = self._callback
+        center_freq_hz = self._center_freq
+        # A slaved source with centre 0 has an unknown frequency (see
+        # IqSource.set_center_freq); drop the block instead of publishing
+        # a bogus 0 Hz centre.
+        if self._facts.tuning == "slaved" and center_freq_hz == 0:
+            return
         block = IqBlock(
             samples=self._generate_samples(),
-            center_freq_hz=self._center_freq,
+            center_freq_hz=center_freq_hz,
             sample_rate_hz=self._sample_rate,
             timestamp_s=time.monotonic(),
             overflow=self._overflow,

@@ -38,6 +38,8 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
 
     This is non-fatal: failures are logged but do not raise.
     """
+    from rigplane.core.acquisition_scheduler import resolve_available_when
+
     from ._state_queries import availability_source_queries, build_state_queries
 
     try:
@@ -47,6 +49,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             if is_serial
             else radio._INITIAL_STATE_GAP_LAN
         )
+        store = radio._state_store
         # MOR-3630: the sweep also runs after an external CAT owner hands the
         # radio back, when the store still holds what the radio was left in
         # before that owner changed it. A read the declared ``available_when``
@@ -54,17 +57,15 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         # clauses read (the mode, PTT) are read first, and awaited -- the
         # answer is in the store when ``send_civ`` returns -- and the sweep
         # filters on that, not on the stale snapshot. A source that does not
-        # answer keeps its stored value.
-        refreshed = availability_source_queries(radio._profile)
-        for query in refreshed:
-            await _send_query(radio, query, wait_response=True)
-            await asyncio.sleep(gap)
+        # answer is read once more, then keeps its stored value (MOR-3924).
+        answered = await _refresh_sources(
+            radio, availability_source_queries(radio._profile), gap=gap
+        )
+        snapshot = store.snapshot()
         queries = [
             query
-            for query in build_state_queries(
-                radio._profile, snapshot=radio._state_store.snapshot()
-            )
-            if query not in refreshed
+            for query in build_state_queries(radio._profile, snapshot=snapshot)
+            if query not in answered
         ]
         if not queries:
             radio._initial_state_fetched = True
@@ -75,12 +76,39 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             len(queries),
             gap * 1000,
         )
+        acquisition = radio._profile.state_acquisition
+        assert acquisition is not None  # no query is built without one
+        # MOR-3924: the list was filtered on ``snapshot``, but an answer can
+        # land while an earlier read of this loop is dispatched and turn a
+        # later read's clause false (MAIN back to FM). Ask the same resolver
+        # again right before each send, and rebuild the eligible list only
+        # when its answer changed: a read the list no longer holds is not
+        # sent, exactly as one it never held.
+        availability = resolve_available_when(acquisition, snapshot)
+        eligible = frozenset(queries)
         sent = 0
+        withheld = 0
         for query in queries:
+            snapshot = store.snapshot()
+            resolved = resolve_available_when(acquisition, snapshot)
+            if resolved != availability:
+                availability = resolved
+                eligible = frozenset(
+                    build_state_queries(radio._profile, snapshot=snapshot)
+                )
+            if query not in eligible:
+                withheld += 1
+                continue
             if await _send_query(radio, query, wait_response=False):
                 sent += 1
             await asyncio.sleep(gap)
 
+        if withheld:
+            logger.debug(
+                "initial state fetch withheld %d reads whose available_when "
+                "clause turned false during the sweep",
+                withheld,
+            )
         logger.info(
             "initial state fetch sent %d/%d queries",
             sent,
@@ -93,6 +121,34 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         )
     finally:
         radio._initial_state_fetched = True
+
+
+async def _refresh_sources(
+    radio: IcomRadio, sources: list[AcquisitionQuery], *, gap: float
+) -> set[AcquisitionQuery]:
+    """Read the fields ``available_when`` clauses read, awaited (MOR-3630).
+
+    Returns the sources that answered. One the radio did not answer is read
+    once more before the sweep filters on it (MOR-3924): the store then still
+    holds what the previous owner left the radio in, and filtering on that
+    drops every dependent read for the whole reconciliation, which a
+    standalone ``reconcile_state()`` has no poller to recover. A source that
+    stays silent keeps its stored value and goes out again, unawaited, with
+    the rest of the sweep.
+    """
+    answered: set[AcquisitionQuery] = set()
+    silent: list[AcquisitionQuery] = []
+    for query in sources:
+        if await _send_query(radio, query, wait_response=True):
+            answered.add(query)
+        else:
+            silent.append(query)
+        await asyncio.sleep(gap)
+    for query in silent:
+        if await _send_query(radio, query, wait_response=True):
+            answered.add(query)
+        await asyncio.sleep(gap)
+    return answered
 
 
 async def _send_query(

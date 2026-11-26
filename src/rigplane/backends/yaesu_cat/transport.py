@@ -284,8 +284,10 @@ class YaesuCatTransport:
         way ``SerialCivLink.set_baudrate`` does for CI-V. A closed transport
         just remembers the rate for its next open. Returns ``False`` and
         keeps the old rate when the writer exposes no pyserial object or the
-        port refuses the rate. ``query`` flushes stale bytes before each
-        command, so nothing read at the old rate is taken for an answer.
+        port refuses the rate. On a successful retune the OS/driver input
+        buffer is discarded as well: ``flush_rx`` clears only the asyncio
+        reader buffer, and a late reply sent at the old rate must not be
+        read at the new one (MOR-4216).
         """
         if baudrate <= 0:
             raise ValueError("baudrate must be > 0")
@@ -309,6 +311,8 @@ class YaesuCatTransport:
                 port.baudrate = self._baudrate  # roll the refused rate back
             return False
         self._baudrate = baudrate
+        with contextlib.suppress(Exception):
+            port.reset_input_buffer()
         return True
 
     async def close(self) -> None:

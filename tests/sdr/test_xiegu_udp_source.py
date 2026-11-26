@@ -164,40 +164,50 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
         assert harness.blocks == []
 
 
-def test_receive_port_is_exclusive_and_reusable_after_close() -> None:
+def test_receive_port_is_exclusive_while_open_and_released_on_close() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
-        first = XieguUdpIqSource(
-            _spec(int(radio.getsockname()[1])), start_grace_s=100.0
-        )
+        radio_port = int(radio.getsockname()[1])
+        first = XieguUdpIqSource(_spec(radio_port), start_grace_s=100.0)
         blocks: list[IqBlock] = []
         first.on_block(blocks.append)
         first.set_center_freq(7_183_000)
+        first.open()
+        sock = first._socket
         try:
-            first.open()
             port = first.bound_receive_port
             assert port is not None
-            second = XieguUdpIqSource(
-                _spec(int(radio.getsockname()[1]), port), start_grace_s=100.0
-            )
+            # Race-free: FIRST holds ``port``, so a second source asking for
+            # that very number is refused by the live collision.
+            second = XieguUdpIqSource(_spec(radio_port, port), start_grace_s=100.0)
             try:
                 with pytest.raises(OSError, match=str(port)):
                     second.open()
-
-                for _ in range(10):
-                    radio.sendto(bytes(768), ("127.0.0.1", port))
-                wait_until(lambda: len(blocks) >= 1)
-                assert first.is_open is True
-
-                first.close()
-                assert first.bound_receive_port is None
-                second.open()
-                assert second.is_open is True
-                assert second.bound_receive_port == port
+                assert second.is_open is False
             finally:
                 second.close()
+
+            for _ in range(10):
+                radio.sendto(bytes(768), ("127.0.0.1", port))
+            wait_until(lambda: len(blocks) >= 1)
+            assert first.is_open is True
         finally:
             first.close()
+        # Closed: the socket itself is closed, not merely reported so.
+        assert sock is not None and sock.fileno() == -1
+        assert first.is_open is False
+        assert first.bound_receive_port is None
+
+        # MOR-4475: a new source opens afterwards on an OS-picked port
+        # (``receive_port=0``). Rebinding the number FIRST released would
+        # race any other process that takes it in between on a busy host.
+        reopened = XieguUdpIqSource(_spec(radio_port), start_grace_s=100.0)
+        try:
+            reopened.open()
+            assert reopened.is_open is True
+            assert reopened.bound_receive_port is not None
+        finally:
+            reopened.close()
 
 
 def test_already_flowing_stream_never_causes_a_tune_command() -> None:
