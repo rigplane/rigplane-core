@@ -109,6 +109,7 @@ def _gated_web(radio, model: str) -> WebServer:
 
 
 @pytest.mark.parametrize("link", ["usb", "lan"])
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_ic705_refused_tuner_read_does_not_hold_the_startup_gate(
     link: str, caplog: pytest.LogCaptureFixture
 ) -> None:

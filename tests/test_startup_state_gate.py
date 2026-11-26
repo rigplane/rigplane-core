@@ -869,6 +869,7 @@ class _MalformedSubMeterRadio:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_gate_binds_when_a_noncritical_declared_read_never_parses() -> None:
     """Open with the SUB meter unavailable and its bad reply in diagnostics."""
     radio = _MalformedSubMeterRadio()
@@ -937,6 +938,7 @@ def _refuse_sm1() -> int:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_gate_binds_when_a_noncritical_read_is_refused_twice() -> None:
     """The SUB meter still refuses on retry, so startup serves it unavailable."""
     radio = _MalformedSubMeterRadio()
@@ -1442,6 +1444,7 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reply", ["RPRT 1", "not-a-number"])
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_rigctld_unavailable_rf_gain_does_not_abort_startup(reply: str) -> None:
     from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 
@@ -2967,6 +2970,7 @@ class _Ftx1ModeDependentMicGain(FakeCatRadio):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode_code, mode", [("3", "CW-U"), ("9", "RTTY-U")])
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_ftx1_refused_mic_gain_does_not_abort_startup(
     caplog: pytest.LogCaptureFixture,
     mode_code: str,
@@ -3069,6 +3073,7 @@ async def test_ftx1_refused_mic_gain_does_not_abort_startup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_ftx1_refused_operating_mode_still_aborts_startup() -> None:
     fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
     fake.hold("TX", "0")
@@ -3253,12 +3258,33 @@ async def test_yaesu_fully_silent_link_still_serves_not_answering() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_cli_web_exits_one_and_prints_the_defect(
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """``rigplane web`` prints the critical read refusal and exits 1."""
     from rigplane.cli import _build_parser, _run
 
+    monkeypatch.delenv("ICOM_HOST", raising=False)
+    monkeypatch.setattr("platformdirs.user_config_path", lambda app: tmp_path / app)
+    monkeypatch.setattr(
+        "rigplane._platformdirs_migration.migrate_legacy_platformdirs", lambda: None
+    )
+
+    args = _build_parser().parse_args(
+        [
+            "--model",
+            "FTX-1",
+            "--serial-port",
+            str(tmp_path / "fake-ftx1"),
+            "web",
+            "--no-rigctld",
+            "--no-discovery",
+        ]
+    )
+    args.web_bridge = None  # no audio bridge; the gate is what is under test
     fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
     fake.hold("TX", "0")
     await fake.start()
@@ -3267,10 +3293,6 @@ async def test_cli_web_exits_one_and_prints_the_defect(
     async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
         raise AssertionError("the listener must never bind")
 
-    args = _build_parser().parse_args(
-        ["--host", "1.2.3.4", "--model", "FTX-1", "web", "--no-rigctld"]
-    )
-    args.web_bridge = None  # no audio bridge; the gate is what is under test
     try:
         await asyncio.wait_for(radio.connect(), timeout=30)
         fake.reject("MD")

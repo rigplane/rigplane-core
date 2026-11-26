@@ -284,6 +284,14 @@ def _isolate_resident_lock_dir(
     _guard._HELD.clear()
 
 
+@pytest.fixture
+def isolated_eibi_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep web startup from using the user's EiBi cache."""
+    from rigplane.web.eibi import EiBiProvider
+
+    monkeypatch.setattr(EiBiProvider, "_get_cache_dir", lambda self: tmp_path)
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_portaudio_pool() -> Iterator[None]:
     """Restore the shared bounded PortAudio pool to a pristine state in place.
