@@ -7,12 +7,14 @@ import math
 import threading
 import time
 import types
+from unittest.mock import Mock
 
 import pytest
 
 from rigplane_testkit.sim.engine import ManualClock
 from rigplane.testing.timing import VirtualClock, await_until, wait_until
 from rigplane.testing.timing import virtual_clock as clocked
+from rigplane.testing import timing
 
 
 def _globals() -> tuple[object, ...]:
@@ -252,13 +254,96 @@ async def test_await_until_polls_real_time_on_a_real_loop() -> None:
 
 
 @pytest.mark.timeout(30)
-async def test_await_until_waits_for_a_real_thread_without_moving_the_virtual_clock(
+async def test_await_until_advances_only_the_installed_clock(
     virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     started = virtual_clock()
-    box: list[int] = []
-    threading.Timer(0.05, lambda: box.append(1)).start()
-    assert await await_until(lambda: box and box[0], timeout=10.0) == 1
+    wall = Mock(side_effect=AssertionError("virtual wait used wall time"))
+    monkeypatch.setattr(
+        timing, "time", types.SimpleNamespace(monotonic=wall, sleep=wall)
+    )
+    delivered: list[int] = []
+    asyncio.get_running_loop().call_later(0.25, delivered.append, 42)
+    assert await await_until(lambda: delivered and delivered[0], interval=0.125) == 42
+    assert virtual_clock() - started == pytest.approx(0.25)
+    wall.assert_not_called()
+
+
+@pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
+@pytest.mark.parametrize("interval", [0.125, 1.0])
+async def test_virtual_wait_deadline_uses_no_wall_time(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    synchronous: bool,
+    interval: float,
+) -> None:
+    started = virtual_clock()
+    wall = Mock(side_effect=AssertionError("virtual wait used wall time"))
+    monkeypatch.setattr(
+        timing, "time", types.SimpleNamespace(monotonic=wall, sleep=wall)
+    )
+    with pytest.raises(AssertionError, match="waiting for a missing event"):
+        if synchronous:
+            wait_until(
+                lambda: False,
+                timeout=0.25,
+                interval=interval,
+                description="a missing event",
+            )
+        else:
+            await await_until(
+                lambda: False,
+                timeout=0.25,
+                interval=interval,
+                description="a missing event",
+            )
+    assert virtual_clock() - started == pytest.approx(0.25)
+    wall.assert_not_called()
+
+
+async def test_wait_until_reads_the_installed_clock(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = virtual_clock()
+    wall = Mock(side_effect=AssertionError("virtual wait used wall time"))
+    monkeypatch.setattr(
+        timing, "time", types.SimpleNamespace(monotonic=wall, sleep=wall)
+    )
+    assert (
+        wait_until(
+            lambda: 42 if virtual_clock() >= started + 0.25 else 0, interval=0.125
+        )
+        == 42
+    )
+    assert virtual_clock() - started == pytest.approx(0.25)
+    wall.assert_not_called()
+
+
+async def test_await_until_real_loop_timeout_keeps_wall_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wall = Mock(wraps=time.monotonic)
+    monkeypatch.setattr(timing, "time", types.SimpleNamespace(monotonic=wall))
+    with pytest.raises(AssertionError, match="waiting for a missing event"):
+        await await_until(lambda: False, timeout=0.01, description="a missing event")
+    assert wall.call_count >= 2
+
+
+@pytest.mark.parametrize("interval", [0.0, -0.01, math.nan, math.inf])
+@pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
+async def test_virtual_wait_rejects_intervals_that_cannot_advance_its_deadline(
+    virtual_clock: VirtualClock,
+    interval: float,
+    synchronous: bool,
+) -> None:
+    started = virtual_clock()
+    with pytest.raises(ValueError, match="finite and positive"):
+        if synchronous:
+            wait_until(lambda: False, interval=interval)
+        else:
+            await await_until(lambda: False, interval=interval)
     assert virtual_clock() == started
 
 

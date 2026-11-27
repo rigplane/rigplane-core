@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
 from collections.abc import AsyncGenerator, Callable
 from unittest.mock import patch
 
@@ -22,12 +21,22 @@ from rigplane.radio import IcomRadio
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.icom import simulator
 
 from _perf_helpers import fast_connect
 
 _WATCHDOG_TIMEOUT_S = 1.5
+
+
+@pytest.fixture(autouse=True)
+def event_time(virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch) -> None:
+    for module in (simulator, radio_reconnect):
+        virtual_clock.scope_to(monkeypatch, module)
+        # Only decision timestamps are scoped; tasks still use asyncio's timers.
+        monkeypatch.setattr(module, "asyncio", asyncio)
 
 
 @pytest.fixture
@@ -57,19 +66,25 @@ def _client(sim: MockIcomRadio, **overrides) -> IcomRadio:
 
 async def _states_until(
     radio: IcomRadio,
+    virtual_clock: VirtualClock,
     deadline_s: float,
-    done: Callable[[list[RadioConnectionState]], bool] = lambda _: False,
+    done: Callable[[list[RadioConnectionState]], bool] | None = None,
 ) -> list[RadioConnectionState]:
-    """Sample ``conn_state`` every 20 ms until ``done`` or the deadline."""
     seen: list[RadioConnectionState] = []
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
+    end = virtual_clock() + deadline_s
+
+    def sample() -> bool:
         state = radio.conn_state
         if not seen or seen[-1] is not state:
             seen.append(state)
-        if done(seen):
-            break
-        await asyncio.sleep(0.02)
+        return done(seen) if done is not None else virtual_clock() >= end
+
+    await await_until(
+        sample,
+        timeout=deadline_s,
+        interval=0.02,
+        description="the expected connection states",
+    )
     return seen
 
 
@@ -81,16 +96,17 @@ async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
     gate; ``connected`` is false until the radio has answered its ``19 00``
     identification.
     """
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        if radio.connected:
-            return
-        await asyncio.sleep(0.02)
+    await await_until(
+        lambda: radio.connected,
+        timeout=deadline_s,
+        description="the reconnect identity gate",
+    )
 
 
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
     monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     radio = _client(sim)
     statuses: list[dict] = []
@@ -128,7 +144,7 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
                     and statuses[-1]["state"] == "connected"
                 )
 
-            seen = await _states_until(radio, 20.0, reconnected)
+            seen = await _states_until(radio, virtual_clock, 20.0, reconnected)
             assert reconnected(seen), seen
             assert any(s["state"] == "reconnecting" for s in statuses), statuses
             assert statuses[-1]["state"] == "connected", statuses
@@ -144,20 +160,23 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
 
 async def test_keepalive_silence_shorter_than_watchdog_keeps_session(
     sim: MockIcomRadio,
+    virtual_clock: VirtualClock,
 ) -> None:
     radio = _client(sim)
     with fast_connect():
         await radio.connect()
         try:
             sim.keepalive_silence(at=0.1, for_seconds=0.3)
-            seen = await _states_until(radio, _WATCHDOG_TIMEOUT_S + 1.5)
+            seen = await _states_until(radio, virtual_clock, _WATCHDOG_TIMEOUT_S + 1.5)
             assert seen == [RadioConnectionState.CONNECTED]
             assert radio.connected
         finally:
             await radio.disconnect()
 
 
-async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
+async def test_keepalive_silence_longer_than_watchdog_fires_link_down(
+    virtual_clock: VirtualClock,
+) -> None:
     """Silence longer than the watchdog trips it and the client recovers.
 
     The simulator here holds a session for ``keepalive_hold_s=2.0`` rather
@@ -190,7 +209,7 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
                         and statuses[-1]["state"] == "connected"
                     )
 
-                seen = await _states_until(radio, 12.0, recovered)
+                seen = await _states_until(radio, virtual_clock, 12.0, recovered)
                 assert seen[0] is RadioConnectionState.CONNECTED
                 assert recovered(seen), seen
                 assert any(s["state"] == "reconnecting" for s in statuses), statuses
@@ -208,6 +227,7 @@ async def test_keepalive_silence_longer_than_watchdog_fires_link_down() -> None:
 
 async def test_user_disconnect_during_reconnect_ends_loop(
     sim: MockIcomRadio,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A user ``disconnect()`` during RECONNECTING ends the reconnect loop.
 
@@ -228,7 +248,7 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             # off, so the failure is a discovery timeout, not a busy
             # reject.
             sim.reboot(at=0.1, down_for=22.0, busy_for=0.0)
-            radio_back_at = time.monotonic() + 0.1 + 22.0
+            radio_back_at = virtual_clock() + 0.1 + 22.0
 
             attempt_failed = asyncio.Event()
 
@@ -241,7 +261,11 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             failure_handler = _FailureHandler(level=logging.WARNING)
             radio_reconnect.logger.addHandler(failure_handler)
             try:
-                await asyncio.wait_for(attempt_failed.wait(), timeout=40.0)
+                await await_until(
+                    attempt_failed.is_set,
+                    timeout=40.0,
+                    description="the failed reconnect attempt",
+                )
             finally:
                 radio_reconnect.logger.removeHandler(failure_handler)
 
@@ -251,7 +275,7 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             # Watch past the radio's return: a loop that survived the
             # user's disconnect logs back in as soon as the radio answers
             # again, so the window must cover it.
-            await asyncio.sleep(max(0.0, radio_back_at - time.monotonic()) + 5.0)
+            await virtual_clock.elapse(max(0.0, radio_back_at - virtual_clock()) + 5.0)
             assert statuses[n_status:] == [], statuses[n_status:]
             assert radio.conn_state is RadioConnectionState.DISCONNECTED
             assert radio._reconnect_task is None or radio._reconnect_task.done()
@@ -261,7 +285,10 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             await radio.disconnect()
 
 
-async def _assert_user_disconnect_ends_loop(inject_at: str) -> None:
+async def _assert_user_disconnect_ends_loop(
+    inject_at: str,
+    virtual_clock: VirtualClock,
+) -> None:
     """Start the user's ``disconnect()`` from inside the reconnect loop task
     the first time the loop calls ``inject_at`` (a ``CivRuntime`` method, or
     ``connect`` on the radio), then assert the loop ends with no new login.
@@ -292,9 +319,11 @@ async def _assert_user_disconnect_ends_loop(inject_at: str) -> None:
             try:
                 with patch.object(target, inject_at, spy):
                     server.keepalive_silence(at=0.1, for_seconds=3.0)
-                    deadline = time.monotonic() + 15.0
-                    while user_task is None and time.monotonic() < deadline:
-                        await asyncio.sleep(0.02)
+                    await await_until(
+                        lambda: user_task is not None,
+                        timeout=15.0,
+                        description=f"disconnect injection at {inject_at}",
+                    )
                     assert user_task is not None, (
                         f"disconnect never injected at the loop's {inject_at}",
                         statuses,
@@ -304,7 +333,7 @@ async def _assert_user_disconnect_ends_loop(inject_at: str) -> None:
                     # Watch past the silence window: a loop that survived
                     # the user's disconnect logs back in as soon as the
                     # radio answers again, so the window must cover it.
-                    await asyncio.sleep(7.0)
+                    await virtual_clock.elapse(7.0)
                 assert statuses[n_status:] == [], statuses[n_status:]
                 assert radio.conn_state is RadioConnectionState.DISCONNECTED
                 assert loop_task is not None
@@ -325,7 +354,10 @@ async def _assert_user_disconnect_ends_loop(inject_at: str) -> None:
 
 
 @pytest.mark.parametrize("helper", ["stop_data_watchdog", "stop_pump"])
-async def test_user_disconnect_inside_loop_release_ends_loop(helper: str) -> None:
+async def test_user_disconnect_inside_loop_release_ends_loop(
+    helper: str,
+    virtual_clock: VirtualClock,
+) -> None:
     """A user ``disconnect()`` landing inside the loop's own release ends it.
 
     The reconnect loop awaits ``CoreRadioSessionLifecycle.disconnect()`` at
@@ -337,18 +369,21 @@ async def test_user_disconnect_inside_loop_release_ends_loop(helper: str) -> Non
     ``CoreRadio._owner_stop_epoch``, which the loop re-reads when the
     release returns.
     """
-    await _assert_user_disconnect_ends_loop(helper)
+    await _assert_user_disconnect_ends_loop(helper, virtual_clock)
 
 
-async def test_user_disconnect_at_loop_connect_entry_ends_loop() -> None:
+async def test_user_disconnect_at_loop_connect_entry_ends_loop(
+    virtual_clock: VirtualClock,
+) -> None:
     """A user ``disconnect()`` started as the loop enters ``connect()``
     ends the loop with no new login."""
-    await _assert_user_disconnect_ends_loop("connect")
+    await _assert_user_disconnect_ends_loop("connect", virtual_clock)
 
 
 @pytest.mark.parametrize("failure_point", ["startup_readiness"])
 async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
     failure_point: str,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A failure inside the loop's own connect attempt is one failed round.
 
@@ -403,9 +438,11 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
                     ),
                 ):
                     server.keepalive_silence(at=0.1, for_seconds=3.0)
-                    deadline = time.monotonic() + 15.0
-                    while not failed_in and time.monotonic() < deadline:
-                        await asyncio.sleep(0.02)
+                    await await_until(
+                        lambda: bool(failed_in),
+                        timeout=15.0,
+                        description="the injected reconnect failure",
+                    )
                     assert failed_in, ("no failure injected in the loop", statuses)
                     loop_task = failed_in[0]
 
@@ -416,7 +453,7 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
                             and statuses[-1]["state"] == "connected"
                         )
 
-                    seen = await _states_until(radio, 10.0, recovered)
+                    seen = await _states_until(radio, virtual_clock, 10.0, recovered)
                     assert recovered(seen), (seen, statuses)
                     assert radio._reconnect_task is loop_task
                     await asyncio.wait_for(loop_task, timeout=5.0)
@@ -449,6 +486,7 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
 
 async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
     sim: MockIcomRadio,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A busy window spanning several reconnect rounds still recovers.
 
@@ -489,11 +527,13 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
             # announces itself — the first attempt's release has already
             # run by then, so the handle is only non-None if that release
             # preserved it.
-            deadline = time.monotonic() + 20.0
-            while time.monotonic() < deadline and not any(
-                s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
-            ):
-                await asyncio.sleep(0.02)
+            await await_until(
+                lambda: any(
+                    s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
+                ),
+                timeout=20.0,
+                description="the second reconnect attempt",
+            )
             assert any(
                 s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
             ), statuses
@@ -508,7 +548,7 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
                     and statuses[-1]["state"] == "connected"
                 )
 
-            seen = await _states_until(radio, 20.0, recovered)
+            seen = await _states_until(radio, virtual_clock, 20.0, recovered)
             assert recovered(seen), seen
             assert radio._reconnect_task is loop_task
             await asyncio.wait_for(loop_task, timeout=5.0)
