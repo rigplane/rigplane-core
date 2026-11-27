@@ -159,7 +159,7 @@ import {
 import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 // MOR-1367 (S8): the zone-ELEMENT assertions need the resolved plan in context
 // — see `renderWithPlan` in the S8 describe for why `render()` cannot show one.
-import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 import { DEFAULT_WORKSPACE, readWorkspace } from '../../../presentation/workspace/contract';
 import { getCommandLifecycles } from '$lib/stores/commands.svelte';
 
@@ -270,12 +270,13 @@ function capsFor(id: TopologyFixtureId): Capabilities {
 
 let mounted: ReturnType<typeof mount>[] = [];
 
-function render(skinId: SkinId): HTMLElement {
+function render(skinId: SkinId, plan?: SurfacePlan): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(getLayout(skinId) === undefined
     ? mount(RawRadioLayout, { target, props: { skinId, instruments: TEST_INSTRUMENTS } })
-    : mount(RadioLayout, { target, props: { skinId } }));
+    : mount(RadioLayout, { target, props: { skinId },
+      context: plan ? new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]) : undefined }));
   flushSync();
   return target;
 }
@@ -300,13 +301,17 @@ afterEach(() => {
 
 describe('the migrated desktop layout owns VFO/TX through the semantic surfaces', () => {
   it('renders both surfaces in the receiver deck beneath one hosted composition', () => {
-    const t = render('sdr-test');
+    const plan: SurfacePlan = new Map([...resolveSurfacePlan(sdrTestLayout, DEFAULT_WORKSPACE)]
+      .map(([zone, surfaces]) => [zone, surfaces.filter((surface) => surface === 'vfo' || surface === 'rxTx')]));
+    const t = render('sdr-test', plan);
     const deck = t.querySelector('.receiver-deck')!;
     const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
     expect(host).not.toBeNull();
     expect(host!.contains(deck)).toBe(true);
     expect(deck.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
     expect(deck.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
+    expect([...host!.querySelectorAll('[data-zone-id]')].map((zone) => zone.getAttribute('data-zone-id')))
+      .toEqual(['receiver-deck', 'rx-tx']);
   });
 
   // MUTATION KILLED: adding the surfaces alongside the panels they replace.
@@ -981,7 +986,8 @@ describe("the SDR face's right-column families are zone-owned (MOR-2231, batch 3
   // settings modal would redden this even though every row above stays green.
   it('declaring tx-aux retires nothing: the inventory delta is exactly the ten', () => {
     const before = inventory(renderAll(PRE_BATCH_3));
-    const after = inventory(renderAll('sdr-test'));
+    const afterRoot = renderAll('sdr-test');
+    const after = inventory(afterRoot);
     expect(before.length).toBeGreaterThan(RETIRED.length);
     expect(before.filter((p) => !after.includes(p)))
       .toEqual(RETIRED.map(([, scope, panelId]) => `${scope} ${panelId}`).sort());
@@ -989,7 +995,8 @@ describe("the SDR face's right-column families are zone-owned (MOR-2231, batch 3
     // ...and the surface it DOES place is on screen exactly once, which is the
     // whole of what this declaration buys.
     expect(after.filter((p) => p.endsWith(' tx-aux'))).toEqual([]);
-    expect(renderAll('sdr-test').querySelectorAll('[data-testid="tx-aux-surface"]').length).toBe(1);
+    expect(afterRoot.querySelectorAll('[data-testid="tx-aux-surface"]').length).toBe(1);
+    expect(mounted).toHaveLength(2);
   });
 
   // SAFETY-CRITICAL (MOR-1310), stated positively. `CwPanel` is gone from both
@@ -1313,12 +1320,17 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     expect(bare.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 
-  it.each(OPTIONAL)('%s subtraction removes its SDR host and body but keeps the old bare fallback',
-    (zoneId, testid) => {
-      const present = renderVertical(true);
+  it('renders every optional surface in the default SDR plan', () => {
+    const present = renderVertical(true);
+    for (const [zoneId, testid] of OPTIONAL) {
       expect(present.querySelector(`[data-zone-id="${zoneId}"] [data-testid="${testid}"]`), testid)
         .not.toBeNull();
+    }
+    expect(mounted).toHaveLength(1);
+  });
 
+  it.each(OPTIONAL)('%s subtraction removes its SDR host and body but keeps the old bare fallback',
+    (zoneId, testid) => {
       const hidden = {
         ...DEFAULT_WORKSPACE,
         visibleSurfaces: { [zoneId]: [] },
@@ -1330,6 +1342,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       const bare = renderVertical(false, hidden).querySelector(`[data-testid="${testid}"]`);
       expect(bare).not.toBeNull();
       expect(bare!.closest('.surface-zone')).toBeNull();
+      expect(mounted).toHaveLength(2);
     });
 
   it('keeps available surfaces bare without a plan and restores required imported surfaces', () => {
@@ -2091,13 +2104,15 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
    * cover both probes.
    */
   it('NAMED EXCEPTION: retires the settings-modal SPLIT/A↔B/A=B row where the semantic deck owns it', () => {
-    expect(renderAll('desktop-v2').querySelector('.settings-vfo-ops-row')).toBeNull();
+    const desktop = renderAll('desktop-v2');
+    expect(desktop.querySelector('.settings-vfo-ops-row')).toBeNull();
     expect(renderAll(RX_TX_ONLY).querySelector('.settings-vfo-ops-row')).not.toBeNull();
     expect(renderAll('no-such-layout' as SkinId).querySelector('.settings-vfo-ops-row')).not.toBeNull();
     // ...and the semantic replacement really is on screen where the row went.
-    expect(renderAll('desktop-v2').querySelector('.receiver-deck [data-vfo-split]')).not.toBeNull();
+    expect(desktop.querySelector('.receiver-deck [data-vfo-split]')).not.toBeNull();
     // The BAND half of the same modal section is untouched by this exception.
-    expect(renderAll('desktop-v2').querySelector('[data-panel-id="desktop-vfo-ops"] .band-tabs')).not.toBeNull();
+    expect(desktop.querySelector('[data-panel-id="desktop-vfo-ops"] .band-tabs')).not.toBeNull();
+    expect(mounted).toHaveLength(3);
   });
 });
 
@@ -2766,7 +2781,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
     expect(fixed?.querySelectorAll('button, input')).toHaveLength(0);
   });
 
-  it('restores capability-driven MODE hardware keys and keeps FILTER in a sibling panel', () => {
+  describe('capability-driven MODE hardware keys and sibling FILTER panel', () => {
     const renderModePanel = (
       modes: string[], dataModeCount?: number, dataModeLabels?: Record<string, string>, observed = true,
       dataModeInputs?: { value: number; label: string }[], dataMode = 0,
@@ -2794,7 +2809,10 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
         ...state, main: { ...state.main, dataMode }, [modInputKey]: 0,
         fieldStatus,
       };
-      const target = render('desktop-v2');
+      const plan: SurfacePlan = new Map([...resolveSurfacePlan(desktopV2Layout, DEFAULT_WORKSPACE)]
+        .map(([zone, surfaces]) => [zone, surfaces.filter((surface) => surface === 'filter')]));
+      const target = render('desktop-v2', plan);
+      expect(target.querySelector('[data-testid="vfo-surface"]')).toBeNull();
       const mode = target.querySelector('[data-panel-id="semantic-filter"]')!;
       const filter = target.querySelector('[data-panel-id="semantic-filter-controls"]')!;
       return { mode, filter,
@@ -2814,64 +2832,79 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
       { value: 2, label: 'MIC+ACC' }, { value: 4, label: 'MIC+USB' },
     ];
 
-    const ic7610 = renderModePanel(
-      ['FM', 'PSK-R', 'RTTY', 'LSB', 'CW-R', 'AM', 'USB', 'PSK', 'CW', 'RTTY-R'],
-      3, { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' }, true, ic7610Inputs, 3,
-    );
-    expect(ic7610.mode.querySelector('.panel-header .title')?.textContent).toBe('MODE');
-    expect(ic7610.filter.querySelector('.panel-header .title')?.textContent).toBe('FILTER');
-    expect(ic7610.modes).toEqual([
-      'USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R', 'AM', 'FM',
-    ]);
-    expect(ic7610.data).toEqual(['OFF', 'D1', 'D2', 'D3']);
-    expect(ic7610.modInputs).toEqual(['MIC', 'ACC', 'USB', 'LAN', 'MIC+ACC', 'MIC+USB']);
-    expect(ic7610.mode.querySelectorAll('[data-surface="hardware"]')).toHaveLength(14);
-    for (const id of ['filter-select', 'filter-shape', 'filter-width', 'filter-pbtInner']) {
-      expect(ic7610.mode.querySelector(`[data-testid="${id}"]`), id).toBeNull();
-    }
-    expect(ic7610.filter.querySelector('[data-testid="standard-mode-choices"]')).toBeNull();
-    expect(ic7610.filter.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
-    expect(ic7610.filter.querySelector('[data-testid="filter-select"]')).not.toBeNull();
-    expect(ic7610.filter.querySelector('[data-testid="filter-shape"]')).not.toBeNull();
-    (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
-    expect(ic7610.mode.getAttribute('data-collapsed')).toBe('true');
-    expect(ic7610.filter.getAttribute('data-collapsed')).toBe('false');
-    (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
-    (ic7610.filter.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
-    expect(ic7610.mode.getAttribute('data-collapsed')).toBe('false');
-    expect(ic7610.filter.getAttribute('data-collapsed')).toBe('true');
+    it('renders the multi-DATA catalogue and independent MODE/FILTER collapse', () => {
+      const ic7610 = renderModePanel(
+        ['FM', 'PSK-R', 'RTTY', 'LSB', 'CW-R', 'AM', 'USB', 'PSK', 'CW', 'RTTY-R'],
+        3, { '0': 'OFF', '1': 'D1', '2': 'D2', '3': 'D3' }, true, ic7610Inputs, 3,
+      );
+      expect(ic7610.mode.querySelector('.panel-header .title')?.textContent).toBe('MODE');
+      expect(ic7610.filter.querySelector('.panel-header .title')?.textContent).toBe('FILTER');
+      expect(ic7610.modes).toEqual([
+        'USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'PSK', 'PSK-R', 'AM', 'FM',
+      ]);
+      expect(ic7610.data).toEqual(['OFF', 'D1', 'D2', 'D3']);
+      expect(ic7610.modInputs).toEqual(['MIC', 'ACC', 'USB', 'LAN', 'MIC+ACC', 'MIC+USB']);
+      expect(ic7610.mode.querySelectorAll('[data-surface="hardware"]')).toHaveLength(14);
+      for (const id of ['filter-select', 'filter-shape', 'filter-width', 'filter-pbtInner']) {
+        expect(ic7610.mode.querySelector(`[data-testid="${id}"]`), id).toBeNull();
+      }
+      expect(ic7610.filter.querySelector('[data-testid="standard-mode-choices"]')).toBeNull();
+      expect(ic7610.filter.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
+      expect(ic7610.filter.querySelector('[data-testid="filter-select"]')).not.toBeNull();
+      expect(ic7610.filter.querySelector('[data-testid="filter-shape"]')).not.toBeNull();
+      (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+      expect(ic7610.mode.getAttribute('data-collapsed')).toBe('true');
+      expect(ic7610.filter.getAttribute('data-collapsed')).toBe('false');
+      (ic7610.mode.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+      (ic7610.filter.querySelector('.panel-header') as HTMLButtonElement).click(); flushSync();
+      expect(ic7610.mode.getAttribute('data-collapsed')).toBe('false');
+      expect(ic7610.filter.getAttribute('data-collapsed')).toBe('true');
 
-    const ic7300 = renderModePanel(
-      ['USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'AM', 'FM'],
-      1, { '0': 'OFF', '1': 'DATA' }, true, ic7300Inputs, 1,
-    );
-    expect(ic7300.modes).not.toContain('PSK');
-    expect(ic7300.modes).not.toContain('PSK-R');
-    expect(ic7300.data).toEqual(['OFF', 'DATA']);
-    expect(ic7300.modInputs).toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB']);
+      expect(mounted).toHaveLength(1);
+    });
 
-    const yaesu = renderModePanel([
-      'FM-N', 'DATA-FM', 'RTTY-U', 'CW-L', 'USB', 'LSB', 'CW-U', 'RTTY-L',
-      'DATA-U', 'DATA-L', 'AM', 'FM',
-    ]);
-    expect(yaesu.modes).toEqual([
-      'USB', 'LSB', 'CW-U', 'CW-L', 'RTTY-L', 'RTTY-U',
-      'DATA-U', 'DATA-L', 'DATA-FM', 'AM', 'FM', 'FM-N',
-    ]);
-    expect(yaesu.mode.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
-    expect(yaesu.mode.querySelector('[data-testid="mod-input-select"]')).toBeNull();
+    it('renders the single-DATA catalogue without PSK choices', () => {
+      const ic7300 = renderModePanel(
+        ['USB', 'LSB', 'CW', 'CW-R', 'RTTY', 'RTTY-R', 'AM', 'FM'],
+        1, { '0': 'OFF', '1': 'DATA' }, true, ic7300Inputs, 1,
+      );
+      expect(ic7300.modes).not.toContain('PSK');
+      expect(ic7300.modes).not.toContain('PSK-R');
+      expect(ic7300.data).toEqual(['OFF', 'DATA']);
+      expect(ic7300.modInputs).toEqual(['MIC', 'ACC', 'MIC+ACC', 'USB', 'MIC+USB']);
 
-    const unknown = renderModePanel(
-      ['USB', 'LSB'], 1, { '0': 'OFF', '1': 'DATA' }, false, ic7300Inputs,
-    );
-    expect(unknown.mode.querySelectorAll('[data-testid="standard-mode-choices"] button:not(:disabled)'), 'mode')
-      .toHaveLength(0);
-    expect(unknown.mode.querySelectorAll('[data-testid="standard-data-mode"] button:not(:disabled)'), 'data')
-      .toHaveLength(0);
-    expect(unknown.mode.querySelector('[aria-pressed="true"]')).toBeNull();
-    const unknownInput = unknown.mode.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
-    expect(unknownInput.disabled).toBe(true);
-    expect(unknownInput.value).toBe('');
+      expect(mounted).toHaveLength(1);
+    });
+
+    it('renders DATA as operating modes when no separate DATA table is served', () => {
+      const yaesu = renderModePanel([
+        'FM-N', 'DATA-FM', 'RTTY-U', 'CW-L', 'USB', 'LSB', 'CW-U', 'RTTY-L',
+        'DATA-U', 'DATA-L', 'AM', 'FM',
+      ]);
+      expect(yaesu.modes).toEqual([
+        'USB', 'LSB', 'CW-U', 'CW-L', 'RTTY-L', 'RTTY-U',
+        'DATA-U', 'DATA-L', 'DATA-FM', 'AM', 'FM', 'FM-N',
+      ]);
+      expect(yaesu.mode.querySelector('[data-testid="standard-data-mode"]')).toBeNull();
+      expect(yaesu.mode.querySelector('[data-testid="mod-input-select"]')).toBeNull();
+
+      expect(mounted).toHaveLength(1);
+    });
+
+    it('disables unobserved MODE, DATA and modulation inputs', () => {
+      const unknown = renderModePanel(
+        ['USB', 'LSB'], 1, { '0': 'OFF', '1': 'DATA' }, false, ic7300Inputs,
+      );
+      expect(unknown.mode.querySelectorAll('[data-testid="standard-mode-choices"] button:not(:disabled)'), 'mode')
+        .toHaveLength(0);
+      expect(unknown.mode.querySelectorAll('[data-testid="standard-data-mode"] button:not(:disabled)'), 'data')
+        .toHaveLength(0);
+      expect(unknown.mode.querySelector('[aria-pressed="true"]')).toBeNull();
+      const unknownInput = unknown.mode.querySelector<HTMLSelectElement>('[data-testid="mod-input-select"]')!;
+      expect(unknownInput.disabled).toBe(true);
+      expect(unknownInput.value).toBe('');
+      expect(mounted).toHaveLength(1);
+    });
   });
 
   it('hosts both CW hardware hbars inside the one movable CW shell', () => {
