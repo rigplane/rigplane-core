@@ -972,22 +972,9 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         session = radio.audio_session
 
         bus = radio.audio_bus
-        on_packet = bus._on_opus_packet
-        allow_frames = True
-        discarded_frames: list[AudioPacket | None] = []
-
-        def gate_frames(packet: AudioPacket | None) -> None:
-            if allow_frames:
-                on_packet(packet)
-            else:
-                discarded_frames.append(packet)
-
-        monkeypatch.setattr(bus, "_on_opus_packet", gate_frames)
-
         sub = await session.subscribe_rx("web-audio")
         first_frame = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
         assert first_frame is not None
-        allow_frames = False
         heartbeat_before_death = bus.last_rx_frame_monotonic
 
         teardown_calls, restore_teardown = _spy_method(
@@ -996,25 +983,34 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         orig_ensure = radio._ensure_audio_transport
         orig_reestablish = session.reestablish
         reestablished: list[int] = []
+        release_reader = asyncio.Event()
+        reader_started = asyncio.Event()
 
         async def _dead_ensure() -> None:
             await orig_ensure()
             _kill_client_audio_only(radio)
-            # Closing UDP leaves its receive queue intact. Force a backlog
-            # that the new RX task will read after reestablish returns.
+            # A setup burst arrived before re-arm, then ingress stopped.
             transport = radio._audio_transport
             assert transport is not None
             _drain(transport._packet_queue)
             for seq in range(bus._jitter_depth):
-                transport._packet_queue.put_nowait(
-                    build_audio_packet(
-                        first_frame.data,
-                        sender_id=transport.remote_id,
-                        receiver_id=transport.my_id,
-                        send_seq=seq,
-                        ident=first_frame.ident,
-                    )
+                raw = build_audio_packet(
+                    first_frame.data,
+                    sender_id=transport.remote_id,
+                    receiver_id=transport.my_id,
+                    send_seq=seq,
+                    ident=first_frame.ident,
                 )
+                transport._route_data_packet(raw, 0, seq, transport.remote_id)
+            assert transport._packet_queue.qsize() == bus._jitter_depth
+            receive_packet = transport.receive_packet
+
+            async def delayed_receive(timeout: float = 5.0) -> bytes:
+                await release_reader.wait()
+                reader_started.set()
+                return await receive_packet(timeout)
+
+            monkeypatch.setattr(transport, "receive_packet", delayed_receive)
 
         async def _spy_reestablish() -> None:
             await orig_reestablish()
@@ -1057,18 +1053,29 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             # 2, 2 s before round 3, and the third round observes frames
             # for RX_LIVENESS_TIMEOUT_S before reporting FAILED once.
             for round_no in range(1, 4):
-                discarded_before = len(discarded_frames)
+                release_reader.clear()
+                reader_started.clear()
                 await _drive_rx_silent()
                 task = radio._audio_silence_repair_task
                 assert task is not None, (
                     f"round {round_no}: rx_silent scheduled no repair task"
                 )
-                await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
                 assert await await_until(
-                    lambda: len(discarded_frames) > discarded_before,
-                    timeout=RESUME_BOUND_S,
-                    description=f"round {round_no} buffered RX delivery",
+                    lambda: len(reestablished) == round_no, timeout=RESUME_BOUND_S
                 )
+                if round_no < 3:
+                    # Let the baseline settle before the queued reader runs.
+                    await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+                release_reader.set()
+                assert await await_until(
+                    lambda: (
+                        reader_started.is_set()
+                        and radio._audio_transport._packet_queue.empty()
+                    ),
+                    timeout=RESUME_BOUND_S,
+                    description=f"round {round_no} queued RX retired or consumed",
+                )
+                await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
                 assert bus.last_rx_frame_monotonic == heartbeat_before_death
                 assert radio._audio_silence_repair_task is None
                 assert radio._audio_silence_repair_attempts == round_no
@@ -1091,6 +1098,30 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             assert len(teardown_calls) == 3
             assert len(reestablished) == 3
             assert radio._audio_silence_repair_attempts == 3
+            assert recovery == [AudioRecoveryState.FAILED]
+
+            # Positive control: new ingress after re-arm still reaches the
+            # unmodified bus callback and opens a fresh repair episode.
+            transport = radio._audio_transport
+            assert transport is not None
+            for seq in range(bus._jitter_depth):
+                raw = build_audio_packet(
+                    first_frame.data,
+                    sender_id=transport.remote_id,
+                    receiver_id=transport.my_id,
+                    send_seq=seq,
+                    ident=first_frame.ident,
+                )
+                transport._route_data_packet(raw, 0, seq, transport.remote_id)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert bus.last_rx_frame_monotonic != heartbeat_before_death
+            await _drive_rx_silent()
+            task = radio._audio_silence_repair_task
+            assert task is not None, "fresh ingress did not reopen the episode"
+            await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+            assert radio._audio_silence_repair_attempts == 1
+            assert len(teardown_calls) == 4
+            assert len(reestablished) == 4
             assert recovery == [AudioRecoveryState.FAILED]
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]

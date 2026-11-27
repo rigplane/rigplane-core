@@ -27,7 +27,7 @@ from rigplane.audio._transcoder import (
     PcmOpusTranscoder,
     create_pcm_opus_transcoder,
 )
-from rigplane.audio import AudioStats, AudioStream
+from rigplane.audio import AudioState, AudioStats, AudioStream
 from rigplane.audio.pcm import PcmFrame
 from rigplane.core.exceptions import AudioFormatError, ConnectionError
 from rigplane.core.transport import IcomTransport
@@ -92,10 +92,14 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._opus_rx_user_callback = callback
         self._opus_rx_jitter_depth = jitter_depth
         self._arm_pcm_ingress()
-        # Re-enable queueing before the RX loop starts, so the first packet
-        # of the new session is not discarded.
         audio_transport = getattr(self, "_audio_transport", None)
         if audio_transport is not None:
+            if self._audio_stream.state == AudioState.IDLE:
+                # Retire pre-arm ingress before scheduling the RX reader:
+                # queued setup audio must not stamp a recovery heartbeat.
+                # No await separates retirement from start_rx below.
+                while not audio_transport._packet_queue.empty():
+                    audio_transport._packet_queue.get_nowait()
             audio_transport._discard_data_packets = False
         await self._audio_stream.start_rx(callback, jitter_depth=jitter_depth)
 
