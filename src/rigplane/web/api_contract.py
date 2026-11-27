@@ -8,6 +8,15 @@ from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
 
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
+AudioRetryRefusalReason = Literal["unsupported", "not_applicable"]
+
+
+class AudioRetryResult(TypedDict):
+    """Result of the structured ``audio_retry`` command."""
+
+    accepted: bool
+    reason: NotRequired[AudioRetryRefusalReason]
+
 
 class HttpEndpoint(TypedDict):
     method: str

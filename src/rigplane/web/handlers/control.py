@@ -77,6 +77,7 @@ from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
 )
+from ..api_contract import AudioRetryResult  # noqa: TID251
 from ..radio_poller import (  # noqa: TID251
     CommandQueue,
     ResetFilterWidth,
@@ -221,6 +222,7 @@ from ...capabilities import (
     CAP_XFC,
 )
 from ...radio_protocol import (
+    AudioRetryCapable,
     CivCommandCapable,
     ControlDomainCapable,
     MemoryCapable,
@@ -995,6 +997,7 @@ class ControlHandler:
             "get_af_mute",
             "set_af_mute",
             "set_monitor_mute",
+            "audio_retry",
             "get_tuning_step",
             "set_tuning_step",
             "get_utc_offset",
@@ -2401,6 +2404,18 @@ class ControlHandler:
         year, month, day = await radio.get_system_date()
         return {"year": year, "month": month, "day": day}
 
+    async def _ro_audio_retry(
+        self, params: dict[str, Any], radio: "Radio | None"
+    ) -> dict[str, Any]:
+        result: AudioRetryResult
+        if not isinstance(radio, AudioRetryCapable):
+            result = {"accepted": False, "reason": "unsupported"}
+        elif await radio.retry_audio(wait=False):
+            result = {"accepted": True}
+        else:
+            result = {"accepted": False, "reason": "not_applicable"}
+        return dict(result)
+
     async def _ro_get_system_time(
         self, params: dict[str, Any], radio: "Radio | None"
     ) -> dict[str, Any]:
@@ -2689,6 +2704,7 @@ class ControlHandler:
         ]
     ] = {
         "get_system_date": _ro_get_system_date,
+        "audio_retry": _ro_audio_retry,
         "get_system_time": _ro_get_system_time,
         "get_dual_watch": _ro_get_dual_watch,
         "get_tuner_status": _ro_get_tuner_status,

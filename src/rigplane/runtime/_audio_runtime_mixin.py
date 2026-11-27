@@ -42,6 +42,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
     _audio_transport: IcomTransport | None
     _audio_ensure_lock: asyncio.Lock
+    _audio_tx_admission_lock: asyncio.Lock
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -87,7 +88,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             ConnectionError: If not connected or audio port unavailable.
         """
         self._check_connected()
-        await self._ensure_audio_transport()
+        await self._ensure_audio_transport(reestablish=False)
         assert self._audio_stream is not None
         self._opus_rx_user_callback = callback
         self._opus_rx_jitter_depth = jitter_depth
@@ -151,6 +152,16 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if self._audio_stream is not None:
             await self._audio_stream.stop_tx()
         self._pcm_tx_fmt = None
+        from rigplane.audio.session import AudioSessionState
+
+        session = getattr(self, "_audio_session", None)
+        if session is not None and session.state is AudioSessionState.RECOVERING:
+            last = session.bus.last_rx_frame_monotonic
+            if (
+                last is None
+                or session._monotonic() - last >= session._rx_liveness_timeout
+            ):
+                self._schedule_audio_silence_repair()
 
     async def _start_tx_stream(self) -> None:
         """Raw TX stream start (the legacy ``start_audio_tx_opus`` body).
@@ -161,9 +172,21 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
         """
+        async with self._audio_tx_admission_lock:
+            await self._start_tx_stream_locked()
+
+    async def _start_tx_stream_locked(self) -> None:
         self._check_connected()
-        await self._ensure_audio_transport()
+        previous_stream = self._audio_stream
+        await self._ensure_audio_transport(reestablish=False)
         assert self._audio_stream is not None
+        session = getattr(self, "_audio_session", None)
+        if (
+            self._audio_stream is not previous_stream
+            and session is not None
+            and session.rx_demand > 0
+        ):
+            await session._rearm_rx()
         await self._audio_stream.start_tx()
 
     # ------------------------------------------------------------------
@@ -546,10 +569,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
         """
-        await self.start_audio_rx_opus(rx_callback, jitter_depth=jitter_depth)
-        if tx_enabled:
-            assert self._audio_stream is not None
-            await self._audio_stream.start_tx()
+        async with self._audio_tx_admission_lock:
+            await self.start_audio_rx_opus(rx_callback, jitter_depth=jitter_depth)
+            if tx_enabled:
+                await self._start_tx_stream_locked()
 
     async def stop_audio_opus(self) -> None:
         """Stop all Opus audio streams (RX and TX)."""
@@ -775,7 +798,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._audio_resume_seq = audio_transport.send_seq
             self._audio_transport = None
 
-    async def _ensure_audio_transport(self) -> None:
+    async def _ensure_audio_transport(self, *, reestablish: bool = True) -> None:
         """Connect the audio transport if not already connected.
 
         Single flight (MOR-3400): the whole rebuild runs under
@@ -808,6 +831,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         test mocks/stubs) are intentionally *not* treated as stale — they fall
         through to the ``if self._audio_stream is not None: return``
         short-circuit below.
+
+        A rebuilt transport with held RX demand completes through
+        ``AudioSession.reestablish`` after releasing the ensure lock.
+        Session arming calls pass ``reestablish=False`` to avoid re-entering
+        the session lock; silence repair also owns its explicit reestablish.
 
         Raises:
             ConnectionError: Audio port unavailable; connect failed with an
@@ -919,3 +947,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
             # Start EPIPE-storm watchdog for this transport session.
             self._start_audio_watchdog()
+
+        session = getattr(self, "_audio_session", None)
+        if reestablish and session is not None and session.rx_demand > 0:
+            await session.reestablish()
