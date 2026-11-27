@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, TypeVar
 
-from rigplane.core.exceptions import BackgroundSendDropped, ConnectionError
+from rigplane.core.exceptions import (
+    BackgroundSendDropped,
+    ConnectionError,
+    StaleBeforeWireError,
+)
 from rigplane.core.types import CivFrame
 
 __all__ = ["IcomCommander", "InterferenceScope", "Priority"]
@@ -160,7 +164,9 @@ class IcomCommander:
                     self._pending_by_key.pop(item.key, None)
                 if item.counts_bg_inflight and self._bg_inflight > 0:
                     self._bg_inflight -= 1
-                _fail_item(item, ConnectionError("Commander stopped"))
+                _fail_item(
+                    item, StaleBeforeWireError("Commander stopped before dispatch")
+                )
                 queue.task_done()
 
         try:
@@ -215,7 +221,7 @@ class IcomCommander:
             or self._worker.done()
             or self._worker.cancelling()
         ):
-            raise ConnectionError("Commander is not started")
+            raise StaleBeforeWireError("Commander is not started")
 
         if dedupe and key is not None:
             existing = self._pending_by_key.get(key)

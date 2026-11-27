@@ -27,6 +27,7 @@ from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
     AudioFormatError,
+    CatReplyValidationError,
     CommandError,
     CommandRejectedError,
     ModeReadbackError,
@@ -3743,7 +3744,7 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_sql_type", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "sql type receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
@@ -3770,7 +3771,7 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_ctcss_tone", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "ctcss tone receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
@@ -3970,14 +3971,14 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_repeater_shift", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "repeater shift receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
         try:
             return int(RepeaterShiftDirection(int(result["shift"])))
         except (TypeError, ValueError) as exc:
-            raise CommandError(
+            raise CatReplyValidationError(
                 f"invalid repeater shift direction in answer: {result['shift']!r}"
             ) from exc
 

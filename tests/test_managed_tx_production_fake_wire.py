@@ -64,6 +64,7 @@ class _DelayedWire:
 
 class _IcomActuator(_DelayedWire):
     actuate = CoreRadio.actuate
+    ICOM_PTT_ON_ACK_TIMEOUT_S = CoreRadio.ICOM_PTT_ON_ACK_TIMEOUT_S
 
     def __init__(self) -> None:
         super().__init__()
@@ -93,10 +94,33 @@ class _IcomActuator(_DelayedWire):
     ) -> CivFrame | None:
         if frame in (b"ON", b"OFF"):
             await self.finish(frame == b"ON", is_current)
-        # ``CoreRadio.actuate`` waits for the answer to the unkey (MOR-2860).
+        # The production actuator awaits FB/FA for both key and unkey writes.
         if wait_response:
             return CivFrame(to_addr=0xE0, from_addr=self._radio_addr, command=0xFB)
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+async def test_shared_icom_fake_keys_and_releases_with_production_actuator(
+    operation: ActuationOperation,
+) -> None:
+    actuator = _IcomActuator()
+    actuator.release_on.set()
+    token = EffectToken(1, 1, "shared-icom-fake")
+
+    keyed = await actuator.actuate(token, operation, is_current=lambda: True)
+
+    assert keyed is ActuationResult.ACCEPTED
+    assert actuator.on_started.is_set()
+    assert actuator.wire == [True]
+    released = await actuator.actuate(
+        token, ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+    )
+    assert released is ActuationResult.ACCEPTED
+    assert actuator.wire == [True, False]
 
 
 class _YaesuActuator(_DelayedWire):
