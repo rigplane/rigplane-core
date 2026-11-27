@@ -24,6 +24,7 @@ from rigplane.runtime.managed_tx_state import (
     RetryForceReceive,
     reduce_managed_tx,
 )
+from rigplane.testing.timing import VirtualClock
 
 _Action = Callable[[], Awaitable[ActuationResult]]
 _Operation = ActuationOperation | AbortOperation
@@ -116,21 +117,23 @@ async def test_preserves_explicit_normalized_result(result: ActuationResult) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(5)
 @pytest.mark.parametrize(
     "operation",
     [ActuationOperation.FORCE_RECEIVE, *AbortOperation],
 )
 async def test_release_and_abort_preserve_explicit_non_radio_refusal(
+    virtual_clock: VirtualClock,
     operation: _Operation,
 ) -> None:
     actuator = FakeActuator()
     actuator.actions[operation] = ManagedTxActuationRefused(
         ManagedTxRefusalReason.OTHER
     )
-    lane = ManagedTxEffectLane(actuator)
+    lane = ManagedTxEffectLane(actuator, clock=virtual_clock)
 
     outcome = await lane._settle(
-        EffectToken(7, 3, "profile-gap"), operation, time.monotonic() + 1, None
+        EffectToken(7, 3, "profile-gap"), operation, virtual_clock() + 1, None
     )
 
     assert outcome is not None
