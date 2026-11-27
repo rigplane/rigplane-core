@@ -10,6 +10,7 @@ __all__ = [
     "CatReplyValidationError",
     "BackgroundSendDropped",
     "CommandRejectedError",
+    "ControlUnavailableInModeError",
     "ModeReadbackError",
     "ReceiverNotSelectedError",
     "TimeoutError",
@@ -98,6 +99,16 @@ class BackgroundSendDropped(CommandError):
 
 class CommandRejectedError(CommandError):
     """The radio positively refused a command (e.g. a Yaesu ``?;`` response)."""
+
+
+class ControlUnavailableInModeError(CommandError):
+    """The receiver mode does not satisfy a control's profile condition."""
+
+    reason_code = "control_unavailable_in_mode"
+    message_template = "Control is unavailable in {mode} mode."
+
+    def __init__(self, mode: str) -> None:
+        super().__init__(self.message_template.format(mode=mode))
 
 
 class ModeReadbackError(CommandError):

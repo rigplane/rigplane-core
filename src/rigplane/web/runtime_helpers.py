@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from ..core.acquisition_scheduler import resolve_available_when
+from ..core.exceptions import ControlUnavailableInModeError
 from ..core.radio_transport import control_transport_of
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
@@ -1843,6 +1844,8 @@ def declared_field_paths(
 def snapshot_field_status_inputs(
     acquisition: RadioAcquisitionProfile,
     snapshot: StateSnapshot,
+    *,
+    unavailable_modes: dict[FieldPath, str] | None = None,
 ) -> tuple[dict[FieldPath, bool | None], frozenset[FieldPath]]:
     """Return the ``availability`` / ``declared`` pair for one profile.
 
@@ -1852,8 +1855,11 @@ def snapshot_field_status_inputs(
     which covers both ``unsupported`` and ``unknown``).
     """
 
-    return resolve_available_when(acquisition, snapshot), declared_field_paths(
-        acquisition
+    return (
+        resolve_available_when(
+            acquisition, snapshot, unavailable_modes=unavailable_modes
+        ),
+        declared_field_paths(acquisition),
     )
 
 
@@ -1865,6 +1871,7 @@ def build_public_state_payload_from_snapshot(
     availability: Mapping[FieldPath, bool | None] | None = None,
     declared: Collection[FieldPath] | None = None,
     read_refusals: Mapping[FieldPath, str] | None = None,
+    unavailable_modes: Mapping[FieldPath, str] | None = None,
     updated_at: str | None = None,
     scope_clients: int = 0,
     control_clients: int = 0,
@@ -1881,6 +1888,16 @@ def build_public_state_payload_from_snapshot(
         for path, message in (read_refusals or {}).items()
         for public_path in _snapshot_field_public_paths(path)
     }
+    refused_public_fields.update(
+        {
+            public_path: (
+                path,
+                ControlUnavailableInModeError.message_template.format(mode=mode),
+            )
+            for path, mode in (unavailable_modes or {}).items()
+            for public_path in _snapshot_field_public_paths(path)
+        }
+    )
     if refused_public_fields:
         # A refusal supersedes the last good reading, including snapshot
         # aliases that project to the same public leaf.

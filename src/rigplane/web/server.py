@@ -77,6 +77,7 @@ from ..core.command_dispatch import (
 from ..core.exceptions import (
     CommandError,
     CommandRejectedError,
+    ControlUnavailableInModeError,
     ReceiverNotSelectedError,
 )
 from ..core.exceptions import ConnectionError as RadioConnectionError
@@ -546,8 +547,14 @@ class _HttpCommandCollector:
 
 
 def _command_error_code(exc: BaseException) -> str:
-    if isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
-        # MOR-3644 / MOR-3591: stable refusal code carried on the exception.
+    if isinstance(
+        exc,
+        (
+            ControlUnavailableInModeError,
+            MemoryWriteUnverifiedError,
+            ReceiverNotSelectedError,
+        ),
+    ):
         return str(exc.reason_code)
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
@@ -2628,8 +2635,11 @@ class WebServer:
         )
         availability: Mapping[FieldPath, bool | None] | None = None
         declared: Collection[FieldPath] | None = None
+        unavailable_modes: dict[FieldPath, str] = {}
         if acquisition is not None:
-            availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
+            availability, declared = snapshot_field_status_inputs(
+                acquisition, snapshot, unavailable_modes=unavailable_modes
+            )
         payload = _build_public_state_payload_from_snapshot_impl(
             snapshot,
             radio=self._radio,
@@ -2637,6 +2647,7 @@ class WebServer:
             availability=availability,
             declared=declared,
             read_refusals=self._declared_read_refusals(),
+            unavailable_modes=unavailable_modes,
             updated_at=updated_at,
             scope_clients=len(self._scope_handlers),
             control_clients=len(self._control_event_queues),

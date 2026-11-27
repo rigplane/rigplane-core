@@ -31,9 +31,12 @@ from ...core.command_dispatch import (
 from ...core.exceptions import (
     CommandError,
     CommandRejectedError,
+    ControlUnavailableInModeError,
     ReceiverNotSelectedError,
 )
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
+from ...core.acquisition_scheduler import receiver_mode_clauses
+from ...core.state_acquisition_policy import RadioAcquisitionProfile
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
@@ -364,8 +367,12 @@ class _CommandMetadataQueue:
     source: CommandSource
     session_id: str | None
     command_service: CommandService
+    completion: asyncio.Future[None] | None = None
 
     def put(self, command: Any) -> None:
+        if self.completion is not None:
+            self.put_ordered(command, future=self.completion)
+            return
         try:
             self.queue.put(
                 command,
@@ -553,6 +560,25 @@ def _notch_position_from_param(radio: "Radio | None", params: dict[str, Any]) ->
         return position
     wire_level: int = _raw_int_level_from_param(value)
     return wire_level
+
+
+def _notch_write_checks_mode(
+    radio: "Radio | None", name: str, params: dict[str, Any]
+) -> bool:
+    if name in ("set_auto_notch", "set_manual_notch"):
+        family, field = "operator_toggles", name.removeprefix("set_")
+    elif name == "set_notch_filter":
+        family, field = "operator_controls", "manual_notch_freq"
+    else:
+        return False
+    acquisition = getattr(getattr(radio, "profile", None), "state_acquisition", None)
+    if not isinstance(acquisition, RadioAcquisitionProfile):
+        return False
+    receiver = _int_param(params.get("receiver", 0), "receiver")
+    if receiver not in (0, 1):
+        return False
+    path = FieldPath.receiver("main" if receiver == 0 else "sub", family, field)
+    return bool(receiver_mode_clauses(acquisition, path))
 
 
 def _with_admitted_level(
@@ -1805,8 +1831,14 @@ class ControlHandler:
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
-        elif isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
-            # MOR-3644 / MOR-3591: stable refusal code, not prose matching.
+        elif isinstance(
+            exc,
+            (
+                ControlUnavailableInModeError,
+                MemoryWriteUnverifiedError,
+                ReceiverNotSelectedError,
+            ),
+        ):
             error = exc.reason_code
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
@@ -2271,6 +2303,7 @@ class ControlHandler:
             command_id=intent.id,
             source=intent.source,
             command_service=self._command_service,
+            timeout=intent.timeout,
         )
         details = _with_admitted_level(intent, result)
         if intent.name == "set_filter_width":
@@ -2292,6 +2325,7 @@ class ControlHandler:
         command_id: str,
         source: CommandSource,
         command_service: CommandService,
+        timeout: float | None,
     ) -> dict[str, Any]:
         """Build a Command dataclass, enqueue it, and return the ack result.
 
@@ -2314,6 +2348,11 @@ class ControlHandler:
         q = self._server.command_queue if self._server is not None else None
         if q is None:
             raise RuntimeError("no command queue available")
+        completion: asyncio.Future[None] | None = None
+        # HTTP batches collect their operations and already await the queue
+        # when executing them. A WebSocket otherwise ACKs at enqueue time.
+        if source == "websocket" and _notch_write_checks_mode(radio, name, params):
+            completion = asyncio.get_running_loop().create_future()
         q = _CommandMetadataQueue(
             q,
             command_id=command_id,
@@ -2322,6 +2361,7 @@ class ControlHandler:
             if params.get("session_id") is None
             else str(params["session_id"]),
             command_service=command_service,
+            completion=completion,
         )
 
         # Dispatch to group handlers
@@ -2338,6 +2378,8 @@ class ControlHandler:
         ):
             result = handler(name, params, q, radio)
             if result is not None:
+                if completion is not None:
+                    await asyncio.wait_for(completion, timeout=timeout)
                 return result
 
         raise ValueError(f"unhandled command: {name!r}")
