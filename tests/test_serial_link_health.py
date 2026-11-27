@@ -179,6 +179,13 @@ async def _route_serial_response(radio: Any, response: bytes | None) -> None:
     )
 
 
+async def _read_frequency_reply(radio: Ic7300SerialRadio | YaesuCatRadio) -> int:
+    """Use production wire reads without Icom's getter cache fallback."""
+    if isinstance(radio, Ic7300SerialRadio):
+        return await radio._get_frequency_main(bypass_cache=True, update_cache=False)
+    return await radio.read_freq()
+
+
 async def _api_json(server: WebServer, path: str = "/api/v1/info") -> dict[str, Any]:
     async def request() -> dict[str, Any]:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
@@ -1099,15 +1106,33 @@ async def test_serial_isolated_poll_timeouts_do_not_flap(
         link = radio._transport
         await _finish(serial_clock, radio.connect())
     try:
+        assert await _finish(serial_clock, _read_frequency_reply(radio)) == 14_074_000
+        writer = cable.writer
+        assert writer is not None
         for _ in range(6):
             cable.respond = False
+            stamp = radio.last_valid_frame_monotonic
+            assert stamp is not None
+            before = len(writer.writes)
+            if personality == "icom":
+                timeouts = radio._civ_request_tracker.timeout_count
             with pytest.raises((RadioTimeoutError, cat_transport.CatTimeoutError)):
-                await _finish(serial_clock, radio.get_freq())
+                await _finish(serial_clock, _read_frequency_reply(radio))
+            assert len(writer.writes) > before
+            assert radio.last_valid_frame_monotonic == stamp
+            if personality == "icom":
+                assert radio._civ_request_tracker.timeout_count == timeouts + 1
             assert radio.control_connected is True
             cable.respond = True
-            assert await _finish(serial_clock, radio.get_freq()) == 14_074_000
+            assert (
+                await _finish(serial_clock, _read_frequency_reply(radio)) == 14_074_000
+            )
+            recovered_stamp = radio.last_valid_frame_monotonic
+            assert recovered_stamp is not None and recovered_stamp > stamp
             assert radio.control_connected is True
             assert runtime_helpers.classify_radio_health(radio)["readiness"] == "ready"
+        assert cable.opens == 1
+        assert cable.writer is writer and writer.closed is False
     finally:
         await _finish(serial_clock, radio.disconnect())
 
@@ -1143,15 +1168,24 @@ async def test_first_qualified_reply_clears_poll_silence_without_reopen(
         link = radio._transport
         await _finish(serial_clock, radio.connect())
     try:
-        await _finish(serial_clock, radio.get_freq())
+        assert await _finish(serial_clock, _read_frequency_reply(radio)) == 14_074_000
         if personality == "icom":
             radio._civ_watchdog_rebaseline()
         cable.respond = False
         writer = cable.writer
+        assert writer is not None
+        stamp = radio.last_valid_frame_monotonic
+        assert stamp is not None
         for _ in range(4):
-            with pytest.raises((RadioTimeoutError, cat_transport.CatTimeoutError)):
-                await _finish(serial_clock, radio.get_freq())
+            before = len(writer.writes)
             if personality == "icom":
+                timeouts = radio._civ_request_tracker.timeout_count
+            with pytest.raises((RadioTimeoutError, cat_transport.CatTimeoutError)):
+                await _finish(serial_clock, _read_frequency_reply(radio))
+            assert len(writer.writes) > before
+            assert radio.last_valid_frame_monotonic == stamp
+            if personality == "icom":
+                assert radio._civ_request_tracker.timeout_count == timeouts + 1
                 radio._serial_civ_timeout_evidence_crossed_threshold()
         assert cable.writer is writer
         assert writer is not None and writer.closed is False
@@ -1163,13 +1197,20 @@ async def test_first_qualified_reply_clears_poll_silence_without_reopen(
         )
         before = len(writer.writes)
         await _finish(serial_clock, radio.set_ptt(False))
-        assert len(writer.writes) == before + 1
+        release = (
+            bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))
+            if personality == "icom"
+            else b"TX0;"
+        )
+        assert writer.writes[before:] == [release]
         assert radio.control_connected is False
         with pytest.raises((CommandError, RadioConnectionError)):
             await _finish(serial_clock, radio.set_ptt(True))
         assert len(writer.writes) == before + 1
         cable.respond = True
-        assert await _finish(serial_clock, radio.get_freq()) == 14_074_000
+        assert await _finish(serial_clock, _read_frequency_reply(radio)) == 14_074_000
+        recovered_stamp = radio.last_valid_frame_monotonic
+        assert recovered_stamp is not None and recovered_stamp > stamp
         assert radio.control_connected is True
         assert runtime_helpers.classify_radio_health(radio)["readiness"] == "ready"
         assert cable.opens == 1
