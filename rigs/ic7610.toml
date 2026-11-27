@@ -362,6 +362,7 @@ supported_controls = [
 ]
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.dcd"]
+reason = "The live audio gate needs a fixed polling cadence and short freshness limit for squelch-open status (MOR-4795)"
 cadence_seconds = 0.4
 freshness_ttl_seconds = 1.2
 adaptive_decay = false
