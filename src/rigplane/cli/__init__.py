@@ -2682,13 +2682,16 @@ async def _serve_while_startup_connect_pending(
                 # The hold cleared (or gave up) before shutdown: success
                 # runs the late completion and serving continues; failure
                 # tears serving down by raising through the finally below.
-                try:
-                    await startup_enter
-                except RadioSessionHeldError:
-                    with startup_operation(
-                        StartupCause.RADIO_IN_USE, StartupPhase.RADIO_OPEN
-                    ):
-                        raise
+                with startup_operation(
+                    StartupCause.RADIO_OPEN_FAILED, StartupPhase.RADIO_OPEN
+                ):
+                    try:
+                        await startup_enter
+                    except RadioSessionHeldError:
+                        with startup_operation(
+                            StartupCause.RADIO_IN_USE, StartupPhase.RADIO_OPEN
+                        ):
+                            raise
                 await server.finish_startup_busy_hold()
         await serve_task
     finally:
@@ -5582,13 +5585,48 @@ def probe_main(
     return _run_probe(args, prog=prog)
 
 
+def _startup_command_requested(argv: Sequence[str]) -> bool:
+    """Identify web/station before global argument conversion can fail."""
+    value_options = {
+        "--host",
+        "--control-port",
+        "--port",
+        "--user",
+        "--pass",
+        "--password",
+        "--pass-file",
+        "--timeout",
+        "--backend",
+        "--serial-port",
+        "--serial-baud",
+        "--serial-ptt-mode",
+        "--rx-device",
+        "--tx-device",
+        "--usb-capture-mode",
+        "--model",
+        "--radio-addr",
+    }
+    tokens = iter(argv)
+    for token in tokens:
+        option, separator, _value = token.partition("=")
+        if option in value_options:
+            if not separator:
+                next(tokens, None)
+        elif option in ("--json", "--list-audio-devices"):
+            continue
+        else:
+            return token in ("web", "station")
+    return False
+
+
 def main() -> None:
-    parser = _build_parser()
+    startup_requested = _startup_command_requested(sys.argv[1:])
     args = argparse.Namespace()
     try:
+        parser = _build_parser()
         args = parser.parse_args(namespace=args)
     except (Exception, SystemExit):
-        if getattr(args, "command", None) in ("web", "station"):
+        if startup_requested or getattr(args, "command", None) in ("web", "station"):
             with startup_failure_scope(
                 StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
             ):

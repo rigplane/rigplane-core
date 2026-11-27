@@ -11,6 +11,11 @@ import pytest
 
 from rigplane import cli
 from rigplane.backends.config import SerialBackendConfig
+from rigplane.core.exceptions import (
+    AuthenticationError,
+    ConnectionError as RadioConnectionError,
+    RadioSessionHeldError,
+)
 from rigplane.core.startup_failure import (
     STARTUP_FAILURE_PREFIX,
     StartupCause,
@@ -93,6 +98,75 @@ def test_main_argument_abort_emits_once(command, options, monkeypatch, capsys):
     assert caught.value.code == 2
     run.assert_not_called()
     _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.parametrize("command", ["web", "station"])
+@pytest.mark.parametrize("variable", ["ICOM_PORT", "ICOM_SERIAL_BAUDRATE"])
+@pytest.mark.parametrize("global_options", [[], ["--host", "127.0.0.1", "--json"]])
+def test_main_parser_construction_abort_emits_once(
+    command, variable, global_options, monkeypatch, capsys
+):
+    monkeypatch.setattr("sys.argv", ["rigplane", *global_options, command])
+    monkeypatch.setenv(variable, "bad")
+    with patch("rigplane.cli._run") as run:
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+    assert caught.value.code == 1
+    run.assert_not_called()
+    _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.parametrize("command", ["web", "station"])
+@pytest.mark.parametrize(
+    "options",
+    [["--timeout", "bad"], ["--timeout=bad"], ["--radio-addr", "bad"]],
+)
+def test_main_global_argument_abort_emits_once(command, options, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["rigplane", *options, command])
+    with patch("rigplane.cli._run") as run:
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+    assert caught.value.code == 2
+    run.assert_not_called()
+    _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--host", "web", "models"],
+        ["--model", "station", "models"],
+        ["--user=web", "models"],
+        ["models", "web"],
+        ["--help", "web"],
+        ["--version", "station"],
+    ],
+)
+def test_main_non_startup_parser_abort_does_not_report(argv, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["rigplane", *argv])
+    monkeypatch.setenv("ICOM_PORT", "bad")
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+    assert caught.value.code == 1
+    assert STARTUP_FAILURE_PREFIX not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["models", "station"])
+def test_main_startup_intent_skips_global_option_values(command, monkeypatch, capsys):
+    parser = cli._build_parser()
+    monkeypatch.setenv("ICOM_PORT", "bad")
+    for action in parser._actions:
+        if action.nargs == 0:
+            continue
+        for option in action.option_strings:
+            monkeypatch.setattr("sys.argv", ["rigplane", option, "web", command])
+            with pytest.raises(SystemExit) as caught:
+                cli.main()
+            assert caught.value.code == 1
+            if command == "station":
+                _failure(capsys, "configuration_invalid", "configuration")
+            else:
+                assert STARTUP_FAILURE_PREFIX not in capsys.readouterr().err, option
 
 
 @pytest.mark.parametrize("command", ["web", "station"])
@@ -188,23 +262,38 @@ async def test_factory_model_refusal_is_profile_unresolved(model, capsys):
 
 
 @pytest.mark.asyncio
-async def test_pending_radio_ownership_abort_wins_over_web_scope(capsys):
+@pytest.mark.parametrize(
+    "error_type, expected_cause, exit_code",
+    [
+        (RadioSessionHeldError, "radio_in_use", 3),
+        (AuthenticationError, "radio_open_failed", 1),
+        (RadioConnectionError, "radio_open_failed", 1),
+        (ConnectionError, "radio_open_failed", 1),
+    ],
+)
+@pytest.mark.parametrize("annotated", [False, True])
+async def test_pending_radio_ownership_abort_wins_over_web_scope(
+    error_type, expected_cause, exit_code, annotated, capsys
+):
     import asyncio
 
     from rigplane.backends.config import LanBackendConfig
-    from rigplane.core.exceptions import RadioSessionHeldError
+    from rigplane.core.startup_failure import startup_operation
 
     args = cli._build_parser().parse_args(["web", "--no-rigctld", "--no-discovery"])
     args.web_bridge = None
     web_starting = asyncio.Event()
     web_stopped = asyncio.Event()
-    error = RadioSessionHeldError("synthetic-secret")
+    error = error_type("synthetic-secret")
     radio = AsyncMock()
     radio.startup_busy_hold_event = asyncio.Event()
     radio.startup_busy_hold_event.set()
 
     async def enter():
         await web_starting.wait()
+        if annotated:
+            with startup_operation(StartupCause.PORT_BUSY, StartupPhase.RADIO_OPEN):
+                raise error
         raise error
 
     async def serve(**_kwargs):
@@ -230,12 +319,12 @@ async def test_pending_radio_ownership_abort_wins_over_web_scope(capsys):
         patch("rigplane._platformdirs_migration.migrate_legacy_platformdirs"),
         patch("rigplane.web.server.WebServer", return_value=server),
     ):
-        assert await cli._run(args) == 3
+        assert await cli._run(args) == exit_code
     assert web_stopped.is_set()
     server.finish_startup_busy_hold.assert_not_awaited()
     radio.__aexit__.assert_awaited_once()
     assert radio.__aexit__.await_args.args[1] is error
-    _failure(capsys, "radio_in_use", "radio_open")
+    _failure(capsys, "port_busy" if annotated else expected_cause, "radio_open")
 
 
 @pytest.mark.asyncio
