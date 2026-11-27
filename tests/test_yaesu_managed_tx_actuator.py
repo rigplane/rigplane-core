@@ -181,14 +181,24 @@ async def test_positive_tx_post_send_failure_is_uncertain_and_keeps_release_debt
     assert radio._transport.write.await_args.kwargs["tier"] is ExchangeTier.ORDINARY
     radio._transport.query.assert_not_awaited()
     assert settled is not None
-    assert settled.result is ActuationResult.UNCERTAIN
+    # A transport error after the hand-off settles UNCERTAIN. A plain
+    # CommandError raised after the hand-off keeps main's REJECTED outcome
+    # (the actuator's `except CommandError` arm). Either way the release stays
+    # owed: the radio may be keyed, so it is force-released.
+    expected = (
+        ActuationResult.UNCERTAIN
+        if error_type is CatTransportError
+        else ActuationResult.REJECTED
+    )
+    assert settled.result is expected
     assert settled.refusal_reason is None
-    assert settled.error == "write failed after key frame handoff"
+    if error_type is CatTransportError:
+        assert settled.error == "write failed after key frame handoff"
     state = reduce_managed_tx(keyed.state, settled).state
     assert state.release_required
     assert state.release_plan is ReleasePlan.FORCE_RELEASE
     assert state.last_actuation is not None
-    assert state.last_actuation.result is ActuationResult.UNCERTAIN
+    assert state.last_actuation.result is expected
 
 
 @pytest.mark.asyncio
