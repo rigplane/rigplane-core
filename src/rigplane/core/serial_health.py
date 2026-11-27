@@ -27,6 +27,7 @@ class SerialLinkHealth:
         self.io_failed = False
         self.generation = 0
         self.no_reply = False
+        self.response_count = 0
         self.consecutive_timeouts = 0
         self.silence_started: float | None = None
         self.no_reply_note = ""
@@ -75,7 +76,7 @@ class SerialLinkHealth:
             limit_s = self.silence_limit_s(answer_window, watchdog_interval)
             if elapsed >= limit_s:
                 self.no_reply_note = (
-                    "polls outstanding and no CI-V frame parsed for "
+                    "polls outstanding and no qualified radio reply for "
                     f"{elapsed:.1f}s (silence limit {limit_s:.1f}s)"
                 )
                 crossed = True
@@ -89,13 +90,16 @@ class SerialLinkHealth:
         self.io_failed = True
 
     def record_response(self) -> None:
+        self.response_count += 1
         self.io_failed = False
         self.no_reply = False
         self.reset_poll_evidence()
 
     def end_session(self) -> None:
         self.generation += 1
-        self.record_response()
+        self.io_failed = False
+        self.no_reply = False
+        self.reset_poll_evidence()
         self.no_reply_note = ""
 
     def record_open(self) -> None:

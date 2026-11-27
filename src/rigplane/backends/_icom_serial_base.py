@@ -289,21 +289,15 @@ class _IcomSerialRadioBase(CoreRadio):
         # ``_serial_civ_timeout_evidence_crossed_threshold``).
         self._civ_consecutive_timeouts = 0
         self._civ_watchdog_last_seen_timeouts = 0
-        self._civ_watchdog_last_seen_rx_packets = 0
+        self._civ_watchdog_last_seen_responses = 0
         # MOR-2861: second evidence path — a silent link (polls outstanding,
-        # ``rx_packet_count`` frozen) longer than the silence limit
+        # no qualified radio reply) longer than the silence limit
         # (``_serial_link_down_silence_limit_s``). The clock source is a
         # seam so tests can drive a fake clock.
         self._civ_silence_started_monotonic: float | None = None
         self._civ_silence_time_source: Callable[[], float] = time.monotonic
         self._civ_link_down_note = ""
-        # MOR-1440 review round 2: identity of the transport the above two
-        # baselines were last measured against. Every (re)connect installs a
-        # *brand-new* ``SerialCivTransport`` (see
-        # ``SerialSessionDriver.connect``), so ``rx_packet_count`` restarts at
-        # 0 while these baselines would otherwise keep a stale high-water
-        # mark from the outgoing transport — see
-        # ``_civ_watchdog_rebaseline``.
+        # Transport changes rebaseline the watchdog's lifetime counters.
         self._civ_watchdog_last_transport: object | None = None
         # MOR-2841: durable record that the link-down detector has fired at
         # least once. The RECONNECTING state it announces is transient — the
@@ -2097,33 +2091,8 @@ class _IcomSerialRadioBase(CoreRadio):
         return math.ldexp(delay, exponent)
 
     def _civ_watchdog_rebaseline(self) -> None:
-        """Reset link-death detector baselines against current state.
-
-        MOR-1440 review round 2 (B1): every (re)connect installs a
-        brand-new ``SerialCivTransport`` (``SerialSessionDriver.connect``
-        always constructs one, even on reconnect), so its
-        ``rx_packet_count`` restarts at 0 — a stale high-water mark from the
-        outgoing transport would otherwise make the "real traffic happened"
-        reset signal read false by construction right when it matters most.
-        Likewise, ``_civ_request_tracker.timeout_count`` is a lifetime
-        counter never reset on reconnect, so a frozen
-        ``_civ_watchdog_last_seen_timeouts`` baseline (left stale by the
-        RECONNECTING short-circuit in ``_serial_civ_watchdog_loop``) would
-        otherwise credit an entire outage's worth of banked timeouts as one
-        lump delta against the link that just recovered.
-
-        Called from two places: (a) lazily, inside
-        :meth:`_serial_civ_timeout_evidence_crossed_threshold`, whenever the
-        transport identity has changed since the last tick — a defensive net
-        that catches any path that swaps ``_civ_transport`` — and (b)
-        explicitly at the end of :meth:`soft_reconnect`, the actual
-        RECONNECTING -> CONNECTED transition, so the outage's banked
-        timeouts never survive to the first post-recovery evidence check.
-        """
-        rx_count = getattr(self._civ_transport, "rx_packet_count", None)
-        self._civ_watchdog_last_seen_rx_packets = (
-            rx_count if isinstance(rx_count, int) else 0
-        )
+        """Rebaseline timeout and qualified-response counters on reconnect."""
+        self._civ_watchdog_last_seen_responses = self._serial_link_health.response_count
         self._civ_watchdog_last_seen_timeouts = self._civ_request_tracker.timeout_count
         self._civ_consecutive_timeouts = 0
         # MOR-2861: the silence evidence clock resets here too — a swapped-in
@@ -2133,7 +2102,7 @@ class _IcomSerialRadioBase(CoreRadio):
 
     def _serial_link_down_silence_limit_s(self) -> float:
         """Serial link-down silence limit N (MOR-2861): the longest
-        believable "polls outstanding, no frame parsed" interval a healthy
+        believable "polls outstanding, no qualified radio reply" interval a healthy
         link can show.
 
         N = two answer windows (``_civ_get_timeout``) + one watchdog tick
@@ -2143,7 +2112,7 @@ class _IcomSerialRadioBase(CoreRadio):
         clears it; ``CivRequestTracker.response_pending_count`` ignores
         older waiters), so a slow poll cadence — with idle gaps between
         polls — can never run the clock. Two full windows of continuously
-        fresh polls outstanding with ``rx_packet_count`` frozen means the
+        fresh polls outstanding without a qualified radio reply means the
         link is down; the extra tick covers watchdog-tick phase against the
         asynchronous RX pump.
         """
@@ -2168,17 +2137,15 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_link_health.silence_started = value
 
     def _serial_civ_timeout_evidence_crossed_threshold(self) -> bool:
-        """Feed tracker/RX deltas into the shared serial no-reply rule."""
+        """Feed timeout/qualified-response deltas into the serial no-reply rule."""
         if self._civ_transport is not self._civ_watchdog_last_transport:
             self._civ_watchdog_rebaseline()
             return False
 
         tracker = self._civ_request_tracker
         total = tracker.timeout_count
-        rx_count = getattr(self._civ_transport, "rx_packet_count", None)
-        rx_advanced = isinstance(rx_count, int) and rx_count > (
-            self._civ_watchdog_last_seen_rx_packets
-        )
+        response_count = self._serial_link_health.response_count
+        received = response_count > self._civ_watchdog_last_seen_responses
         now = self._civ_silence_time_source()
         pending = tracker.response_pending_count(
             now_monotonic=now,
@@ -2188,15 +2155,14 @@ class _IcomSerialRadioBase(CoreRadio):
             now=now,
             pending=pending > 0,
             timeout_delta=max(0, total - self._civ_watchdog_last_seen_timeouts),
-            received=rx_advanced,
+            received=received,
             answer_window=self._civ_get_timeout,
             watchdog_interval=float(self._SERIAL_WATCHDOG_INTERVAL_S),
             timeout_threshold=self._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD,
         )
 
         self._civ_watchdog_last_seen_timeouts = total
-        if isinstance(rx_count, int):
-            self._civ_watchdog_last_seen_rx_packets = rx_count
+        self._civ_watchdog_last_seen_responses = response_count
         if crossed:
             self._civ_link_down_note = self._serial_link_health.no_reply_note
         return crossed
