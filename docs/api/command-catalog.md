@@ -159,6 +159,7 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `set_af_level` | `level: int \| float`, `level_unit?: "normalized"`, `receiver?: int=0` | `af_level` | Yes | Untagged integers use the native 0–255 scale. Tagged levels are normalized 0.0–1.0. |
+| `audio_retry` | — (`receiver` tolerated, ignored) | `AudioRetryCapable` | No | Explicit session-wide LAN RX repair. Returns `accepted: bool`, with closed `reason` on refusal; see [Audio retry](web.md#audio-retry). Allowed in read-only mode. |
 | `set_rf_gain` | `level: int`, `receiver?: int=0` | `rf_gain` | Yes | |
 | `set_sql` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Canonical. |
 | `set_squelch` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Alias for `set_sql`. |

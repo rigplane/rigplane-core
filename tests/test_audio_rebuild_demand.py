@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 import pytest_asyncio
 from test_audio import _make_audio_bytes
 from test_audio_reconnect_rearm import _connect_fd_only, _reserve_audio_socket
+from test_web_command_batch_http import _post_json
+from test_web_transport_connection import FakeConnection
 
 from rigplane.audio import AudioState
 from rigplane.audio.session import (
@@ -21,6 +25,36 @@ from rigplane.core.radio_protocol import AudioRetryCapable
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime.radio import IcomRadio
 from rigplane.testing.timing import ManualClock, VirtualClock, await_until
+from rigplane.web.api_contract import AudioRetryRefusalReason
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.protocol import decode_json, encode_json
+from rigplane.web.server import WebConfig, WebServer
+
+
+async def _request_audio_retry(radio, ingress: str, *, receiver: int = 0) -> dict:
+    request = {
+        "type": "cmd",
+        "id": "retry-audio",
+        "name": "audio_retry",
+        "params": {"receiver": receiver},
+    }
+    if ingress == "websocket":
+        connection = FakeConnection()
+        handler = ControlHandler(connection, radio, "test", "test", read_only=True)
+        await handler._handle_text(encode_json(request))
+        assert len(connection.sent_text) == 1
+        response = decode_json(connection.sent_text[0])
+        assert response["type"] == "response"
+    else:
+        assert ingress == "http"
+        server = WebServer(radio, config=WebConfig(read_only=True))
+        writer = await _post_json(server, "/api/v1/commands", request)
+        assert writer.response_status == 200
+        response = writer.response_body
+        assert response["name"] == "audio_retry"
+    assert response["id"] == "retry-audio"
+    assert response["ok"] is True
+    return response["result"]
 
 
 @pytest_asyncio.fixture
@@ -153,10 +187,12 @@ async def test_client_reopen_after_failed_repair_delivers_and_renews_episode(
 @pytest.mark.asyncio
 @pytest.mark.timeout(15)
 @pytest.mark.parametrize("cut_seconds", [10.0, 60.0])
+@pytest.mark.parametrize("retry_ingress", ["python", "websocket", "http"])
 async def test_audio_cut_returns_with_one_retry_after_failed(
     demanded_radio: IcomRadio,
     monkeypatch: pytest.MonkeyPatch,
     cut_seconds: float,
+    retry_ingress: str,
 ) -> None:
     radio = demanded_radio
     session = radio.audio_session
@@ -227,7 +263,12 @@ async def test_audio_cut_returns_with_one_retry_after_failed(
                 assert len(attempts) == 3
                 assert radio._audio_silence_repair_task is None
                 assert isinstance(radio, AudioRetryCapable)
-                assert await radio.retry_audio()
+                if retry_ingress == "python":
+                    assert await radio.retry_audio()
+                else:
+                    assert await _request_audio_retry(
+                        radio, retry_ingress, receiver=1
+                    ) == {"accepted": True}
                 assert len(attempts) == 4
                 assert radio._audio_silence_repair_attempts == 1
             else:
@@ -401,6 +442,47 @@ async def test_explicit_audio_retry_requires_existing_repair_preconditions(
     assert not await radio.retry_audio()
     assert radio._audio_silence_repair_task is None
     assert radio._audio_transport is transport
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ingress", ["websocket", "http"])
+@pytest.mark.parametrize("unavailable", ["no_demand", "owner_stopped", "non_lan"])
+async def test_web_audio_retry_refuses_when_no_lan_repair_applies(
+    demanded_radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+    ingress: str,
+    unavailable: str,
+) -> None:
+    radio = demanded_radio
+    if unavailable != "no_demand":
+        await radio.audio_session.subscribe_rx("held")
+    if unavailable == "owner_stopped":
+        radio._connected = False
+    elif unavailable == "non_lan":
+        monkeypatch.setattr(type(radio), "backend_id", "icom_serial")
+    transport = radio._audio_transport
+
+    assert await _request_audio_retry(radio, ingress, receiver=1) == {
+        "accepted": False,
+        "reason": "not_applicable",
+    }
+    assert radio._audio_silence_repair_task is None
+    assert radio._audio_transport is transport
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ingress", ["websocket", "http"])
+async def test_web_audio_retry_refuses_backend_without_optional_capability(
+    ingress: str,
+) -> None:
+    assert await _request_audio_retry(SimpleNamespace(capabilities=set()), ingress) == {
+        "accepted": False,
+        "reason": "unsupported",
+    }
+
+
+def test_web_audio_retry_refusal_reasons_are_closed() -> None:
+    assert set(get_args(AudioRetryRefusalReason)) == {"unsupported", "not_applicable"}
 
 
 @pytest.mark.asyncio
