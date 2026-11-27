@@ -432,12 +432,15 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
     spacing ~7e-12 s) the paced 20 ms steps are not multiples of that spacing,
     so the accumulated arrival stamp can land a hair below ``delay_s``
     (observed on quick: 0.3 - 1.3e-11) and the check flakes on the wall-clock
-    base — wall time through the back door. From 0 the arithmetic is exact:
-    ``sent_first`` is exactly 0.0, the injected sleep timer is due at
-    ``delay_s`` itself, and the first elapse that crosses it stamps the
-    arrival at a step target >= ``delay_s``. Timers the stack scheduled
-    before the install sit ~44.9k s in this clock's future and do not fire
-    during the ~0.3 s window; nothing in the window waits on one.
+    base — wall time through the back door. From 0 ``sent_first`` is exactly
+    0.0 and the injected sleep timer is due at ``delay_s`` itself, but the
+    arrival stamp still comes out of the clock's advance arithmetic (the
+    elapse steps accumulate 20 ms paces, then move to the timer deadline as
+    ``prev + (deadline - prev)``), so it can read a hair below ``delay_s``
+    (observed: 0.3 - 2e-14) and the assertion below tolerates exactly one
+    loop-clock resolution. Timers the stack scheduled before the install sit
+    ~44.9k s in this clock's future and do not fire during the ~0.3 s
+    window; nothing in the window waits on one.
     """
     delay_s = _WS_TO_SINK_BOUND_S + 0.05
     real_push_tx = AudioStream.push_tx
@@ -471,10 +474,19 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
             sent_first, arrived_first = await _send_pcm_virtual(
                 mic, prefix, rate, clock, arena.sim
             )
+            # The installed virtual loop's own resolution (uninstall()
+            # restores the host's). Read it here, while the clock owns it.
+            resolution_s = float(loop._clock_resolution)  # type: ignore[attr-defined]
         finally:
             clock.uninstall(loop)
         assert delayed, "the delay hook never saw a forwarded frame"
-        assert arrived_first - sent_first >= delay_s
+        # Float timestamps: the 20 ms pacing steps accumulate rounding, so an
+        # arrival exactly delay_s out can read a hair below it (observed:
+        # delay_s - 2e-14 against a 0.3 s delay). The tolerance is the loop
+        # clock's own resolution — the smallest representable virtual-time
+        # quantum — not an arbitrary epsilon: a frame a full pacing step
+        # (20 ms) early still fails this bound.
+        assert arrived_first - sent_first >= delay_s - resolution_s
         with pytest.raises(AssertionError, match="virtual"):
             _assert_forwarding_latency(sent_first, arrived_first)
         await _cancel_session_watchdog(arena)

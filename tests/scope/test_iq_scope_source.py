@@ -126,9 +126,13 @@ async def test_early_tx_deadline_callback_waits_without_spinning(
         await source.start()
         try:
             source.on_radio_state(None, False)
-            # Settle inside the early-fire window with the hold still 4 ms out.
-            # The callback must run once and leave a retry pending.
-            await clock.elapse(TX_HOLD_S - 0.004)
+            # Jump (firing no timers) to 4 ms before the hold ends, then
+            # settle so the real loop callback runs: the deadline timer sits
+            # inside the 10 ms early-fire window, so it fires exactly once
+            # here and must leave a retry pending. No sleep, no looser
+            # bound — the margins are unchanged.
+            clock.advance(TX_HOLD_S - 0.004)
+            await clock.elapse(0)
             tick.assert_called_once_with()
             assert source.tx_frozen
             assert source._timer is not None
