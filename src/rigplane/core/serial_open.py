@@ -26,9 +26,15 @@ import errno
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# A tracked attempt shares this evidence with its opener task (asyncio.wait_for).
+serial_port_opened: ContextVar[asyncio.Event | None] = ContextVar(
+    "serial_port_opened", default=None
+)
 
 _WINDOWS_OPEN_CODES = {
     5: "serial_busy",
@@ -178,6 +184,9 @@ def _configure_serial_idle_lines(url: str, *, baudrate: int, **kwargs: Any) -> A
     instance.dtr = False
     instance.rts = False
     instance.open()
+    opened = serial_port_opened.get()
+    if opened is not None:
+        opened.set()
     return instance
 
 

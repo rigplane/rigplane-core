@@ -5919,9 +5919,18 @@ class WebServer:
         )
 
     def _claim_managed_tx_detach_before_open(
-        self, authority: ManagedTxAuthority
+        self, authority: ManagedTxAuthority, writer: asyncio.StreamWriter
     ) -> bool:
         from .web_startup import _serial_port_unopened  # noqa: TID251
+
+        if writer.get_extra_info("rigplane_api_channel") is True:
+            return False
+        peer = writer.get_extra_info("peername")
+        try:
+            if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
+                return False
+        except ValueError:
+            return False
 
         port = self._production_managed_tx_port
         return (
@@ -6016,12 +6025,14 @@ class WebServer:
                         expires_at_monotonic=expires_at,
                         connection_generation=connection_generation,
                     )
-                elif (headers or {}).get(
-                    "x-rigplane-release-for-detach"
-                ) == "1" and isinstance(authority, ManagedTxAuthority):
+                elif (
+                    (headers or {}).get("x-rigplane-release-for-detach") == "1"
+                    and "x-rigplane-controller" not in (headers or {})
+                    and isinstance(authority, ManagedTxAuthority)
+                ):
                     submission = await authority.submit_force_off(
                         binding_never_attached=functools.partial(
-                            self._claim_managed_tx_detach_before_open, authority
+                            self._claim_managed_tx_detach_before_open, authority, writer
                         )
                     )
                 else:

@@ -42,8 +42,17 @@ from test_yaesu_cat_transport import FakeStreamWriter
 
 
 class _Writer:
-    def __init__(self) -> None:
+    def __init__(self, peer: str = "127.0.0.1", *, api_channel: bool = False) -> None:
         self.buffer = bytearray()
+        self.peer = peer
+        self.api_channel = api_channel
+
+    def get_extra_info(self, name: str, default: object = None) -> object:
+        if name == "peername":
+            return self.peer, 12345
+        if name == "rigplane_api_channel":
+            return self.api_channel
+        return default
 
     def write(self, data: bytes) -> None:
         self.buffer.extend(data)
@@ -186,6 +195,10 @@ def _observe(server: WebServer, value: ObservedPtt) -> None:
     [
         ("never_attached", True, "not_applicable", "accepted"),
         ("never_attached", False, None, "pending"),
+        ("remote_force_off", False, None, "pending"),
+        ("remote_detach", True, None, "pending"),
+        ("remote_controller_detach", True, None, "pending"),
+        ("api_channel_detach", True, None, "pending"),
         ("keyed", True, None, "accepted"),
         ("release_debt", True, None, "pending"),
         ("attached_ptt_unknown", True, None, "accepted"),
@@ -229,7 +242,15 @@ async def test_detach_force_off_uses_attachment_history(
     reader, headers = _reader({"operation": "force_off"})
     if detach:
         headers["x-rigplane-release-for-detach"] = "1"
-    writer = _Writer()
+    if scenario == "remote_controller_detach":
+        headers["x-rigplane-controller"] = "0" * 64
+    remote_peer = scenario in {"remote_force_off", "remote_detach"}
+    writer = _Writer(
+        "192.0.2.1" if remote_peer else "127.0.0.1",
+        api_channel=scenario == "api_channel_detach",
+    )
+    if scenario.startswith("remote_"):
+        server._controller.mode = "remote"
     termination = asyncio.Event()
     try:
         await server._handle_http(
@@ -249,6 +270,9 @@ async def test_detach_force_off_uses_attachment_history(
         assert (ActuationOperation.FORCE_RECEIVE in actuator.operations) is (
             scenario in {"keyed", "attached_ptt_unknown"}
         )
+        if scenario.startswith(("remote_", "api_channel_")):
+            async with composition.transport_open_attempt():
+                pass
     finally:
         termination.set()
         await composition.shutdown(termination)

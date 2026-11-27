@@ -138,12 +138,13 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
-An owner preparing to stop its station can submit `force_off` with
-`X-Rigplane-Release-For-Detach: 1`. The HTTP 202 receipt can include
-`releaseDisposition: "not_applicable"` when Core has evidence that the serial
-port never opened for that binding, no open is in progress, and there is no
-release debt. Core then prevents retries from opening the port for that
-binding. The disposition describes the detach request.
+An owner preparing to stop its station can submit `force_off` over loopback HTTP
+with `X-Rigplane-Release-For-Detach: 1` and no controller key. The HTTP 202
+receipt can include `releaseDisposition: "not_applicable"` when Core has
+evidence that the serial port never opened for that binding, no open is in
+progress, and there is no release debt. Core then prevents retries from
+opening the port for that binding. Remote clients can still submit ordinary
+`force_off`.
 For an absent or unrecognized disposition, use the existing managed-transmit
 status and observed PTT to confirm release.
 

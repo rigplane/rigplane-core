@@ -12,6 +12,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 from rigplane.core.exceptions import ConnectionError
 from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
+from rigplane.core.serial_open import serial_port_opened
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
@@ -238,6 +239,8 @@ class ManagedTxComposition:
     async def transport_open_attempt(self) -> AsyncIterator[None]:
         if self._detach_claimed_before_open:
             raise ConnectionError("Serial port open refused for a detaching binding")
+        opened = asyncio.Event()
+        token = serial_port_opened.set(opened)
         self._transport_opens_in_flight += 1
         try:
             yield
@@ -246,6 +249,9 @@ class ManagedTxComposition:
             self._transport_may_have_opened = True
             raise
         finally:
+            serial_port_opened.reset(token)
+            if opened.is_set():
+                self.note_transport_opened()
             self._transport_opens_in_flight -= 1
 
     def note_transport_opened(self) -> None:
