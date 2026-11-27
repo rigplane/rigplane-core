@@ -135,7 +135,7 @@ def _make_radio() -> MagicMock:
     radio.read_s_meter = AsyncMock(
         side_effect=lambda receiver=0: 150 if receiver == 0 else 75
     )
-    radio.read_dcd = AsyncMock(spec=YaesuCatRadio.read_dcd, return_value=False)
+    radio.read_dcd = AsyncMock(return_value=False)
     radio.get_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
     )
