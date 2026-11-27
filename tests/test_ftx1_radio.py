@@ -29,6 +29,7 @@ from rigplane.runtime._poller_types import (
     SetAutoNotch,
     execute_command_queue_entry,
 )
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import BreakInMode, RepeaterShiftDirection
 from rigplane.web.handlers.control import ControlHandler
 
@@ -1091,7 +1092,10 @@ async def test_notch_write_refused_in_fm(connected_radio, receiver, setter, valu
 
 
 @pytest.mark.asyncio
-async def test_websocket_notch_write_returns_fm_refusal(connected_radio):
+@pytest.mark.timeout(5)
+async def test_websocket_notch_write_returns_fm_refusal(
+    connected_radio, virtual_clock: VirtualClock
+):
     connected_radio._transport.query = AsyncMock(return_value="MD04")
     connected_radio._transport.write = AsyncMock()
     ws = SimpleNamespace(send_text=AsyncMock())
@@ -1109,16 +1113,18 @@ async def test_websocket_notch_write_returns_fm_refusal(connected_radio):
         await connected_radio.set_auto_notch(entry.command.on, entry.command.receiver)
 
     async with asyncio.TaskGroup() as group:
-        group.create_task(
+        dispatch = group.create_task(
             handler._dispatch_command("notch", "set_auto_notch", {"on": False})
         )
-        await queue.wait(timeout=1)
+        await virtual_clock.elapse(0)
         entry = queue.take_entry()
         assert entry is not None
         assert entry.future is not None
         ws.send_text.assert_not_awaited()
         with pytest.raises(CommandError, match="Control is unavailable in FM mode"):
             await execute_command_queue_entry(entry, write)
+        await virtual_clock.elapse(0)
+        assert dispatch.done()
 
     response = json.loads(ws.send_text.await_args.args[0])
     assert response == {
