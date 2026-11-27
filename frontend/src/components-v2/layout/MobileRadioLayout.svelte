@@ -17,6 +17,7 @@
   import type { SignalMeterFrame } from '../meters/signal-meter-motion.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import BottomSheet from '../controls/BottomSheet.svelte';
+  import RxAudioRestoreStatus from '../controls/RxAudioRestoreStatus.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
   import FilterPanel from '../panels/FilterPanel.svelte';
   import RxAudioPanel from '../panels/RxAudioPanel.svelte';
@@ -575,6 +576,7 @@
   {#if radioLinkLine}
     <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
   {/if}
+  <RxAudioRestoreStatus failure={radioState?.audioReceive?.failure} block />
   <div class="m-ls-body">
   <!-- MOR-2511 — a radio without a spectrum renders no stage at all; the
        overlay below is absolutely positioned inside .m-ls-body and does not
@@ -784,6 +786,7 @@
       {#if radioLinkLine}
         <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
       {/if}
+      <RxAudioRestoreStatus failure={radioState?.audioReceive?.failure} block />
 
       <!-- ═══ SCROLLABLE CONTENT ═══ -->
       <main class="m-content">

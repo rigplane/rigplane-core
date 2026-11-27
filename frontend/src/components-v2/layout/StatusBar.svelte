@@ -94,6 +94,7 @@
   import { bindHostRadioControls, getHostUi, getLayoutOptions, readHostDeclaration } from '$lib/local-extensions/host-ui';
   import ThemePicker from '../controls/ThemePicker.svelte';
   import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
+  import RxAudioRestoreStatus from '../controls/RxAudioRestoreStatus.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -424,9 +425,7 @@
         <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
       </span>
       {/if}
-      {#if rxRestoreFailed}
-        <span role="status" data-testid="rx-audio-restore-failed">{t('core.statusbar.audio.restoreFailed')}</span>
-      {/if}
+      <RxAudioRestoreStatus failure={runtime.state?.audioReceive?.failure} />
       {#if txCodecFallback}
         <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
           <span class="codec-fallback-label">{t('core.statusbar.txCodecFallback.label')}</span>
