@@ -3,11 +3,10 @@ import { readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
-import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES, MARKED_CONTROL_HANDLERS, NON_DOM_TX_PATHS } from '../transmit-capabilities';
+import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES, NON_DOM_TX_PATHS } from '../transmit-capabilities';
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceDirectory = resolve(testDirectory, '../..');
-const defaultKeymap = readFileSync(resolve(testDirectory, '../../../../rigs/_keyboard-default.toml'), 'utf8');
 
 const sources = Object.fromEntries(Object.entries(import.meta.glob<string>(
   ['../../**/*.{svelte,ts}', '!../../**/__tests__/**', '!../../**/*.test.*', '!../../**/*.spec.*'],
@@ -264,18 +263,74 @@ const NON_OPERATION_HOSTS: Record<string, { count: number; reason: string }> = {
 // Generic leaf renderers inherit the composite root's marker at their callsite.
 const TX_OPERATION = /\b(?:onRequestKey|onPttDown|onPttToggle|onTransmit|transmitOn|pttOn|onRfPowerChange|setRfPower|set_rf_power|onAtuTune|onVoxToggle|onBreakInChange|onBreakInMode|onDataModeChange|onSplitToggle|onXitToggle|onRitToggle|onSelectPort|onReversePaddleToggle|TxAuxLevelField|TxAuxToggleField|set_break_in|set_vox|set_tx_antenna|set_repeater_tone)\b/u;
 
+function hasCapabilityMarker(attrs: Node[], source: string): boolean {
+  return attrs.some((attr) => {
+    const code = text(attr, source);
+    return code.includes(CAPABILITY_ATTRIBUTE) // rejects hardcoded markers in the scan below
+      || code.includes('CAPABILITY_ATTRIBUTE') || code.includes('CAPABILITY_DATA_KEY')
+      || (attr.name === 'capability' && /TRANSMIT_CAPABILITIES|capability/u.test(code));
+  });
+}
+
+function markedControlHandlers(entries: ReadonlyArray<readonly [string, string]>): Set<string> {
+  const handlers = new Set<string>();
+  for (const [path, source] of entries) {
+    if (!path.endsWith('.svelte')) continue;
+    const ast = parse(source, { modern: true });
+    const declarations = new Map<string, Node>();
+    function walk(value: unknown, visit: (node: Node) => void): void {
+      if (Array.isArray(value)) { value.forEach((child) => walk(child, visit)); return; }
+      if (!isNode(value)) return;
+      visit(value);
+      Object.values(value).forEach((child) => walk(child, visit));
+    }
+    walk(ast.instance, (node) => {
+      if (!isNode(node.id) || node.id.type !== 'Identifier' || !node.id.name) return;
+      const definition = node.type === 'VariableDeclarator' ? node.init
+        : node.type === 'FunctionDeclaration' ? node.body : undefined;
+      if (isNode(definition)) declarations.set(node.id.name, definition);
+    });
+    const seen = new Set<string>();
+    function collect(value: unknown): void {
+      walk(value, (node) => {
+        if (node.type !== 'Identifier' || !node.name) return;
+        handlers.add(node.name);
+        const definition = declarations.get(node.name);
+        if (definition && !seen.has(node.name)) {
+          seen.add(node.name);
+          collect(definition);
+        }
+      });
+    }
+    function visit(value: unknown, marked = false): void {
+      if (Array.isArray(value)) { value.forEach((child) => visit(child, marked)); return; }
+      if (!isNode(value)) return;
+      const attrs = value.attributes ?? [];
+      const covered = marked || hasCapabilityMarker(attrs, source);
+      if (covered) {
+        // Follow local callback aliases and ValueControl binding declarations.
+        attrs.filter((attr) => /^on/u.test(attr.name ?? '')
+          || ['binding', 'seat'].includes(attr.name ?? '') || attr.type === 'SpreadAttribute')
+          .forEach(collect);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (!['attributes', 'css', 'instance', 'module'].includes(key)) visit(child, covered);
+      }
+    }
+    visit(ast.fragment);
+  }
+  return handlers;
+}
+
+const productMarkedControlHandlers = markedControlHandlers(product);
+
 function unmarkedControls(source: string): string[] {
   const buttons: string[] = [];
   function visit(value: unknown, marked = false): void {
     if (Array.isArray(value)) { value.forEach((child) => visit(child, marked)); return; }
     if (!isNode(value)) return;
     const attrs = value.attributes ?? [];
-    const covered = marked || attrs.some((attr) => {
-      const code = text(attr, source);
-      return code.includes(CAPABILITY_ATTRIBUTE) // rejects hardcoded markers in the scan below
-        || code.includes('CAPABILITY_ATTRIBUTE') || code.includes('CAPABILITY_DATA_KEY')
-        || (attr.name === 'capability' && /TRANSMIT_CAPABILITIES|capability/u.test(code));
-    });
+    const covered = marked || hasCapabilityMarker(attrs, source);
     if ((value.type === 'RegularElement' || value.type === 'Component')
       && (['button', 'input', 'select', 'ValueControl', 'ControlInstrumentRendererHost'].includes(value.name ?? '')
         || value.name?.endsWith('Button')
@@ -308,14 +363,17 @@ function unmarkedControlsBySource(entries: ReadonlyArray<readonly [string, strin
   return actual;
 }
 
-function undocumentedKeyboardActions(inventory: Readonly<Record<string, unknown>>): string[] {
-  const commands = sources['../../lib/runtime/commands/panel-commands.ts'];
+function undocumentedKeyboardActions(
+  inventory: Readonly<Record<string, unknown>>,
+  commands = sources['../../lib/runtime/commands/panel-commands.ts'],
+  entries: ReadonlyArray<readonly [string, string]> = product,
+): string[] {
   const keyboard = commands.slice(commands.indexOf('export function dispatchKeyboardRadioAction'));
   const cases = [...keyboard.matchAll(/case '([^']+)':([\s\S]*?)(?=\n\s*case '|\n\s*default:|$)/gu)];
-  const bound = [...defaultKeymap.matchAll(/^action\s*=\s*"([^"]+)"/gmu)].map((match) => match[1]);
-  const affected = cases.filter(([, , body]) => Object.keys(MARKED_CONTROL_HANDLERS)
-    .some((handler) => body.includes(handler))).map(([, action]) => action);
-  return [...new Set(bound.filter((action) => affected.includes(action)))]
+  const handlers = entries === product ? productMarkedControlHandlers : markedControlHandlers(entries);
+  const affected = cases.filter(([, , body]) => [...body.matchAll(/\bmake\w+Handlers\s*\(\s*\)\s*\.\s*(\w+)\s*\(/gu)]
+    .some(([, handler]) => handlers.has(handler))).map(([, action]) => action);
+  return [...new Set(affected)]
     .filter((action) => !(action in inventory));
 }
 
@@ -376,29 +434,68 @@ describe('transmit capability source ownership', () => {
     expect(undocumentedKeyboardActions(NON_DOM_TX_PATHS)).toEqual([]);
   });
 
-  it('documents every default keyboard action that calls a marked-control handler', () => {
-    // Resolve action aliases from the real switch, rather than maintaining a
-    // second action allow-list in this test. The contract owns the shared
-    // handlers used by marked controls and their capability mapping.
+  it.each([
+    'onAtuToggle', 'onAtuTune', 'onVoxToggle', 'onRfPowerChange', 'onBreakInModeChange',
+  ])('rejects a keyboard action calling the previously unlisted marked handler %s', (handler) => {
+    const commands = `export function dispatchKeyboardRadioAction() {
+      switch (action) {
+        case 'cycle_data_mode':
+          makeTxHandlers().${handler}();
+          return true;
+        default: return false;
+      }
+    }`;
+    expect(undocumentedKeyboardActions({}, commands)).toEqual(['cycle_data_mode']);
+  });
+
+  it.each([
+    '<button onclick={engageCarrier} {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.tune.id }}>Tune</button>',
+    '<HardwareButton onclick={() => handlers.engageCarrier()} data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.tune.id }} />',
+    `<script>const binding = createScalar({ request: engageCarrier });</script>
+      <div {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.rfPower.id }}><ValueControl {binding} /></div>`,
+  ])('derives a new handler from a marked control without a handler-name list (%#)', (control) => {
+    const entries = [['../../semantic/NewTransmitControl.svelte', control]] as const;
+    const commands = `export function dispatchKeyboardRadioAction() {
+      switch (action) {
+        case 'new_tx_action':
+          makeTxHandlers().engageCarrier();
+          return true;
+        default: return false;
+      }
+    }`;
+    expect(undocumentedKeyboardActions({}, commands, entries)).toEqual(['new_tx_action']);
+    expect(undocumentedKeyboardActions({ new_tx_action: {} }, commands, entries)).toEqual([]);
+    const unmarked = control.replace(/\{\.\.\.\{ \[CAPABILITY_ATTRIBUTE\]: [^}]+\}\}|data=\{\{ \[CAPABILITY_DATA_KEY\]: [^}]+\}\}/gu, '');
+    expect(unmarked).not.toBe(control);
+    expect(undocumentedKeyboardActions({}, commands, [[entries[0][0], unmarked]])).toEqual([]);
+  });
+
+  it('inventories both extension host command entry points and their intent dispatch', () => {
+    const inventory: Record<string, { reason: string; triggers: readonly { file: string; symbol: string }[] }>
+      = NON_DOM_TX_PATHS;
+    expect(inventory.extension_commands).toBeDefined();
+    expect(inventory.extension_commands.triggers).toEqual([
+      { file: 'lib/local-extensions/host-api.ts', symbol: 'sendCommand(name, params) {' },
+      { file: 'lib/local-extensions/host-api.ts', symbol: 'dispatchCommand(name, params) {' },
+      { file: 'lib/local-extensions/host-api.ts', symbol: 'dispatchCommand: dispatchThroughIntentFacade' },
+    ]);
+  });
+
+  it('documents every keyboard action that calls a marked-control handler', () => {
     const commands = sources['../../lib/runtime/commands/panel-commands.ts'];
     expect(commands).toBe(readFileSync(resolve(testDirectory,
       '../../lib/runtime/commands/panel-commands.ts'), 'utf8'));
     const keyboard = commands.slice(commands.indexOf('export function dispatchKeyboardRadioAction'));
     const cases = [...keyboard.matchAll(/case '([^']+)':([\s\S]*?)(?=\n\s*case '|\n\s*default:|$)/gu)];
-    const bound = [...defaultKeymap.matchAll(/^action\s*=\s*"([^"]+)"/gmu)].map((match) => match[1]);
-    const handlers = Object.keys(MARKED_CONTROL_HANDLERS);
     expect(cases.length).toBeGreaterThan(0);
-    expect(bound.length).toBeGreaterThan(0);
-    const affected = cases.filter(([, , body]) => handlers.some((handler) => body.includes(handler)))
-      .map(([, action]) => action);
+    const affected = undocumentedKeyboardActions({});
     expect(affected).toContain('toggle_split');
     expect(affected).toContain('cycle_data_mode');
     const missing = undocumentedKeyboardActions(NON_DOM_TX_PATHS);
     expect(missing, `Undocumented non-DOM TX actions: ${missing.join(', ')}`).toEqual([]);
-    for (const [handler, capability] of Object.entries(MARKED_CONTROL_HANDLERS)) {
-      expect(keyboard, handler).toContain(handler);
-      expect(Object.values(TRANSMIT_CAPABILITIES).map(({ id }) => id)).toContain(capability);
-    }
+  });
+
+  it('keeps every non-DOM inventory trigger tied to its source', () => {
     for (const [action, entry] of Object.entries(NON_DOM_TX_PATHS)) {
       expect(entry.reason.trim(), action).not.toBe('');
       expect(entry.triggers.length, action).toBeGreaterThan(0);
