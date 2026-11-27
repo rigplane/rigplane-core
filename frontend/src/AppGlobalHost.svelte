@@ -98,6 +98,24 @@
   // "cannot power on from here" sentence instead of a dead button.
   let powerOnCommand = $derived(powerRequestAllowed(true, 'powered-off-overlay'));
 
+  let heldSession = $derived(runtime.connectionWs ? runtime.state?.connection?.session : null);
+  let sessionRetrySeconds = $state<number | null>(null);
+  $effect(() => {
+    const session = heldSession;
+    const retry = session?.retryInSeconds;
+    if (!session?.busy || typeof retry !== 'number' || !Number.isFinite(retry) || retry < 0) {
+      sessionRetrySeconds = null;
+      return;
+    }
+    const deadline = performance.now() + retry * 1000;
+    const tick = () => {
+      sessionRetrySeconds = Math.max(0, Math.ceil((deadline - performance.now()) / 1000));
+    };
+    tick();
+    const timer = window.setInterval(tick, 250);
+    return () => window.clearInterval(timer);
+  });
+
   function handlePowerOn(): void {
     getHostUi()?.setRadioPower(true, 'powered-off-overlay');
   }
@@ -105,6 +123,12 @@
 
 <div class="app-global-host" data-testid="app-global-host">
   <Toast />
+
+  {#if sessionRetrySeconds !== null}
+    <div class="session-hold-status" data-testid="session-hold-status" role="status">
+      {t('core.app.previousSessionHold', { seconds: sessionRetrySeconds })}
+    </div>
+  {/if}
 
   {#if showTxIndication && txIndication}
     <div
@@ -163,6 +187,23 @@
      break `position: fixed` on its children. */
   .app-global-host {
     display: contents;
+  }
+
+  .session-hold-status {
+    position: fixed;
+    top: max(var(--rp-status-bar-bottom, 0px), var(--rp-chrome-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9001;
+    box-sizing: border-box;
+    max-width: calc(100% - 24px);
+    padding: 8px 12px;
+    border-radius: 0 0 6px 6px;
+    background: var(--v2-bg, #171717);
+    color: var(--warning, #f59e0b);
+    font-size: 14px;
+    text-align: center;
+    pointer-events: none;
   }
 
   .global-tx,

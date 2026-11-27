@@ -3,22 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import math
-import os
 import socket as _socket
 import struct
-import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress as _suppress
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING, SupportsInt, cast
-
-import platformdirs
 
 from rigplane.core.auth import (
     build_conninfo_packet,
@@ -112,13 +104,11 @@ __all__ = [
 class ControlPhaseRuntime:
     """Composed control-phase runtime: connect, disconnect, token renewal, watchdog.
 
-    Holds a reference to the host (CoreRadio).
+    Holds a reference to the host (CoreRadio); all state remains on the host.
     """
 
     TOKEN_RENEWAL_INTERVAL = 60.0
     TOKEN_PACKET_SIZE = 0x40
-    _SESSION_RECORD_VERSION = 1
-    _SESSION_RECORD_MAX_AGE_S = 8 * 60
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
     # Conninfo re-send pause for the WITHIN-attempt busy-retry inside
@@ -174,7 +164,6 @@ class ControlPhaseRuntime:
         self._renewal_waiter: asyncio.Future[bool] | None = None
         self._renewal_sent_at: float | None = None
         self._renewal_answered_at: float | None = None
-        self._previous_session: tuple[int, int, int, int, tuple[str, int]] | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -217,8 +206,6 @@ class ControlPhaseRuntime:
         h._civ_recovering = False
         h._last_status_error = 0
         h._last_auth_error = 0
-        # A discovery failure on this attempt must not claim the old token.
-        h._token = 0
         # Re-enable queue during setup — we need status packets from radio.
         # The notice callback stays clear so _receive_guid still reads the
         # first 0x90 from the queue.
@@ -229,7 +216,6 @@ class ControlPhaseRuntime:
         h._local_bind_host = local_bind_host
 
         _reconnect = getattr(h, "_has_connected_once", False)
-        h._ctrl_transport._before_handshake = self._release_previous_session
         try:
             if _reconnect:
                 await h._ctrl_transport.reconnect(
@@ -257,8 +243,6 @@ class ControlPhaseRuntime:
             await h._ctrl_transport.disconnect()
             h._conn_state = RadioConnectionState.DISCONNECTED
             raise
-        finally:
-            h._ctrl_transport._before_handshake = None
 
         h._ctrl_transport.start_ping_loop()
         h._ctrl_transport.start_retransmit_loop()
@@ -291,8 +275,6 @@ class ControlPhaseRuntime:
             )
         h._token = auth.token
         h._tok_request = auth.tok_request
-        self._write_session_record()
-        h._ctrl_transport._token_reply_callback = self._on_token_reply
         logger.info(
             "Authenticated with %s:%d",
             h._host,
@@ -396,7 +378,9 @@ class ControlPhaseRuntime:
                             )
                         elif getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                             # Mono also rejected outright — no busy-retry will help.
-                            await self.release()
+                            self._close_pending_sockets()
+                            await h._ctrl_transport.disconnect()
+                            h._conn_state = RadioConnectionState.DISCONNECTED
                             error_val = getattr(h, "_last_status_error", 0)
                             raise ConnectionError(
                                 f"Radio rejected session allocation with both "
@@ -424,7 +408,9 @@ class ControlPhaseRuntime:
                             h._audio_codec.name,
                         )
                     else:
-                        await self.release()
+                        self._close_pending_sockets()
+                        await h._ctrl_transport.disconnect()
+                        h._conn_state = RadioConnectionState.DISCONNECTED
                         raise ConnectionError(
                             f"Radio rejected session allocation (civ_port=0, "
                             f"error=0x{h._last_status_error:08X}). "
@@ -455,7 +441,9 @@ class ControlPhaseRuntime:
                     attempts = 0
                     while True:
                         if attempts >= 3:
-                            await self.release()
+                            self._close_pending_sockets()
+                            await h._ctrl_transport.disconnect()
+                            h._conn_state = RadioConnectionState.DISCONNECTED
                             error_val = getattr(h, "_last_status_error", 0)
                             raise ConnectionError(
                                 f"Radio rejected session allocation (civ_port=0, "
@@ -502,7 +490,9 @@ class ControlPhaseRuntime:
                 sock=civ_sock,
             )
         except OSError as exc:
-            await self.release()
+            # create_datagram_endpoint never ran — safe to close both sockets.
+            self._close_pending_sockets()
+            await h._ctrl_transport.disconnect()
             raise ConnectionError(
                 f"Failed to connect CI-V port {h._civ_port}: {exc}"
             ) from exc
@@ -609,7 +599,6 @@ class ControlPhaseRuntime:
     async def _cleanup_data_port_discovery_timeout(self) -> None:
         """Release startup resources after data-port discovery times out."""
         h = self._host
-        self._remember_session_for_release()
         # Timeout happens after asyncio has consumed civ_sock; the datagram
         # transport owns closing it.  The audio socket has not been consumed.
         h._civ_sock_pending = None
@@ -648,7 +637,6 @@ class ControlPhaseRuntime:
         self._renewal_waiter = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
-        self._remember_session_for_release()
         h._conn_state = RadioConnectionState.DISCONNECTING
         h._civ_resume_seq = None
         h._audio_resume_seq = None
@@ -808,7 +796,6 @@ class ControlPhaseRuntime:
         Idempotent: safe to call when nothing is claimed.
         """
         h = self._host
-        self._remember_session_for_release()
         self._renewal_waiter = None
         h._civ_resume_seq = None
         h._audio_resume_seq = None
@@ -1252,17 +1239,12 @@ class ControlPhaseRuntime:
         )
 
     def _on_token_reply(self, data: bytes) -> None:
-        """Handle token-remove confirmations and renewal-probe replies."""
+        """A 0x40 packet on the control port; settles a pending renewal probe.
+
+        Runs inside the datagram callback. Only a reply to a renewal carrying
+        our token counts; OK also stamps ``_renewal_answered_at``.
+        """
         token = struct.unpack_from("<I", data, 0x1C)[0]
-        if (
-            data[0x14] == 0x02
-            and data[0x15] == 0x01
-            and token == self._host._token
-            and struct.unpack_from("<I", data, self._RENEWAL_RESPONSE_OFFSET)[0] == 0
-        ):
-            self._discard_session_record()
-            self._previous_session = None
-            return
         if data[0x14] != 0x02 or data[0x15] != 0x05 or token != self._host._token:
             return
         result = struct.unpack_from("<I", data, self._RENEWAL_RESPONSE_OFFSET)[0]
@@ -1510,180 +1492,24 @@ class ControlPhaseRuntime:
         h = self._host
         return h._conn_state == RadioConnectionState.CONNECTED
 
-    def _remember_session_for_release(self) -> None:
-        h = self._host
-        ctrl = h._ctrl_transport
-        peer = getattr(ctrl, "_udp_peer_addr", None)
-        if h._token and ctrl.my_id and ctrl.remote_id and peer is not None:
-            self._previous_session = (
-                h._token,
-                ctrl.my_id,
-                ctrl.remote_id,
-                h._tok_request,
-                peer,
-            )
-
-    def _session_record_path(self) -> Path:
-        endpoint = f"{self._host._host}:{self._host._port}".encode()
-        key = hashlib.sha256(endpoint).hexdigest()
-        return (
-            Path(platformdirs.user_state_path("rigplane")) / f"icom-session-{key}.json"
-        )
-
-    def _write_session_record(self) -> None:
-        h = self._host
-        ctrl = h._ctrl_transport
-        peer = getattr(ctrl, "_udp_peer_addr", None)
-        if not (h._token and ctrl.my_id and ctrl.remote_id and peer is not None):
-            return
-        try:
-            path = self._session_record_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-            try:
-                with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                    json.dump(
-                        dict(
-                            version=self._SESSION_RECORD_VERSION,
-                            peer=peer,
-                            token=h._token,
-                            my_id=ctrl.my_id,
-                            remote_id=ctrl.remote_id,
-                            tok_request=h._tok_request,
-                            written_at=time.time(),
-                        ),
-                        stream,
-                    )
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(name, path)
-            finally:
-                Path(name).unlink(missing_ok=True)
-        except OSError:
-            logger.debug("Could not persist LAN session release record")
-
-    def _discard_session_record(self) -> None:
-        with _suppress(OSError):
-            self._session_record_path().unlink(missing_ok=True)
-
-    def _read_session_record(
-        self,
-    ) -> tuple[int, int, int, int, tuple[str, int]] | None:
-        try:
-            record = json.loads(self._session_record_path().read_text(encoding="utf-8"))
-            if not isinstance(record, dict):
-                raise ValueError
-            version = record["version"]
-            if type(version) is not int or version != self._SESSION_RECORD_VERSION:
-                raise ValueError
-            written_at = record["written_at"]
-            if type(written_at) not in (int, float) or not math.isfinite(written_at):
-                raise ValueError
-            if not 0 <= time.time() - written_at <= self._SESSION_RECORD_MAX_AGE_S:
-                raise ValueError
-            peer = record["peer"]
-            if (
-                not isinstance(peer, list)
-                or len(peer) != 2
-                or not isinstance(peer[0], str)
-                or type(peer[1]) is not int
-                or not 1 <= peer[1] <= 65535
-            ):
-                raise ValueError
-            for field, limit in (
-                ("token", 0xFFFFFFFF),
-                ("my_id", 0xFFFFFFFF),
-                ("remote_id", 0xFFFFFFFF),
-                ("tok_request", 0xFFFF),
-            ):
-                value = record[field]
-                if type(value) is not int or not 0 <= value <= limit:
-                    raise ValueError
-            return (
-                record["token"],
-                record["my_id"],
-                record["remote_id"],
-                record["tok_request"],
-                (peer[0], peer[1]),
-            )
-        except (
-            OSError,
-            ValueError,
-            TypeError,
-            KeyError,
-            OverflowError,
-            RecursionError,
-        ):
-            self._discard_session_record()
-            return None
-
-    async def _release_previous_session(self) -> None:
-        previous = self._previous_session or self._read_session_record()
-        # Consume once, including cancellation: a later attempt must never
-        # replay this release against a newly authenticated session.
-        self._previous_session = None
-        if previous is None:
-            return
-        token, my_id, remote_id, tok_request, peer = previous
-        ctrl = self._host._ctrl_transport
-        if ctrl._udp_peer_addr != peer:
-            self._discard_session_record()
-            return
-        packet = self._build_token_packet(
-            0x01,
-            token=token,
-            my_id=my_id,
-            remote_id=remote_id,
-            tok_request=tok_request,
-        )
-        # These unacknowledged UDP releases are deliberately untracked: the
-        # old IDs/token must not enter the new session's retransmit buffer.
-        try:
-            for attempt in range(3):
-                with _suppress(Exception):
-                    ctrl._raw_send(packet)
-                if attempt < 2:
-                    await asyncio.sleep(0.2)
-        finally:
-            self._discard_session_record()
-
-    def _build_token_packet(
-        self,
-        magic: int,
-        *,
-        token: int,
-        my_id: int,
-        remote_id: int,
-        tok_request: int,
-    ) -> bytes:
+    async def _send_token(self, magic: int) -> None:
         h = self._host
         pkt = bytearray(self.TOKEN_PACKET_SIZE)
         struct.pack_into("<I", pkt, 0x00, self.TOKEN_PACKET_SIZE)
         struct.pack_into("<H", pkt, 0x04, 0x00)
-        struct.pack_into("<I", pkt, 0x08, my_id)
-        struct.pack_into("<I", pkt, 0x0C, remote_id)
+        struct.pack_into("<I", pkt, 0x08, h._ctrl_transport.my_id)
+        struct.pack_into("<I", pkt, 0x0C, h._ctrl_transport.remote_id)
         struct.pack_into(">I", pkt, 0x10, self.TOKEN_PACKET_SIZE - 0x10)
         pkt[0x14] = 0x01
         pkt[0x15] = magic
         struct.pack_into(">H", pkt, 0x16, h._auth_seq)
         h._auth_seq += 1
-        struct.pack_into("<H", pkt, 0x1A, tok_request)
+        struct.pack_into("<H", pkt, 0x1A, h._tok_request)
         struct.pack_into(">H", pkt, 0x24, 0x0798)
-        struct.pack_into("<I", pkt, 0x1C, token)
-        return bytes(pkt)
-
-    async def _send_token(self, magic: int) -> None:
-        h = self._host
-        pkt = self._build_token_packet(
-            magic,
-            token=h._token,
-            my_id=h._ctrl_transport.my_id,
-            remote_id=h._ctrl_transport.remote_id,
-            tok_request=h._tok_request,
-        )
+        struct.pack_into("<I", pkt, 0x1C, h._token)
         if magic == 0x05:
             self._renewal_sent_at = time.monotonic()
-        await h._ctrl_transport.send_tracked(pkt)
+        await h._ctrl_transport.send_tracked(bytes(pkt))
 
     def _start_watchdog(self) -> None:
         h = self._host

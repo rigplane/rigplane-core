@@ -11,7 +11,7 @@ import struct
 import sys
 import time
 from collections import OrderedDict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
@@ -124,7 +124,6 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         # inherit from asyncio.DatagramTransport (CPython quirk), but it
         # has sendto() — so we skip the isinstance check.
         self._owner._udp_transport = transport  # type: ignore[assignment]
-        self._owner._udp_peer_addr = None
         peer = transport.get_extra_info("peername")
         if isinstance(peer, tuple) and len(peer) >= 2:
             self._owner._udp_peer_addr = (str(peer[0]), int(peer[1]))
@@ -262,9 +261,6 @@ class IcomTransport:
         # Optional callback for a 0x40 token packet (ptype 0x00), also routed
         # before the discard branch.
         self._token_reply_callback: Callable[[bytes], None] | None = None
-        # Control-session owner may send a previous release on the new socket
-        # before discovery/ready. The transport owns no token or retry policy.
-        self._before_handshake: Callable[[], Awaitable[None]] | None = None
 
     @property
     def rx_order_stats(self) -> RxOrderStats:
@@ -379,9 +375,6 @@ class IcomTransport:
                 self.my_id = (lport & 0xFFFF) | 0x10000
         logger.info("UDP open to %s:%d, my_id=0x%08X", host, port, self.my_id)
 
-        if self._before_handshake is not None:
-            await self._before_handshake()
-
         # Phase 1: Are You There → I Am Here
         await self._discover()
 
@@ -436,9 +429,6 @@ class IcomTransport:
             saved_remote_id,
         )
         self.remote_id = saved_remote_id
-
-        if self._before_handshake is not None:
-            await self._before_handshake()
 
         # Skip discovery, go straight to ready handshake
         await self._ready_handshake()

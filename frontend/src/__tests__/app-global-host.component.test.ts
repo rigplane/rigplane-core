@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   powerOn: vi.fn(),
   radioPowerOn: null as boolean | null,
   radioHealth: null as { radioLink: string; likelyCause?: string; lastError?: string } | null,
+  session: null as { busy: boolean; retryInSeconds: number | null } | null,
+  wsConnected: true,
+  locale: 'en-US',
   powerOnCommand: true,
   ptt: false,
   notifyRuntime: () => {},
@@ -41,7 +44,8 @@ vi.mock('$lib/runtime', async () => {
   h.runtime = {
     // `ptt` is deliberately readable here: it is the non-authoritative echo
     // the TX indication must NOT be wired to.
-    get state() { subscribe(); return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: h.ptt }; },
+    get state() { subscribe(); return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: h.ptt, connection: { session: h.session } }; },
+    get connectionWs() { subscribe(); return h.wsConnected; },
     get caps() { subscribe(); return { tx: true, capabilities: ['tx'], powerOnCommand: h.powerOnCommand }; },
     get radioPowerOn() { subscribe(); return h.radioPowerOn; },
     get radioHealth() { subscribe(); return h.radioHealth; },
@@ -79,19 +83,26 @@ vi.mock('../lib/transport/ws-client', () => ({
   onMessage: h.onMessage,
   onCommandDelivery: () => () => {},
 }));
-vi.mock('$lib/i18n', () => ({
-  // Interpolate {detail} like the real catalog so failure-text tests
-  // can assert content, not just the key. MOR-2671: resolve the RF-risk
-  // sentence the same way, so the accessible-name pins assert the real
-  // catalog string, and empty param calls keep returning the key.
-  t: (key: string, params?: Record<string, string>) =>
-    params?.detail !== undefined
-      ? `${key}: ${params.detail}`
-      : key === 'core.rxTx.rf.unconfirmed'
-        ? 'Transmit not confirmed'
-        : key,
-  messageFromReasonCode: (code: string) => code,
-}));
+vi.mock('$lib/i18n', async () => {
+  const catalogs = {
+    'en-US': (await import('$lib/i18n/locales/en-US.json')).default,
+    'ru-RU': (await import('$lib/i18n/locales/ru-RU.json')).default,
+    'ja-JP': (await import('$lib/i18n/locales/ja-JP.json')).default,
+  };
+  return {
+    // Resolve the hold notice from the real catalogs; existing unrelated
+    // surfaces keep their key-based assertions.
+    t: (key: string, params?: Record<string, string | number>) =>
+      key === 'core.app.previousSessionHold'
+        ? catalogs[h.locale as keyof typeof catalogs]['core.app.previousSessionHold'].replace('{seconds}', String(params?.seconds))
+        : params?.detail !== undefined
+          ? `${key}: ${params.detail}`
+          : key === 'core.rxTx.rf.unconfirmed'
+            ? 'Transmit not confirmed'
+            : key,
+    messageFromReasonCode: (code: string) => code,
+  };
+});
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   provideManagedAppTxHost: h.provide,
   getManagedAppTxController: () => txHarness.controller,
@@ -169,6 +180,9 @@ const powerEl = () => document.querySelector<HTMLElement>('[data-testid="global-
   txHarness = new ManagedAppTxHarness({ stale: true });
   h.radioPowerOn = null;
   h.radioHealth = null;
+  h.session = null;
+  h.wsConnected = true;
+  h.locale = 'en-US';
   h.powerOnCommand = true;
   h.ptt = false;
   document.body.innerHTML = '';
@@ -723,5 +737,78 @@ describe('MOR-2997 — the phone power overlay label is centred with a side marg
       key: 'core.overlay.poweredOff.notConnectedLabel',
       length: 55,
     });
+  });
+});
+
+describe('previous session waiting message (MOR-4884)', () => {
+  it.each([
+    ['en-US', 'The radio is still releasing its previous session. Retrying in 13 s.'],
+    ['ru-RU', 'Радио ещё освобождает предыдущий сеанс. Повторная попытка через 13 с.'],
+    ['ja-JP', '無線機は前のセッションを解放中です。13 秒後に再試行します。'],
+  ])('renders the live hold countdown in %s without a layout', (locale, expected) => {
+    h.locale = locale;
+    h.session = { busy: true, retryInSeconds: 12.5 };
+    const instance = mountAt(AppGlobalHost);
+    const notice = () => document.querySelector('[data-testid="session-hold-status"]');
+    expect(notice()?.textContent?.trim()).toBe(expected);
+    expect(notice()?.getAttribute('role')).toBe('status');
+    h.session = { busy: true, retryInSeconds: 4.2 };
+    h.notifyRuntime();
+    flushSync();
+    expect(notice()?.textContent).toContain('5');
+    expect(notice()?.textContent).not.toContain('13');
+    h.session = { busy: false, retryInSeconds: null };
+    h.notifyRuntime();
+    flushSync();
+    expect(notice()).toBeNull();
+    unmount(instance);
+  });
+
+  it.each([null, NaN, Infinity, -1])('does not invent a countdown from %s', (retryInSeconds) => {
+    h.session = { busy: true, retryInSeconds };
+    const instance = mountAt(AppGlobalHost);
+    expect(document.querySelector('[data-testid="session-hold-status"]')).toBeNull();
+    unmount(instance);
+  });
+
+  it('counts down between server updates and cleans up its timer', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    h.session = { busy: true, retryInSeconds: 30 };
+    const instance = mountAt(AppGlobalHost);
+    const notice = () => document.querySelector('[data-testid="session-hold-status"]');
+    try {
+      expect(notice()?.textContent).toContain('30 s.');
+      vi.advanceTimersByTime(12_000);
+      flushSync();
+      expect(notice()?.textContent).toContain('18 s.');
+      h.session = { busy: true, retryInSeconds: 4.2 };
+      h.notifyRuntime();
+      flushSync();
+      expect(notice()?.textContent).toContain('5 s.');
+      vi.advanceTimersByTime(5_000);
+      flushSync();
+      expect(notice()?.textContent).toContain('0 s.');
+      h.session = { busy: false, retryInSeconds: null };
+      h.notifyRuntime();
+      flushSync();
+      expect(notice()).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      unmount(instance);
+      flushSync();
+      expect(vi.getTimerCount()).toBe(0);
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops the old hold when the server connection is lost', () => {
+    h.session = { busy: true, retryInSeconds: 30 };
+    const instance = mountAt(AppGlobalHost);
+    expect(document.querySelector('[data-testid="session-hold-status"]')).not.toBeNull();
+    h.wsConnected = false;
+    h.notifyRuntime();
+    flushSync();
+    expect(document.querySelector('[data-testid="session-hold-status"]')).toBeNull();
+    unmount(instance);
   });
 });
