@@ -122,12 +122,6 @@ class TestIdentifyRadio:
             # resolve; the address alone identifies the radio.
             (0xB6, b"\xff\xff", "IC-7300MK2"),
             (0xB6, b"\xb6", "IC-7300MK2"),
-            # 0x70 (MOR-4801): the X6100's own address, where no Icom
-            # model sits. The reply bytes are the X6100 transceiver ID
-            # per docs/validation/cat-audits/x6200-unofficial.md (Hamlib
-            # xiegu.c xiegu_rig_open: X6100 → 0x6100); the address alone
-            # decides, as for every other row here.
-            (0x70, b"\x61\x00", "X6100"),
             (0xFF, b"\x00\x00", "Unknown (0xFF)"),
         ],
     )

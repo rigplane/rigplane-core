@@ -61,13 +61,22 @@ def test_native_validate_unsupported_model_is_an_error_not_a_traceback(
 def test_hamlib_validate_unsupported_model_is_an_error_not_a_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """TX-500 is rejected by Hamlib's CI-V-only check before the factory."""
     monkeypatch.setenv(HARDWARE_OPT_IN_ENV, "1")
     rc = _validate.run(_validate_args("TX-500", "hamlib"))
     captured = capsys.readouterr()
     assert rc == 3
-    assert "Error: cannot create the native radio backend:" in captured.err
+    assert captured.err == ""
     assert "Traceback" not in captured.out + captured.err
-    assert json.loads(captured.out)["metadata"]["provider"] == "hamlib"
+    artifact = json.loads(captured.out)
+    check = artifact["levels"][0]["checks"][0]
+    assert check["check_id"] == "discovery.identify"
+    assert check["status"] == "fail"
+    assert check["failure_domain"] == "transport"
+    assert check["error"] == (
+        "Hamlib provider supports only CI-V radios; TX-500 is kenwood_cat"
+    )
+    assert artifact["metadata"]["provider"] == "hamlib"
 
 
 def test_both_providers_still_return_an_artifact_when_the_native_leg_is_refused(

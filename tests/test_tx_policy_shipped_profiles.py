@@ -16,11 +16,13 @@ The owner ruling, per radio:
 * The Icom siblings that the factory routes onto the *same* Icom
   transmit-state read primitive as the measured IC-7300 **inherit** its
   one-entry map. The justification is the shared CI-V decode, not a new
-  bench measurement, and the profiles say so.
-* The two rigs with no serial backend at all (X6100, TX-500) declare an
-  explicitly **empty** map. They are reachable only through the rigctld
-  client, whose read is permanently ``verified_readback=False``, so they
-  are fail-closed by provenance regardless of what the map says.
+  bench measurement, and the profiles say so. X6100 is the explicit
+  exception: no receiving byte has been verified on its hardware, and its
+  native ``1C 00`` decode does not consume the map.
+* The TX-500, with no serial backend, declares an explicitly **empty** map.
+  It is reachable only through the rigctld client, whose read is permanently
+  ``verified_readback=False``, so it is fail-closed by provenance regardless
+  of what the map says.
 * The FT-991A (MOR-4433) carries the FTX-1 map shape: the same Yaesu
   three-valued ``TX;`` readback (``0`` receiving, ``1`` CAT-keyed, ``2``
   self-keyed — FT-991A CAT manual p.18) with the FTX-1 bench-measured
@@ -149,13 +151,16 @@ def test_icom_siblings_inherit_the_measured_civ_receiving_byte():
 
     Derived from factory routing rather than a literal model list: an Icom
     model added later that decodes transmit state through the same
-    primitive is caught here if it ships without the inherited map.
+    primitive is caught here if it ships without the inherited map. The
+    X6100 exception is pinned separately below (MOR-4801).
     """
     rigs = discover_rigs(RIGS_DIR)
 
-    inheritors = {
-        model for model in rigs if _routes_onto_the_shared_icom_read(model)
-    } - MEASURED
+    inheritors = (
+        {model for model in rigs if _routes_onto_the_shared_icom_read(model)}
+        - MEASURED
+        - {"X6100"}
+    )
 
     assert inheritors == {
         "G7250",
@@ -174,17 +179,31 @@ def test_icom_siblings_inherit_the_measured_civ_receiving_byte():
         ), f"{model}: must inherit the shared-decode receiving byte (MOR-1947)"
 
 
-def test_rigs_without_a_serial_backend_declare_an_empty_map():
-    """X6100 and TX-500 stay fail-closed, and say so in the profile.
+def test_x6100_declares_an_empty_map_with_an_explicit_hardware_ruling():
+    """MOR-4801 keeps X6100's map empty despite its shared serial decode."""
+    rigs = discover_rigs(RIGS_DIR)
 
-    Neither has a serial backend — the factory refuses both — so the only
-    path to them is the rigctld client, whose transmit-state read is
+    assert _routes_onto_the_shared_icom_read("X6100")
+    assert rigs["X6100"].to_profile().tx_policy == TxPolicy()
+    profile_text = (RIGS_DIR / "x6100.toml").read_text(encoding="utf-8")
+    assert "no receiving byte verified on X6100 hardware (we have no X6100)" in (
+        profile_text
+    )
+    assert "its TX state is read through the native 1C 00 decode" in profile_text
+    assert "which does not consume tx_state_map" in profile_text
+
+
+def test_rigs_without_a_serial_backend_declare_an_empty_map():
+    """TX-500 stays fail-closed, and says so in the profile.
+
+    It has no serial backend — the factory refuses it — so the only
+    path to it is the rigctld client, whose transmit-state read is
     permanently unverified. Inheriting a receiving byte would claim a
     freshness that path can never deliver.
     """
     rigs = discover_rigs(RIGS_DIR)
 
-    for model in ("X6100", "TX-500"):
+    for model in ("TX-500",):
         assert not _routes_onto_the_shared_icom_read(model), (
             f"{model} gained a serial backend; its tx_policy ruling must be redone"
         )

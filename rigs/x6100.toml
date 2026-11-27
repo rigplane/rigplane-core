@@ -611,14 +611,12 @@ get_tx_band_edge     = { absent = "Radioddity Extended manual for Xiegu X6100 v1
 [commands.overrides]
 
 [tx_policy]
-# Deliberately empty (MOR-1947) — a declared decision, not an oversight.
-# On the rigctld-client path the transmit-state read is permanently
-# unverified — it answers from upstream Hamlib's cache or another
-# rigplane's retained state, never from a fresh radio read — and mapping
-# a receiving byte would claim a freshness that path cannot deliver. The
-# empty table records a ruling rather than producing a behaviour: it
-# asserts no receiving value instead of inventing one. (MOR-4801: this
-# profile now also routes over serial CI-V; the emptiness decision is
-# unchanged — it is about freshness evidence, not reachability.)
+# Deliberately empty (MOR-4801 dispatcher ruling):
+# no receiving byte verified on X6100 hardware (we have no X6100);
+# its TX state is read through the native 1C 00 decode,
+# which does not consume tx_state_map.
+# Source: runtime/radio.py: CoreRadio.read_transmit_state; pinned by
+# test_tx_policy_shipped_profiles.py:
+# test_x6100_declares_an_empty_map_with_an_explicit_hardware_ruling.
 refused_during_tx = []
 tx_state_map = { }
