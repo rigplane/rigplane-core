@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from rigplane.commander import IcomCommander
 from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.exceptions import StaleBeforeWireError
 from rigplane.runtime import _poller_types as queue_types
 from rigplane.runtime._poller_types import (
     CommandQueue,
@@ -463,6 +465,51 @@ async def test_kernel_split_request_cancel_stops_leaf_and_joins_cleanup(name):
         release.set()
         reply.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_queued_key_before_commander_stop_never_dispatches_after_restart() -> (
+    None
+):
+    """A key queued before a commander stop is never delivered after restart.
+
+    Pins the commander teardown contract: ``stop()`` fails the queued item
+    with ``StaleBeforeWireError`` (never dispatched), and ``start()`` opens a
+    fresh queue that carries only new intent.
+    """
+    dispatched: list[bytes] = []
+    release = asyncio.Event()
+    in_execute = asyncio.Event()
+
+    async def execute(payload: bytes, wait_response: bool) -> None:
+        dispatched.append(payload)
+        in_execute.set()
+        await release.wait()
+
+    commander = IcomCommander(execute)
+    commander.start()
+    first = asyncio.create_task(commander.send(b"first"))
+    second = asyncio.create_task(commander.send(b"later"))
+    try:
+        await asyncio.wait_for(in_execute.wait(), timeout=1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await commander.stop()
+        with pytest.raises(StaleBeforeWireError):
+            await asyncio.wait_for(second, timeout=1)
+        assert dispatched == [b"first"], "stopped queue dispatched a later command"
+
+        release.set()
+        commander.start()
+        try:
+            await asyncio.wait_for(commander.send(b"third"), timeout=1)
+        finally:
+            await commander.stop()
+        assert dispatched == [b"first", b"third"], "restart replayed the stale key"
+    finally:
+        release.set()
+        await commander.stop()
+        await asyncio.gather(first, second, return_exceptions=True)
 
 
 @pytest.mark.asyncio

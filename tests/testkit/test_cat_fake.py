@@ -13,6 +13,7 @@ Three layers, mirroring the testkit's Icom serial fake split:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,16 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import (
     CatGarbledFrameError,
     CatTimeoutError,
+    CatTransportError,
 )
 from rigplane.core.radio_protocol import RadioIdentityStatus
-from rigplane.exceptions import CommandRejectedError
+from rigplane.exceptions import CommandError, CommandRejectedError
 from rigplane.rig_loader import load_rig
+from rigplane.runtime._poller_types import (
+    CommandQueue,
+    PttOn,
+    validate_command_queue_entry_currency,
+)
 
 from rigplane_testkit.fixture_rows import CatPairRow
 from rigplane_testkit.yaesu import FakeCatRadio
@@ -367,6 +374,115 @@ async def test_garbled_fault_surfaces_as_garbled_frame_error(
         assert await radio.get_freq() == 14_074_000  # one-shot, then clean
     finally:
         await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# No-replay pins: a key queued or in flight before a link drop is never
+# delivered after the reconnect.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stalled_key_before_kill_is_never_replayed_on_replacement_fake() -> None:
+    """A key stalled before a link kill is never delivered after the reconnect.
+
+    Pins the teardown contract at the wire level: the in-flight ``set_ptt ON``
+    fails when its link dies instead of parking for later, so the reconnected
+    radio sends nothing until fresh intent arrives — the replacement fake
+    records no ``TX1;`` and stays unkeyed.
+    """
+    old = FakeCatRadio()
+    await old.start()
+    radio = _radio_for(old)
+    await radio.connect()
+    try:
+        # Hold the transport's single exchange slot from the test side, so the
+        # key parks before a single byte reaches the wire — deterministically
+        # stalled, with no timing window to hit.
+        gate = radio._transport._exchange_gate  # noqa: SLF001
+        async with gate.exchange():
+            keyed = asyncio.create_task(radio.set_ptt(True))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not keyed.done(), "key slipped past the held exchange slot"
+            assert "TX1;" not in old.commands
+            await old.stop()  # kill the link mid-write
+        with pytest.raises(CatTransportError):
+            await asyncio.wait_for(keyed, timeout=5)
+        assert "TX1;" not in old.commands
+        assert old.ptt is False
+
+        await radio.disconnect()
+        new = FakeCatRadio()
+        await new.start()
+        try:
+            # Repoint the transport at the replacement fake (the radio object
+            # owns no other functional device handle; ``radio._device`` only
+            # names ports in diagnostics).
+            radio._device = new.device_url  # noqa: SLF001
+            radio._transport._device = new.device_url  # noqa: SLF001
+            await radio.connect()
+            assert radio.connected
+            assert "TX1;" not in new.commands, "pre-drop key replayed after reconnect"
+            assert new.ptt is False
+            assert await radio.get_ptt() is False
+        finally:
+            await radio.disconnect()
+            await new.stop()
+    finally:
+        await radio.disconnect()
+        await old.stop()
+
+
+@pytest.mark.asyncio
+async def test_queued_ptt_before_transport_reconnect_fails_currency_without_writing() -> (
+    None
+):
+    """A queued PTT key is failed, not replayed, when the transport reconnects.
+
+    Pins the generation fence at the queue level: ``transport.reconnect()``
+    bumps ``stats.reconnects``, so the pre-drop generation stamped on the
+    queued entry no longer validates at drain time — the entry fails currency
+    and the fake records no ``TX1;``.
+    """
+    fake = FakeCatRadio()
+    await fake.start()
+    try:
+        radio = _radio_for(fake)
+        await radio.connect()
+        try:
+            queue = CommandQueue()
+            poller = radio.create_observation_poller(
+                callback=lambda observations: None, command_queue=queue
+            )
+            reply = asyncio.get_running_loop().create_future()
+            entry = queue.put_ordered(
+                PttOn(),
+                future=reply,
+                command_id="pin-reconnect",
+                provider_generation=poller._captured_provider_generation(),  # noqa: SLF001
+                connection_generation=poller._current_tx_target_generation(),  # noqa: SLF001
+            )
+            await radio._transport.reconnect()  # noqa: SLF001
+            drained = queue.take_entry()
+            assert drained is entry
+            with pytest.raises(CommandError, match="connection generation changed"):
+                validate_command_queue_entry_currency(
+                    drained,
+                    now=time.monotonic(),
+                    provider_generation=poller._captured_provider_generation(),  # noqa: SLF001
+                    connection_generation=poller._current_tx_target_generation(),  # noqa: SLF001
+                    session_is_live=queue.session_is_live,
+                )
+            reply.set_exception(CommandError("fixture: entry failed currency"))
+            with pytest.raises(CommandError):
+                await reply
+            assert "TX1;" not in fake.commands
+            assert fake.ptt is False
+        finally:
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 # ---------------------------------------------------------------------------
