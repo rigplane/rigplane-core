@@ -2189,15 +2189,16 @@ class YaesuCatRadio:
         else:
             return ActuationResult.REJECTED
 
-        self._require_connected()
-        try:
-            spec = self._get_spec(command)
-            if spec.write is None:
-                raise CommandError(f"Command {command!r} has no write template")
-        except CommandError as exc:
-            if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+        if (
+            operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
+            and self.connected
+        ):
+            try:
+                spec = self._get_spec(command)
+                if spec.write is None:
+                    raise CommandError(f"Command {command!r} has no write template")
+            except CommandError as exc:
                 raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
-            return ActuationResult.REJECTED
 
         try:
             await self._write(
@@ -2207,7 +2208,7 @@ class YaesuCatRadio:
                 on_committed=on_committed,
                 **params,
             )
-        except CommandRejectedError:
+        except CommandError:
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:
             return ActuationResult.ACCEPTED

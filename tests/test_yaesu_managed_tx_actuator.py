@@ -18,6 +18,7 @@ from rigplane.backends.yaesu_cat.transport import (
 )
 from rigplane.command_spec import CatCommandSpec
 from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import ConnectionError as RadioConnectionError
 from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxActuator,
@@ -142,6 +143,46 @@ async def test_positive_tx_post_send_failure_is_uncertain_and_keeps_release_debt
     assert state.release_plan is ReleasePlan.FORCE_RELEASE
     assert state.last_actuation is not None
     assert state.last_actuation.result is ActuationResult.UNCERTAIN
+
+
+@pytest.mark.asyncio
+async def test_force_receive_while_disconnected_preserves_connection_error() -> None:
+    radio = _profile_radio()
+    radio._transport._connected = False
+    radio._transport.query = AsyncMock()
+
+    with pytest.raises(
+        RadioConnectionError, match="Radio not connected — call connect\\(\\) first"
+    ):
+        await radio.actuate(
+            _token(), ActuationOperation.FORCE_RECEIVE, is_current=lambda: True
+        )
+
+    radio._transport.write.assert_not_awaited()
+    radio._transport.query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    [
+        ActuationOperation.FORCE_RECEIVE,
+        AbortOperation.STOP_CW,
+        AbortOperation.STOP_TUNE,
+    ],
+)
+async def test_release_and_abort_command_error_preserves_rejection(
+    operation: ActuationOperation | AbortOperation,
+) -> None:
+    radio = _profile_radio()
+    radio._transport.write = AsyncMock(side_effect=CommandError("write failed"))
+    radio._transport.query = AsyncMock()
+
+    result = await radio.actuate(_token(), operation, is_current=lambda: True)
+
+    assert result is ActuationResult.REJECTED
+    radio._transport.write.assert_awaited_once()
+    radio._transport.query.assert_not_awaited()
 
 
 @pytest.mark.asyncio
