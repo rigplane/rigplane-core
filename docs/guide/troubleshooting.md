@@ -345,8 +345,9 @@ if isinstance(radio, AudioRetryCapable):
 
 `accepted` means the command started or joined a repair task. It does not
 confirm that frames arrived. A `False` result means no repair was started:
-the backend must use LAN audio, retain session RX demand, and have a connected
-control session. Concurrent retry commands join the active repair; a command
+the backend must use LAN audio, retain session RX demand, have a connected
+control session, and have no TX demand or active audio TX leg.
+Concurrent retry commands join the active repair; a command
 after its completion renews the episode's three-attempt budget. Repeated
 failures still stop at that cap. Consumers should observe RX packets and
 `on_audio_recovery` for the outcome; an individual task can finish after
@@ -356,6 +357,9 @@ The command rebuilds the audio transport and calls
 `AudioSession.reestablish` to restore live demand. It adds no background
 post-failure probe. Cancelling the command's waiter leaves the repair under
 radio ownership; disconnect cancels the radio-owned task.
+Python callers can pass `wait=False` to return acceptance immediately;
+WebSocket and HTTP retry commands use this mode so repair does not hold up
+the control receive loop. Acceptance does not confirm delivered audio.
 
 Implementation: `core/radio_protocol.py: AudioRetryCapable`,
 `runtime/radio.py: CoreRadio.retry_audio`,

@@ -158,8 +158,18 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             ConnectionError: If not connected or audio port unavailable.
         """
         self._check_connected()
+        previous_stream = self._audio_stream
         await self._ensure_audio_transport(reestablish=False)
         assert self._audio_stream is not None
+        session = getattr(self, "_audio_session", None)
+        if (
+            self._audio_stream is not previous_stream
+            and session is not None
+            and session.rx_demand > 0
+        ):
+            # Reuse reestablish's RX reattachment before TX starts. A session
+            # acquire may already hold its lock, so do not re-enter it here.
+            await session._rearm_rx()
         await self._audio_stream.start_tx()
 
     # ------------------------------------------------------------------

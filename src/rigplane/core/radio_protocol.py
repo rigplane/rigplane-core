@@ -1200,12 +1200,13 @@ class AudioCapable(Protocol):
 class AudioRetryCapable(Protocol):
     """Optional explicit retry command for session-managed audio."""
 
-    async def retry_audio(self) -> bool:
+    async def retry_audio(self, *, wait: bool = True) -> bool:
         """Request or join a bounded repair episode without replacing demand.
 
         True means a repair task was accepted or joined, not that RX frames
         have arrived. False means the backend cannot retry in its current
         state. Observe audio recovery events and RX frames for the outcome.
+        With ``wait=False``, return acceptance without awaiting repair.
         """
         ...
 

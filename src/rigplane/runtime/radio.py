@@ -1591,16 +1591,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         self._start_audio_silence_repair()
 
-    async def retry_audio(self) -> bool:
+    async def retry_audio(self, *, wait: bool = True) -> bool:
         """Start or join the bounded LAN audio repair with live RX demand.
 
         An explicit retry renews a spent episode; automatic repair rounds
         retain their existing cap. Concurrent calls join the same task.
         Cancelling this caller leaves the repair owned by the radio; owner
         disconnect still cancels it through the existing task slot.
+        With ``wait=False``, return as soon as the task is accepted/joined.
 
         Returns True for an accepted/joined task, not proof of fresh audio.
-        Returns False without LAN RX demand on a connected control session.
+        Returns False without LAN RX demand on a connected control session,
+        or while the audio session has TX demand or an active TX leg.
         """
         if self.backend_id != "rigplane" or not self._silence_repair_preconditions_ok(
             self._civ_epoch, self._owner_stop_epoch
@@ -1610,7 +1612,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if task is None or task.done():
             self._reset_audio_silence_repair_episode()
             task = self._start_audio_silence_repair()
-        await asyncio.shield(task)
+        if wait:
+            await asyncio.shield(task)
         return True
 
     def _reset_audio_silence_repair_episode(self) -> None:
@@ -1673,14 +1676,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     ) -> bool:
         """Whether the silence repair may (still) run for a trigger episode.
 
-        RX demand must still be held, the radio must be CONNECTED (not
-        RECONNECTING or mid soft-reconnect), and the CI-V / owner-stop epochs must still name the
-        trigger generation — any reconnect or owner stop since then aborts.
+        RX demand must still be held, with no TX demand or live audio TX leg.
+        The radio must be CONNECTED (not RECONNECTING or mid soft-reconnect),
+        and the CI-V / owner-stop epochs must still name the trigger
+        generation — any reconnect or owner stop since then aborts.
         """
         session = self._audio_session
         return bool(
             session is not None
             and session.rx_demand > 0
+            and session.tx_demand == 0
+            and not session._tx_leg_live()
             and self._conn_state is RadioConnectionState.CONNECTED
             and self._civ_epoch == civ_epoch
             and self._owner_stop_epoch == owner_stop_epoch

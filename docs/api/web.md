@@ -350,16 +350,22 @@ The normal response envelope has `ok: true` and a `result` typed by
 The `reason` vocabulary is closed by
 `src/rigplane/web/api_contract.py: AudioRetryRefusalReason` and omitted when
 accepted. `src/rigplane/runtime/radio.py: IcomRadio.retry_audio` requires LAN
-audio, existing RX demand, and a connected control session. An explicit retry
-renews a spent episode; concurrent calls join the active repair. Its reply
-waits for the bounded repair task to finish and reports acceptance, not proof
-of fresh RX frames. Keep observing audio recovery events and received audio
-for the outcome. The existing `no_radio` envelope error still applies when
+audio, existing RX demand, a connected control session, and no TX demand or
+active audio TX leg. A retry during TX returns `not_applicable`. An explicit
+retry renews a spent episode; concurrent calls join the active repair. Its reply
+returns after starting or joining the radio-owned task, without waiting for
+repair completion. Acceptance does not establish fresh RX frames. Keep
+observing audio recovery events and received audio for the outcome.
+The existing `no_radio` envelope error still applies when
 no radio is configured.
 
 Dispatcher and outage regression coverage is in
 `tests/test_audio_rebuild_demand.py: test_audio_cut_returns_with_one_retry_after_failed`
 and `tests/test_audio_rebuild_demand.py: test_web_audio_retry_refuses_when_no_lan_repair_applies`.
+Receive-loop coverage is in
+`tests/test_audio_rebuild_demand.py: test_control_run_receives_while_audio_retry_connect_is_pending`;
+TX refusal coverage is in
+`tests/test_audio_rebuild_demand.py: test_audio_retry_refuses_transmitting_without_replacing_reader`.
 
 ### Internal And Diagnostic Surface
 

@@ -2410,7 +2410,7 @@ class ControlHandler:
         result: AudioRetryResult
         if not isinstance(radio, AudioRetryCapable):
             result = {"accepted": False, "reason": "unsupported"}
-        elif await radio.retry_audio():
+        elif await radio.retry_audio(wait=False):
             result = {"accepted": True}
         else:
             result = {"accepted": False, "reason": "not_applicable"}
