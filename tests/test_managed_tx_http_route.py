@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
+import serial
+from serial.tools import list_ports
 
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
@@ -38,6 +40,13 @@ from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
 from test_managed_tx_production_composition import LegacyRadio, RecordingActuator
 from test_yaesu_cat_transport import FakeStreamWriter
+
+
+def _windows_open_failure(port: str) -> serial.SerialException:
+    return serial.SerialException(
+        f"could not open port {port!r}: "
+        "FileNotFoundError(2, 'The system cannot find the file specified.', None, 2)"
+    )
 
 
 class _Writer:
@@ -75,6 +84,20 @@ def _reader(payload: dict[str, object]) -> tuple[asyncio.StreamReader, dict[str,
     reader.feed_data(body)
     reader.feed_eof()
     return reader, {"content-length": str(len(body))}
+
+
+async def _detach_force_off(server: WebServer, *, api_channel: bool = False) -> _Writer:
+    reader, headers = _reader({"operation": "force_off"})
+    headers["x-rigplane-release-for-detach"] = "1"
+    writer = _Writer(api_channel=api_channel)
+    await server._handle_http(
+        writer,  # type: ignore[arg-type]
+        "POST",
+        "/api/v1/managed-transmit/command",
+        headers=headers,
+        reader=reader,
+    )
+    return writer
 
 
 @dataclass
@@ -299,8 +322,14 @@ async def test_detach_force_off_during_first_serial_open(
         await finish_open.wait()
         return asyncio.StreamReader(), wire
 
+    def reject_open(instance):
+        raise _windows_open_failure(instance.portstr)
+
     monkeypatch.setattr(serial_open, "_open_with_idle_lines", open_port)
-    device = str(tmp_path / "missing-test-port")
+    monkeypatch.setattr(serial_open, "_WINDOWS", True)
+    monkeypatch.setattr(serial.Serial, "open", reject_open)
+    monkeypatch.setattr(list_ports, "comports", lambda: [])
+    device = "COM37"
     config_path = tmp_path / "managed-tx.json"
     radio = backend(device=device)
     composition = ManagedTxComposition(RecordingActuator(), config_path=config_path)
@@ -337,17 +366,8 @@ async def test_detach_force_off_during_first_serial_open(
             project_observed_ptt(server.command_state_store.snapshot())
             is ObservedPtt.UNKNOWN
         )
-        reader, headers = _reader({"operation": "force_off"})
-        headers["x-rigplane-release-for-detach"] = "1"
         # A separate loopback client sends a stray detach header during Connect.
-        writer = _Writer()
-        await server._handle_http(
-            writer,  # type: ignore[arg-type]
-            "POST",
-            "/api/v1/managed-transmit/command",
-            headers=headers,
-            reader=reader,
-        )
+        writer = await _detach_force_off(server)
         assert writer.status == 202
         projection = await composition.authority.snapshot()
         assert projection.provider_generation is None

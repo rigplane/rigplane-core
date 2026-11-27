@@ -24,20 +24,16 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import os
 import re
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# The Icom opener runs in a child task under asyncio.wait_for.
-record_serial_open_refusal: ContextVar[Callable[[OSError], None] | None] = ContextVar(
-    "record_serial_open_refusal", default=None
-)
-
+_WINDOWS = os.name == "nt"
+_PORT_ABSENT = object()
 _ABSENT_PORT_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ENXIO}
-_REFUSED_OPEN_ERRNOS = _ABSENT_PORT_ERRNOS | {errno.EACCES, errno.EPERM}
 
 _WINDOWS_OPEN_CODES = {
     5: "serial_busy",
@@ -100,20 +96,34 @@ def serial_open_diagnostic(error: BaseException) -> str:
     return timeout or "serial_unknown"
 
 
-def _is_os_open_refusal(error: OSError, url: str) -> bool:
-    # pyserial uses this prefix only around os.open/CreateFile. Errno alone
-    # cannot distinguish a failed OS open from a failed ioctl on an open port.
-    cause = error.__cause__ if error.__cause__ is not None else error.__context__
-    message = str(error) if error.errno is None else error.strerror
+def serial_open_was_absent(error: BaseException) -> bool:
+    # Both radio adapters keep the open error as their explicit cause.
     return (
-        isinstance(cause, OSError)
-        and cause.errno in _REFUSED_OPEN_ERRNOS
-        and (error.errno is None or error.errno == cause.errno)
-        and isinstance(message, str)
-        and message.startswith(
-            (f"could not open port {url}: ", f"could not open port {url!r}: ")
-        )
+        getattr(error, "_rigplane_port_absent", None) is _PORT_ABSENT
+        or getattr(error.__cause__, "_rigplane_port_absent", None) is _PORT_ABSENT
     )
+
+
+def _port_is_absent(url: str) -> bool:
+    try:
+        from serial.tools import list_ports
+
+        ports = list_ports.comports()
+        if _WINDOWS:
+            name = url.upper().removeprefix("\\\\.\\")
+            return re.fullmatch(r"COM[1-9][0-9]*", name) is not None and all(
+                port.device.upper() != name for port in ports
+            )
+        if any(port.device == url for port in ports):
+            return False
+        # comports can omit existing nodes and aliases, including macOS tty.*.
+        try:
+            os.lstat(url)
+        except FileNotFoundError:
+            return True
+    except Exception:
+        return False
+    return False
 
 
 async def open_serial_port(
@@ -202,14 +212,23 @@ def _configure_serial_idle_lines(url: str, *, baudrate: int, **kwargs: Any) -> A
     try:
         instance.open()
     except serial.SerialException as error:
-        record_refusal = record_serial_open_refusal.get()
+        origin = getattr(error.__traceback__, "tb_next", None)
+        # In pySerial 3.5 a fresh, configured native instance raises directly
+        # from open() only when os.open/CreateFile fails. Setup errors originate
+        # in callees and may follow a successful open and subsequent unplug.
         if (
-            record_refusal is not None
-            and type(instance) is serial.Serial
+            type(instance) is serial.Serial
+            and getattr(serial, "VERSION", None) == "3.5"
             and type(error) is serial.SerialException
-            and _is_os_open_refusal(error, url)
+            and url
+            and "://" not in url
+            and (_WINDOWS or error.errno in _ABSENT_PORT_ERRNOS)
+            and origin is not None
+            and origin.tb_next is None
+            and origin.tb_frame.f_code is getattr(instance.open, "__code__", None)
+            and _port_is_absent(url)
         ):
-            record_refusal(error)
+            error.__dict__["_rigplane_port_absent"] = _PORT_ABSENT
         raise
     return instance
 

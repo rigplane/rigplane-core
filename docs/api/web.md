@@ -143,7 +143,7 @@ To request detach, send `force_off` directly over loopback HTTP with
 `X-Rigplane-Release-For-Detach: 1` and no controller key. The remote API
 channel does not honor the detach header. The HTTP 202 receipt can include
 `releaseDisposition: "not_applicable"` when at least one serial open was
-attempted, the OS provably refused every attempt before the device opened,
+attempted, every native open failed, Core confirmed the port was absent,
 no open is in progress, no provider was ever attached, no release is owed,
 and observed PTT is not ON. Core then prevents further opens for that
 binding. A fresh Connect starts with open admission.

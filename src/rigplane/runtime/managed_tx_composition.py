@@ -12,7 +12,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 from rigplane.core.exceptions import ConnectionError
 from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
-from rigplane.core.serial_open import record_serial_open_refusal
+from rigplane.core.serial_open import serial_open_was_absent
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
@@ -244,23 +244,14 @@ class ManagedTxComposition:
         if binding.sealed:
             raise ConnectionError("Serial port open refused for a detaching binding")
         task = asyncio.current_task()
-        refusal: OSError | None = None
-
-        def record_refusal(error: OSError) -> None:
-            nonlocal refusal
-            refusal = error
-
-        token = record_serial_open_refusal.set(record_refusal)
         binding.opens_in_flight += 1
         try:
             yield
         except BaseException as error:
-            # Both backends preserve the original error as their explicit cause.
             if (
                 isinstance(error, Exception)
                 and (task is None or not task.cancelling())
-                and refusal is not None
-                and (error is refusal or error.__cause__ is refusal)
+                and serial_open_was_absent(error)
             ):
                 if binding.may_have_opened is None:
                     binding.may_have_opened = False
@@ -270,7 +261,6 @@ class ManagedTxComposition:
         else:
             binding.may_have_opened = True
         finally:
-            record_serial_open_refusal.reset(token)
             binding.opens_in_flight -= 1
 
     async def transport_ready(self, identity: object) -> None:

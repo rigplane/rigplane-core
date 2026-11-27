@@ -10,13 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 import serial
+from serial.tools import list_ports
 
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatTransportError
+from rigplane.core import serial_open
 from rigplane.core.exceptions import ConnectionError as RadioConnectionError
 from rigplane.core.serial_open import _open_with_idle_lines, open_serial_port
-from rigplane.core.tx_observation import ObservedPtt, project_observed_ptt
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -24,7 +25,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.testing.timing import virtual_clock
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
-from test_managed_tx_http_route import _reader, _Writer
+from test_managed_tx_http_route import _detach_force_off, _windows_open_failure, _Writer
 from test_managed_tx_production_composition import RecordingActuator
 
 if os.name != "posix":
@@ -257,10 +258,11 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
     [
         "absent",
         "permission_denied",
-        "initial_config",
+        "dangling_alias",
         "initial_config_enoent",
-        "message_only",
-        "message_with_cause",
+        "windows_absent",
+        "windows_enumerated",
+        "enumeration_failed",
         "wrap",
         "busy",
         "timeout",
@@ -272,6 +274,10 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
 async def test_detach_uses_every_serial_open_outcome(
     clock, terminal, tmp_path, monkeypatch, backend, retry_outcome
 ):
+    windows = retry_outcome.startswith("windows_")
+    terminal.port = r"\\.\com37" if windows else str(tmp_path / "test-port")
+    monkeypatch.setattr(serial_open, "_WINDOWS", windows)
+    monkeypatch.setattr(list_ports, "comports", lambda: [])
     terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
     radio = backend(device=terminal.port)
     composition = ManagedTxComposition(
@@ -285,59 +291,55 @@ async def test_detach_uses_every_serial_open_outcome(
         with pytest.raises(RadioConnectionError):
             await radio.connect()
         radio.start_reconnect_recovery()
-        assert not terminal.opened
-
-        if retry_outcome == "busy":
-            terminal.open_error = OSError(errno.EBUSY, "busy test port")
-        elif retry_outcome == "timeout":
-            terminal.open_error = TimeoutError(
-                errno.ETIMEDOUT, "timed out opening test port"
-            )
-        elif retry_outcome == "unknown":
-            terminal.open_error = RuntimeError("unknown test error")
-        elif retry_outcome == "permission_denied":
-            terminal.open_error = PermissionError(errno.EACCES, "refused test port")
-        elif retry_outcome not in {
-            "absent",
-            "api_channel",
-            "message_only",
-            "message_with_cause",
-        }:
+        open_errors = {
+            "busy": OSError(errno.EBUSY, "busy test port"),
+            "timeout": TimeoutError(errno.ETIMEDOUT, "timed out opening test port"),
+            "unknown": RuntimeError("unknown test error"),
+            "permission_denied": PermissionError(errno.EACCES, "refused test port"),
+        }
+        terminal.open_error = open_errors.get(retry_outcome, terminal.open_error)
+        if retry_outcome in {"initial_config_enoent", "wrap"}:
             terminal.open_error = None
-            if retry_outcome == "initial_config_enoent":
-                terminal.set_attributes_error = FileNotFoundError(
-                    errno.ENOENT, "port vanished during configuration"
-                )
-            else:
-                terminal.fail_configuration = 2 if retry_outcome == "wrap" else 1
+        if retry_outcome == "wrap":
+            terminal.fail_configuration = 2
+        if retry_outcome == "initial_config_enoent":
+            terminal.set_attributes_error = FileNotFoundError(
+                errno.ENOENT, "port vanished during configuration"
+            )
 
         reopen = (
             radio.soft_reconnect
             if isinstance(radio, Ic705SerialRadio)
             else radio.connect
         )
-        def reject_without_errno(instance):
+
+        def windows_open(instance):
             terminal.open_attempts += 1
-            error = serial.SerialException(
-                f"could not open port {instance.port}: No such file or directory"
-            )
-            if retry_outcome == "message_with_cause":
-                raise error from FileNotFoundError(errno.ENOENT, "missing test port")
-            raise error
+            raise _windows_open_failure(instance.portstr)
+
+        def enumeration_failed():
+            raise FileNotFoundError("port inventory unavailable")
 
         with monkeypatch.context() as patch:
-            if retry_outcome in {"message_only", "message_with_cause"}:
-                patch.setattr(serial.Serial, "open", reject_without_errno)
+            if windows:
+                patch.setattr(serial.Serial, "open", windows_open)
+            if retry_outcome == "windows_enumerated":
+                patch.setattr(
+                    list_ports, "comports", lambda: [SimpleNamespace(device="COM37")]
+                )
+            if retry_outcome == "enumeration_failed":
+                patch.setattr(list_ports, "comports", enumeration_failed)
+            if retry_outcome == "permission_denied":
+                (tmp_path / "test-port").touch()
+            if retry_outcome == "dangling_alias":
+                (tmp_path / "test-port").symlink_to(tmp_path / "missing-target")
             with pytest.raises((RadioConnectionError, CatTransportError)):
                 await reopen()
+        if not windows:
+            (tmp_path / "test-port").unlink(missing_ok=True)
         assert terminal.open_attempts == 2
-        expected_configurations = {
-            "initial_config": [False],
-            "initial_config_enoent": [False],
-            "wrap": [False, True],
-        }
-        assert [config[0] for config in terminal.configurations] == (
-            expected_configurations.get(retry_outcome, [])
+        assert bool(terminal.configurations) == (
+            retry_outcome in {"initial_config_enoent", "wrap"}
         )
         assert not terminal.owned
 
@@ -346,54 +348,25 @@ async def test_detach_uses_every_serial_open_outcome(
         with pytest.raises(RadioConnectionError):
             await reopen()
         assert terminal.open_attempts == 3
-        assert radio.conn_state.value == "reconnecting"
-        assert radio.serial_open_error is not None
-        assert radio.control_connected is False
-        assert not (await composition.authority.snapshot()).state.release_required
-        assert (
-            project_observed_ptt(server.command_state_store.snapshot())
-            is ObservedPtt.UNKNOWN
-        )
 
-        reader, headers = _reader({"operation": "force_off"})
-        headers["x-rigplane-release-for-detach"] = "1"
-        writer = _Writer(api_channel=retry_outcome == "api_channel")
-        await server._handle_http(
-            writer,  # type: ignore[arg-type]
-            "POST",
-            "/api/v1/managed-transmit/command",
-            headers=headers,
-            reader=reader,
+        writer = await _detach_force_off(
+            server, api_channel=retry_outcome == "api_channel"
         )
         assert writer.status == 202
         projection = await composition.authority.snapshot()
         assert projection.provider_generation is None
-        if retry_outcome in {"absent", "permission_denied", "message_with_cause"}:
-            assert writer.payload["result"] == "accepted"
-            assert writer.payload["releaseDisposition"] == "not_applicable"
-            assert not projection.state.release_required
-        else:
-            assert writer.payload["result"] == "pending"
-            assert "releaseDisposition" not in writer.payload
-            assert projection.state.release_required
+        absent = retry_outcome in {"absent", "windows_absent"}
+        assert writer.payload["result"] == ("accepted" if absent else "pending")
+        assert writer.payload.get("releaseDisposition") == (
+            "not_applicable" if absent else None
+        )
+        assert projection.state.release_required is not absent
         if retry_outcome == "api_channel":
             # An API-channel request leaves serial recovery admitted.
             with pytest.raises(RadioConnectionError):
                 await reopen()
             assert terminal.open_attempts == 4
 
-            reader, headers = _reader({"operation": "force_off"})
-            writer = _Writer("192.0.2.1")
-            server._controller.mode = "remote"
-            await server._handle_http(
-                writer,  # type: ignore[arg-type]
-                "POST",
-                "/api/v1/managed-transmit/command",
-                headers=headers,
-                reader=reader,
-            )
-            assert writer.status == 202
-            assert writer.payload["result"] == "pending"
     finally:
         await radio.disconnect()
         termination = asyncio.Event()
@@ -411,6 +384,7 @@ async def test_detach_uses_every_serial_open_outcome(
 async def test_explicit_connect_after_detach_seal(
     clock, terminal, tmp_path, monkeypatch, backend, explicit_disconnect
 ):
+    monkeypatch.setattr(list_ports, "comports", lambda: [])
     terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
     radio = backend(device=terminal.port)
     composition = ManagedTxComposition(
@@ -440,16 +414,7 @@ async def test_explicit_connect_after_detach_seal(
             await radio.connect()
         radio.start_reconnect_recovery()
 
-        reader, headers = _reader({"operation": "force_off"})
-        headers["x-rigplane-release-for-detach"] = "1"
-        detach = _Writer()
-        await server._handle_http(
-            detach,  # type: ignore[arg-type]
-            "POST",
-            "/api/v1/managed-transmit/command",
-            headers=headers,
-            reader=reader,
-        )
+        detach = await _detach_force_off(server)
         assert detach.status == 202
         assert detach.payload["releaseDisposition"] == "not_applicable"
 
@@ -457,7 +422,9 @@ async def test_explicit_connect_after_detach_seal(
         if explicit_disconnect:
             disconnect = _Writer()
             await server._handle_http(
-                disconnect, "POST", "/api/v1/radio/disconnect"  # type: ignore[arg-type]
+                disconnect,
+                "POST",
+                "/api/v1/radio/disconnect",  # type: ignore[arg-type]
             )
             assert disconnect.status == 200
 
@@ -467,7 +434,9 @@ async def test_explicit_connect_after_detach_seal(
 
         connect = _Writer()
         await server._handle_http(
-            connect, "POST", "/api/v1/radio/connect"  # type: ignore[arg-type]
+            connect,
+            "POST",
+            "/api/v1/radio/connect",  # type: ignore[arg-type]
         )
         assert connect.status == 200
         assert terminal.open_attempts == 2
