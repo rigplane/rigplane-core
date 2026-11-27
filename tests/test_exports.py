@@ -40,6 +40,7 @@ def test_public_api_surface() -> None:
         "DualReceiverCapable",
         "LevelsCapable",
         "MemoryCapable",
+        "ManagedTransmitReleaseDisposition",
         "MetersCapable",
         "ModeInfoCapable",
         "PowerControlCapable",
