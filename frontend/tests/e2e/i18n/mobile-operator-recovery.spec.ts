@@ -747,6 +747,9 @@ test('panorama and its landscape and station overlays render without blur (MOR-2
   await expect(overlay).toHaveCSS('background-color', 'rgba(0, 0, 0, 0.65)');
   await expect(page.locator('.spectrum-panel')).toBeVisible();
   const effects = await readEffects('.spectrum-panel, .spectrum-panel *, .m-ls-overlay');
+  await page.evaluate(async () => {
+    if (document.fullscreenElement) await document.exitFullscreen();
+  });
   await page.setViewportSize({ width: 375, height: 812 });
   await expect(page.locator('.m-layout')).toBeVisible();
   await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
