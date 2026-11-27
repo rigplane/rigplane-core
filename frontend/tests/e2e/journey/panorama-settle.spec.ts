@@ -6,16 +6,13 @@ import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/s
 import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { installSampler, stopSampler, expectPassbandProbeReady, readPassbandDiagnostics } from './panorama-passband-probe';
-import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, observePanorama, openPanorama } from './panorama-ready';
+import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, installPanoramaWorkProbe, observePanorama, openPanorama } from './panorama-ready';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // The tune command's parameters as the producer declares them.
 type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
-
-interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
-declare global { interface Window { panoramaWork: Work } }
 
 for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7610', 1]] as const).entries()) {
   for (const zoom of [false, true, 'span'] as const) {
@@ -60,29 +57,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             }
           });
         });
-        await page.addInitScript(() => {
-          const work: Work = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
-          window.panoramaWork = work;
-          const raf = window.requestAnimationFrame.bind(window);
-          window.requestAnimationFrame = callback => raf(time => {
-            const start = performance.now(); work.raf++;
-            try { callback(time); } finally { work.rafMs += performance.now() - start; }
-          });
-          const gl = WebGL2RenderingContext.prototype;
-          const texture = gl.texImage2D, draw = gl.drawArrays;
-          gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
-            work.texture++; return Reflect.apply(texture, this, args);
-          } as typeof gl.texImage2D;
-          gl.drawArrays = function (...args) { work.draw++; return Reflect.apply(draw, this, args); };
-          const paint = CanvasRenderingContext2D.prototype.fillText;
-          CanvasRenderingContext2D.prototype.fillText = function (...args) {
-            if (/^\d+\.\d{3}$/.test(args[0])) {
-              if (args[1] === 20) work.labels = [];
-              work.labels.push(args[0]);
-            }
-            work.static++; return Reflect.apply(paint, this, args);
-          };
-        });
+        await installPanoramaWorkProbe(page);
         const work = () => page.evaluate(() => ({ ...window.panoramaWork }));
         const writes = async () => {
           let contents = '';

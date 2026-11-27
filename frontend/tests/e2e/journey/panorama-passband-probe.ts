@@ -83,7 +83,8 @@ interface Gap {
 /** A DOM recovery does not close a painted setup outage; require the target mode on both. */
 export function passbandProbeReady(samples: PassbandSample[], frameMode: number): boolean {
   const ready = (sample: PassbandSample | undefined) => sample?.overlay === true
-    && sample.gates?.proportional === true && sample.gates.tupleState === 'current'
+    && sample.gates?.tupleState === 'current'
+    && (frameMode === 0 || sample.gates.proportional === true)
     && sample.gates.tupleFrameMode === frameMode;
   return ready(samples.at(-1)) && ready(samples.filter(sample => sample.kind === 'frame').at(-1));
 }

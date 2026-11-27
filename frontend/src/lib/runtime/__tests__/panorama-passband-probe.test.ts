@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import ts from 'typescript';
 import { installSampler, stopSampler, missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 import type { ScopePassbandDiagnostics } from '../adapters/scope-passband-display';
+import { installPanoramaWorkProbe } from '../../../../tests/e2e/journey/panorama-ready';
 
 describe('passband sampler and renderer work', () => {
   for (const activeRenderer of [false, true]) {
@@ -33,20 +32,8 @@ describe('passband sampler and renderer work', () => {
       const execute = (callback: unknown) => runInContext(ts.transpileModule(`(${String(callback)})();`, {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText, context);
-      // Execute the journey's work instrumentation with the sampler.
-      // import.meta.url is not a file: URL under the jsdom project; resolve from __dirname.
-      const path = join(__dirname, '..', '..', '..', '..', 'tests', 'e2e', 'journey', 'panorama-settle.spec.ts');
-      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
-      let instrumentation: ts.Node | undefined;
-      const visit = (node: ts.Node) => {
-        if (!instrumentation && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-          && node.expression.name.text === 'addInitScript') instrumentation = node.arguments[0];
-        ts.forEachChild(node, visit);
-      };
-      visit(source);
-      expect(instrumentation).toBeDefined();
-      execute(instrumentation!.getText(source));
       const page = { addInitScript: execute, evaluate: execute };
+      await installPanoramaWorkProbe(page as never);
       await installSampler(page as never);
       const advanceFrames = () => {
         for (let frame = 0; frame < 20; frame++) {
@@ -86,15 +73,31 @@ describe('passband probe evidence', () => {
   });
   const sample = (t: number, overlay: boolean, kind: 'frame' | 'dom' = 'frame') =>
     ({ t, kind, overlay, gates: null, state: null });
-  const current = (t: number, tupleFrameMode: number, kind: 'frame' | 'dom' = 'frame') => ({
+  const current = (t: number, tupleFrameMode: number, kind: 'frame' | 'dom' = 'frame', proportional = true) => ({
     ...sample(t, true, kind), state: 'current',
     gates: {
       tuneVisible: true, confirmed: true, freqHz: 14_250_000,
-      viewStartHz: 14_200_000, viewEndHz: 14_300_000, inView: true, proportional: true,
+      viewStartHz: 14_200_000, viewEndHz: 14_300_000, inView: true, proportional,
       mode: 'LSB', widthHz: 3000, shiftHz: 0, tuple: true, tupleState: 'current',
       tupleFrameMode, tupleReason: null, tupleStale: false, passbandHz: 3000,
       spanPositive: true, overlay: true,
     } satisfies ScopePassbandDiagnostics,
+  });
+  it('accepts a painted CENTER tuple with either a centered marker or a requested window', () => {
+    for (const proportional of [false, true]) {
+      const painted = current(0, 0, 'frame', proportional);
+      expect(passbandProbeReady([painted], 0)).toBe(true);
+      expect(passbandProbeReady([painted, current(1, 0, 'dom', proportional)], 0)).toBe(true);
+      expect(passbandProbeReady([current(0, 0, 'dom', proportional)], 0)).toBe(false);
+      expect(passbandProbeReady([current(-1, 1), current(0, 0, 'dom', proportional)], 0)).toBe(false);
+      expect(passbandProbeReady([painted, sample(1, false, 'dom')], 0)).toBe(false);
+    }
+  });
+  it('still requires proportional geometry and a painted target tuple in FIX', () => {
+    expect(passbandProbeReady([current(0, 1, 'frame', false)], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), current(1, 1, 'dom', false)], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 0, 'frame', false), current(1, 1, 'dom')], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1)], 1)).toBe(true);
   });
   it('starts FIX continuity only after its current tuple has painted', () => {
     const samples = [current(-50, 0), sample(-30, false), sample(-20, false), sample(-10, false),

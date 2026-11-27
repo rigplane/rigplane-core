@@ -1,5 +1,34 @@
 import type { Page } from '@playwright/test';
 
+interface PanoramaWork { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
+declare global { interface Window { panoramaWork: PanoramaWork } }
+
+export async function installPanoramaWorkProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const work: PanoramaWork = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
+    window.panoramaWork = work;
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = callback => raf(time => {
+      const start = performance.now(); work.raf++;
+      try { callback(time); } finally { work.rafMs += performance.now() - start; }
+    });
+    const gl = WebGL2RenderingContext.prototype;
+    const texture = gl.texImage2D, draw = gl.drawArrays;
+    gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+      work.texture++; return Reflect.apply(texture, this, args);
+    } as typeof gl.texImage2D;
+    gl.drawArrays = function (...args) { work.draw++; return Reflect.apply(draw, this, args); };
+    const paint = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (...args) {
+      if (/^\d+\.\d{3}$/.test(args[0])) {
+        if (args[1] === 20) work.labels = [];
+        work.labels.push(args[0]);
+      }
+      work.static++; return Reflect.apply(paint, this, args);
+    };
+  });
+}
+
 /**
  * MOR-4214: when a panorama journey may first touch the page.
  *
