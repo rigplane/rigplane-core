@@ -1487,11 +1487,17 @@ class CivRuntime:
 
         async def send() -> None:
             # Stamped with no loop yield before the hand-over (MOR-4384).
+            tracker = self._host._civ_request_tracker
             if waiters:
-                self._host._civ_request_tracker.mark_sent(
-                    time.monotonic(), futures=waiters
+                tracker.mark_sent(time.monotonic(), futures=waiters)
+            try:
+                await self._send_ptt_accounted(
+                    transport, pkt, parse_civ_frame(civ_frame)
                 )
-            await self._send_ptt_accounted(transport, pkt, parse_civ_frame(civ_frame))
+            except CommandError:
+                for waiter in waiters:
+                    tracker.unregister(waiter, sent=False)
+                raise
 
         task = asyncio.create_task(send())
         tasks = None
@@ -5158,7 +5164,7 @@ class CivRuntime:
             raise
         finally:
             if pending is not None:
-                tracker.unregister(pending)
+                tracker.unregister(pending, sent=sent)
                 if not pending.done():
                     pending.cancel()
                 elif not pending.cancelled():

@@ -171,6 +171,7 @@ class _AckWaiter:
     sent_order: int = 0
     # The data waiter of the same read (a NAK-only waiter's partner).
     pair: asyncio.Future[CivFrame] | None = None
+    retired: bool = False
 
 
 @dataclass(slots=True)
@@ -304,7 +305,9 @@ class CivRequestTracker:
     @property
     def pending_count(self) -> int:
         """Number of unresolved pending requests."""
-        return len(self._ack_waiters) + len(self._response_waiters)
+        return sum(not w.retired for w in self._ack_waiters) + len(
+            self._response_waiters
+        )
 
     def response_pending_count(
         self,
@@ -340,7 +343,7 @@ class CivRequestTracker:
     @property
     def ack_sink_count(self) -> int:
         """Number of fire-and-forget ACK sink waiters currently tracked."""
-        return sum(1 for w in self._ack_waiters if w.future is None)
+        return sum(1 for w in self._ack_waiters if w.future is None and not w.retired)
 
     @property
     def generation(self) -> int:
@@ -502,9 +505,35 @@ class CivRequestTracker:
         )
         return future
 
-    def unregister(self, future: asyncio.Future[CivFrame]) -> None:
-        """Remove a request future from pending list."""
-        self._ack_waiters = [w for w in self._ack_waiters if w.future is not future]
+    def unregister(
+        self, future: asyncio.Future[CivFrame], *, sent: bool | None = None
+    ) -> None:
+        """Detach a future, retaining an unanswered sent write's reply sink.
+
+        A bare FB/FA carries no request identity. Keep an abandoned write's
+        sent order until its reply is consumed, ordered evidence retires it,
+        or the session ends (``test_civ_late_write_reply.py``).
+        ``sent=False`` discards a tentative stamp after a pre-wire refusal.
+        """
+        kept: list[_AckWaiter] = []
+        for waiter in self._ack_waiters:
+            if waiter.future is not future:
+                kept.append(waiter)
+            elif (
+                sent is not False
+                and waiter.sent_monotonic is not None
+                and not waiter.nak_only
+                and (
+                    not future.done()
+                    or future.cancelled()
+                    or future.exception() is not None
+                )
+            ):
+                waiter.future = None
+                waiter.retired = True
+                kept.append(waiter)
+                self.note_ack_unclaimed()
+        self._ack_waiters = kept
         self._response_waiters = [
             w for w in self._response_waiters if w.future is not future
         ]
@@ -563,7 +592,11 @@ class CivRequestTracker:
         for waiter in self._ack_waiters:
             sent = waiter.sent_monotonic
             sent = waiter.created_monotonic if sent is None else sent
-            if waiter.future is not None or now < sent + answer_window:
+            if (
+                waiter.retired
+                or waiter.future is not None
+                or now < sent + answer_window
+            ):
                 kept.append(waiter)
             else:
                 _log_sink("civ.sink.expired", waiter, now)
@@ -588,7 +621,7 @@ class CivRequestTracker:
 
         fresh_ack: list[_AckWaiter] = []
         for waiter in self._ack_waiters:
-            if waiter.created_monotonic > cutoff:
+            if waiter.retired or waiter.created_monotonic > cutoff:
                 fresh_ack.append(waiter)
                 continue
             cleaned += 1
@@ -597,6 +630,15 @@ class CivRequestTracker:
                     asyncio.TimeoutError("CI-V ACK waiter expired")
                 )
                 self._timeout_count += 1
+            if (
+                waiter.sent_monotonic is not None
+                and waiter.future is not None
+                and not waiter.nak_only
+            ):
+                waiter.future = None
+                waiter.retired = True
+                fresh_ack.append(waiter)
+                self.note_ack_unclaimed()
         self._ack_waiters = fresh_ack
 
         fresh_response: list[_PendingRequest] = []
