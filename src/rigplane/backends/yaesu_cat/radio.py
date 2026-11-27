@@ -27,6 +27,7 @@ from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
     AudioFormatError,
+    CatReplyValidationError,
     CommandError,
     CommandRejectedError,
     ModeReadbackError,
@@ -440,7 +441,7 @@ class YaesuCatRadio:
         """
         if (
             self._connection_identity is not None
-            and self._transport.connected
+            and self._transport.io_available
             and self._identity_permits_commands()
         ):
             return
@@ -501,7 +502,7 @@ class YaesuCatRadio:
         if generation != self._identity_generation:
             return
         if answered is None:
-            if not self._transport.connected:
+            if not self._identity_stream_available():
                 # No live port exists to hold — the open did not survive
                 # the probe. This connect must not report success.
                 self._connection_identity = None
@@ -546,6 +547,9 @@ class YaesuCatRadio:
         await self._audio_driver.stop_tx()
         async with self._serial_open_lock:
             await self._transport.close()
+        health = getattr(self._transport, "_link_health", None)
+        if health is not None:
+            health.end_session()
 
     async def __aenter__(self) -> "YaesuCatRadio":
         await self.connect()
@@ -650,11 +654,17 @@ class YaesuCatRadio:
         task = self._identity_reread_task
         return task is not None and not task.done()
 
+    def _identity_stream_available(self) -> bool:
+        health = getattr(self._transport, "_link_health", None)
+        return self._transport.io_available and not (
+            health is not None and health.io_failed
+        )
+
     def _identity_hold_owns_open_link(self) -> bool:
         """Whether the identity phase owns the live open port."""
         return (
             self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         )
 
@@ -698,7 +708,7 @@ class YaesuCatRadio:
                 start=start,
                 retune=transport.set_baudrate,
                 heard_at=heard_at,
-                usable=lambda: not retired() and transport.connected,
+                usable=lambda: not retired() and self._identity_stream_available(),
             )
             if found is not None and answered is not None:
                 logger.info(
@@ -2102,7 +2112,7 @@ class YaesuCatRadio:
         if (
             identity is not None
             and self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         ):
             if on and identity.status is RadioIdentityStatus.NO_RESPONSE:
@@ -3734,7 +3744,7 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_sql_type", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "sql type receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
@@ -3761,7 +3771,7 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_ctcss_tone", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "ctcss tone receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
@@ -3961,14 +3971,14 @@ class YaesuCatRadio:
         receiver = self._validate_receiver(receiver)
         result = await self._query("get_repeater_shift", receiver=receiver)
         if result["receiver"] != receiver:
-            raise CommandError(
+            raise CatReplyValidationError(
                 "repeater shift receiver mismatch: "
                 f"requested {receiver}, received {result['receiver']}"
             )
         try:
             return int(RepeaterShiftDirection(int(result["shift"])))
         except (TypeError, ValueError) as exc:
-            raise CommandError(
+            raise CatReplyValidationError(
                 f"invalid repeater shift direction in answer: {result['shift']!r}"
             ) from exc
 

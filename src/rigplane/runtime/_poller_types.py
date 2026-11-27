@@ -21,6 +21,10 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
 )
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerTicket
+from rigplane.runtime.managed_tx_state import (
+    ActuationResult,
+    ManagedTxActuationRefused,
+)
 
 __all__ = [
     "Command",
@@ -1198,7 +1202,9 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
     outcome = getattr(receipt, "outcome", None)
     if getattr(outcome, "value", outcome) != "accepted":
         raise CommandError(POSITIVE_TX_ADMISSION_REJECTED)
-    await receipt.wait_settlement()
+    settlement = await receipt.wait_settlement()
+    if settlement is not None and settlement.result is ActuationResult.REJECTED:
+        raise ManagedTxActuationRefused(settlement.rejection_reason)
 
 
 async def execute_command_queue_entry(

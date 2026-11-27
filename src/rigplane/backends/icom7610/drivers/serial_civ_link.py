@@ -213,7 +213,7 @@ class SerialCivLink:
     @property
     def connected(self) -> bool:
         """Whether serial transport is currently connected."""
-        return self.io_available and not self._link_health.io_failed
+        return self.io_available and self._link_health.responding
 
     @property
     def io_available(self) -> bool:
@@ -223,7 +223,7 @@ class SerialCivLink:
     @property
     def healthy(self) -> bool:
         """Whether I/O path is currently healthy."""
-        return self._healthy and not self._link_health.io_failed
+        return self._healthy and self._link_health.responding
 
     @property
     def ready(self) -> bool:

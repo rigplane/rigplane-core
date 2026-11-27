@@ -235,7 +235,7 @@ class YaesuCatTransport:
 
     @property
     def connected(self) -> bool:
-        return self.io_available and not self._link_health.io_failed
+        return self.io_available and self._link_health.responding
 
     @property
     def io_available(self) -> bool:
@@ -614,6 +614,7 @@ class YaesuCatTransport:
             await self.flush_rx()
             writer = self._writer
             reconnects = self._stats.reconnects
+            health_generation = self._link_health.generation
             capture = self._capture_provider_generation
             generation = None if capture is None else capture()
 
@@ -627,7 +628,10 @@ class YaesuCatTransport:
                 )
 
             def record_response() -> None:
-                if response_is_current():
+                if (
+                    response_is_current()
+                    and self._link_health.generation == health_generation
+                ):
                     self._link_health.record_response()
 
             await self._raw_write(command, is_current=is_current)
@@ -654,6 +658,14 @@ class YaesuCatTransport:
                 try:
                     response = await self.readline(timeout=timeout)
                 except CatTimeoutError as exc:
+                    if response_is_current():
+                        self._link_health.observe_poll(
+                            now=time.monotonic(),
+                            pending=False,
+                            timeout_delta=1,
+                            answer_window=timeout,
+                            watchdog_interval=0.0,
+                        )
                     # Silence after *command* — name it, so a caller counting
                     # unanswered reads (MOR-2757) can name it back.
                     raise CatTimeoutError(str(exc), command=command) from exc

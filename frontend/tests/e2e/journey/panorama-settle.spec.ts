@@ -5,16 +5,14 @@ import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runt
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
 import type { WsCommand } from '../../../src/lib/types/protocol';
-import { readPassbandDiagnostics } from './panorama-passband-probe';
+import { installSampler, stopSampler, expectPassbandProbeReady, readPassbandDiagnostics } from './panorama-passband-probe';
+import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, installPanoramaWorkProbe, observePanorama, openPanorama } from './panorama-ready';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // The tune command's parameters as the producer declares them.
 type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
-
-interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
-declare global { interface Window { panoramaWork: Work } }
 
 for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7610', 1]] as const).entries()) {
   for (const zoom of [false, true, 'span'] as const) {
@@ -59,29 +57,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             }
           });
         });
-        await page.addInitScript(() => {
-          const work: Work = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
-          window.panoramaWork = work;
-          const raf = window.requestAnimationFrame.bind(window);
-          window.requestAnimationFrame = callback => raf(time => {
-            const start = performance.now(); work.raf++;
-            try { callback(time); } finally { work.rafMs += performance.now() - start; }
-          });
-          const gl = WebGL2RenderingContext.prototype;
-          const texture = gl.texImage2D, draw = gl.drawArrays;
-          gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
-            work.texture++; return Reflect.apply(texture, this, args);
-          } as typeof gl.texImage2D;
-          gl.drawArrays = function (...args) { work.draw++; return Reflect.apply(draw, this, args); };
-          const paint = CanvasRenderingContext2D.prototype.fillText;
-          CanvasRenderingContext2D.prototype.fillText = function (...args) {
-            if (/^\d+\.\d{3}$/.test(args[0])) {
-              if (args[1] === 20) work.labels = [];
-              work.labels.push(args[0]);
-            }
-            work.static++; return Reflect.apply(paint, this, args);
-          };
-        });
+        await installPanoramaWorkProbe(page);
         const work = () => page.evaluate(() => ({ ...window.panoramaWork }));
         const writes = async () => {
           let contents = '';
@@ -89,13 +65,14 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
           return contents.trim().split('\n').filter(Boolean).map(
             parseScopeWriteReceipt);
         };
-        await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+        await installSampler(page);
+        await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
         await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
         const area = page.locator('.spectrum-area').first();
         const marker = page.locator('.waterfall-content .tune-line');
         if (zoom === true) {
-          await page.getByRole('button', { name: 'More scope controls' }).first().click();
-          await page.getByTestId('scope-zoom-in').first().click();
+          await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
+          await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
           await expect.poll(() => frames.at(-1)?.view).toEqual([14_225_000, 14_275_000]);
           await page.keyboard.press('Escape');
           // MOR-4387: zoom keeps follow mode with the zoomed width — the
@@ -107,10 +84,11 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         // variant enters FIX through the explicit scope-mode control instead;
         // the fixed edges hold the same 100 kHz the follow default granted.
         if (zoom === 'span' && zoomMode === 1) {
-          await page.getByRole('radio', { name: 'FIX' }).first().click();
+          await clickPanorama(page, page.getByRole('radio', { name: 'FIX' }).first());
           await expect.poll(async () => (await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
           await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
         }
+        await awaitRenderPipeline(page);
         const box = await area.boundingBox(); expect(box).not.toBeNull();
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
@@ -131,7 +109,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             const receiptsBefore = await writes();
             await page.keyboard.press('[');
             await page.keyboard.press(']');
-            await page.waitForTimeout(1000);
+            await observePanorama(page, 1000);
             const receiptsAfter = await writes();
             expect(receiptsAfter.length).toBe(receiptsBefore.length);
             const scopeWrites = (list: typeof receiptsAfter) =>
@@ -149,7 +127,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             const width = widths[step]!;
             const mark = frames.length;
             if (action === ']') await page.keyboard.press(action);
-            else await page.getByRole('button', { name: action, exact: true }).first().click();
+            else await clickPanorama(page, page.getByRole('button', { name: action, exact: true }).first());
             const bounds = [14_250_000 - width / 2, 14_250_000 + width / 2];
             await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
             await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
@@ -164,25 +142,24 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.1 : 0.45), box!.y + box!.height * 0.3, { steps: 5 });
         await page.mouse.up();
         }
-        // The gesture's own settling ends with the passband tuple: a tune or
-        // a CTR→FIX switch retires it, and it is recaptured when fresh
-        // evidence arrives — each transition repaints the static layer once.
-        // That recapture took 0.7 to 3.6 s in measured runs and more than the
-        // fixed delay below on a loaded runner, where its one repaint then
-        // landed inside the quiet window. Wait for the settled state itself.
+        const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
+        await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())
+          .toMatchObject({ main: { freqHz: finalHz } });
+        await expectPanoramaFrequency(page, finalHz);
         await expect(page.locator('.spectrum-panel').first())
           .toHaveAttribute('data-passband-state', 'current', { timeout: 15_000 });
+        await expectPassbandProbeReady(page, zoom === 'span' ? zoomMode : 0);
+        await stopSampler(page);
         // Observation windows, not synchronization delays: 10 s after the
         // gesture has settled, with the final 5 s isolated from
         // gesture/acknowledgement work.
-        await page.waitForTimeout(5000);
+        await observePanorama(page, 5000);
         const quietStart = { atMs: performance.now(), subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length, work: await work() };
-        await page.waitForTimeout(5000);
+        await observePanorama(page, 5000);
         const quietEnd = { subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length,
           lastFrameAgeMs: performance.now() - (frames.at(-1)?.receivedAt ?? 0), work: await work() };
-        const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
-        await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
+        await expectPanoramaFrequency(page, finalHz);
         // MOR-4387: a zoomed view follows the VFO (span preserved); only a
         // preset pin may hold a fixed window. MOR-4392 round 2: the FIX span
         // variant never steps (keys disabled) so the window stays the fixed
@@ -207,10 +184,12 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         // mode to the radio in either variant.
         if (zoom === true) expect.soft((await writes()).filter(receipt => receipt.sub === 0x14 && receipt.data.length === 2).at(-1)?.data[1] ?? 0).toBe(0);
         await writeFile(evidence.replace('.jsonl', '.pause'), 'pause');
-        await page.waitForTimeout(2000);
+        await expect.poll(() => performance.now() - (frames.at(-1)?.receivedAt ?? performance.now()))
+          .toBeGreaterThanOrEqual(2000);
+        await awaitRenderPipeline(page);
         const idleStart = await work();
         const idleFrames = frames.length;
-        await page.waitForTimeout(5000);
+        await observePanorama(page, 5000);
         const idleEnd = await work();
         expect.soft(frames.length).toBe(idleFrames);
         const report = { model, before, quietStart, quietEnd, idleStart, idleEnd, sent, grants, frames,
@@ -270,7 +249,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         });
         socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') state.frames += 1; });
       });
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       const marker = page.locator('.waterfall-content .tune-line');
       await expect(marker).toBeVisible({ timeout: 30_000 });
       await expect.poll(() => state.frames, { timeout: 30_000 }).toBeGreaterThan(10);
@@ -294,15 +273,9 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect.poll(radioState, { timeout: 10_000 }).toMatchObject({ main: { freqHz: clickTunes().at(-1) } });
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
-      // Realistic key-repeat pacing (the MOR-4387 repro's cadence): the
-      // tuning accumulator (MOR-1864) re-reads the confirmed base at every
-      // paced flush, so a zero-gap burst right after absolute click retunes
-      // could key off a readback-lagged base. What this scenario pins is the
-      // repro's own definition of correct: a clean sequential step series —
-      // plus a live marker and zero scope re-negotiation.
+      // The 150 ms input cadence must overlap delayed readbacks.
       for (let i = 0; i < 12; i++) {
-        await page.keyboard.press('ArrowRight');
-        await page.waitForTimeout(150);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
       const arrowSteps = () => wsCommands.slice(commandsBeforeArrows)
         .filter(command => command.name === 'set_freq')
@@ -311,6 +284,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const steps = arrowSteps();
       for (let i = 1; i < steps.length; i++) expect(steps[i]! - steps[i - 1]!).toBe(1_000);
       await expect.poll(radioState).toMatchObject({ main: { freqHz: steps.at(-1) } });
+      await expectPanoramaFrequency(page, steps.at(-1)!);
       await expect(marker).toBeVisible();
       expect(state.sent - sentBefore).toBe(0);
       expectPanoramaSettled(watch);
@@ -332,14 +306,14 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
     const port = journeyPort(18890 + index);
     const server = await startJourneyServer(port, 14_250_000,
-      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+      ['--model', model, '--response-delay', '0.3', '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     try {
       const frames = { count: 0 };
       page.on('websocket', socket => {
         if (!socket.url().endsWith('/api/v1/scope')) return;
         socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
       });
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
       const panel = page.locator('.spectrum-panel').first();
@@ -366,11 +340,12 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(expectedHz);
       }
       const clickedHz = (await radioState()).main!.freqHz!;
+      await expectPanoramaFrequency(page, clickedHz);
       for (let i = 0; i < 12; i++) {
-        await page.keyboard.press('ArrowRight');
-        await page.waitForTimeout(150);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
       await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(clickedHz + 12_000);
+      await expectPanoramaFrequency(page, clickedHz + 12_000);
     } finally {
       await server.kill();
     }
@@ -393,12 +368,12 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         });
         socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
       });
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       const marker = page.locator('.waterfall-content .tune-line');
       await expect(marker).toBeVisible({ timeout: 30_000 });
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
-      await page.getByRole('button', { name: 'More scope controls' }).first().click();
-      await page.getByTestId('scope-zoom-in').first().click();
+      await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
+      await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
       await page.keyboard.press('Escape');
       await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 50_000 });
       await expect(marker).toBeVisible();
@@ -406,7 +381,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       for (let i = 0; i < 40; i++) await page.keyboard.press('ArrowRight');
       await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())
         .toMatchObject({ main: { freqHz: 14_290_000 } });
-      await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(14_290_000);
+      await expectPanoramaFrequency(page, 14_290_000);
       await expect(marker).toBeVisible();
       expect(sent.filter(request => 'follow' in request.view)).toHaveLength(sent.length);
       expect(sent.length - sentBefore).toBe(0);
@@ -433,13 +408,13 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         });
         socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
       });
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       const marker = page.locator('.waterfall-content .tune-line');
       await expect(marker).toBeVisible({ timeout: 30_000 });
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
-      await page.getByTestId('scope-zoom-band').first().click();
+      await clickPanorama(page, page.getByTestId('scope-zoom-band').first());
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
-      for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Increase tuning step' }).first().click();
+      for (let i = 0; i < 4; i++) await clickPanorama(page, page.getByRole('button', { name: 'Increase tuning step' }).first());
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
       for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
       await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())

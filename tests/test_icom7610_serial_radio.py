@@ -993,8 +993,6 @@ async def test_polls_answered_within_window_do_not_declare_link_down(
     assert radio.radio_ready is True
 
     tracker = radio._civ_request_tracker
-    transport = radio._civ_transport
-
     now = {"t": time.monotonic()}
     radio._civ_silence_time_source = lambda: now["t"]  # type: ignore[attr-defined]
     window_s = radio._civ_get_timeout
@@ -1018,13 +1016,13 @@ async def test_polls_answered_within_window_do_not_declare_link_down(
             token = _dispatch_poll()
             # Frozen-rx ticks with the fresh poll outstanding.
             await asyncio.sleep(0.02)
-            # The radio answers well within the window: a CI-V frame parses.
-            transport.rx_packet_count += 1
+            # Credit a qualified reply as the serial RX callback does.
+            radio._serial_link_health.record_response()
             # Retire the answered poll only after the next one is in flight.
             if previous is not None:
                 assert tracker.unregister_ack_sink(previous) is True
             previous = token
-            # Ticks with rx advanced: the parsed frame resets the clock.
+            # Ticks with response credit: the qualified frame resets the clock.
             await asyncio.sleep(0.02)
         assert tracker.unregister_ack_sink(previous) is True
 
@@ -1255,13 +1253,8 @@ async def test_serial_civ_watchdog_rebaselines_after_transport_swap_with_banked_
     survive a transport swap.
 
     Reproduces the verifier's fake-transport probe directly against the
-    detector. Every (re)connect installs a *brand-new* ``SerialCivTransport``
-    whose ``rx_packet_count`` restarts at 0 (``SerialSessionDriver.connect``
-    always constructs a fresh one), while ``_civ_request_tracker.timeout_count``
-    is a lifetime counter that survives the swap untouched. Without
-    re-baselining, a transport that just delivered genuine frames on a
-    healthy, recovered link can still be declared dead from timeout evidence
-    banked against the *old* transport/outage.
+    detector. A replacement transport must not inherit timeout evidence
+    banked against the old transport/outage.
     """
     link = _FakeSerialCivLink()
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
@@ -1270,12 +1263,9 @@ async def test_serial_civ_watchdog_rebaselines_after_transport_swap_with_banked_
     old_transport = radio._civ_transport
     threshold = radio._SERIAL_LINK_DOWN_TIMEOUT_THRESHOLD
 
-    # Simulate having already baselined against the OLD (pre-outage)
-    # transport, which delivered enough real traffic to build a
-    # rx_packet_count high-water mark well above what a brand-new transport
-    # starts at.
+    # Simulate baselines left behind by the OLD (pre-outage) transport.
     radio._civ_watchdog_last_transport = old_transport
-    radio._civ_watchdog_last_seen_rx_packets = 50
+    radio._civ_watchdog_last_seen_responses = radio._serial_link_health.response_count
     radio._civ_watchdog_last_seen_timeouts = radio._civ_request_tracker.timeout_count
     radio._civ_consecutive_timeouts = 0
 
@@ -1288,11 +1278,10 @@ async def test_serial_civ_watchdog_rebaselines_after_transport_swap_with_banked_
     for _ in range(threshold):
         radio._civ_request_tracker.note_timeout()
 
-    # Reconnect installs a brand-new transport (as SerialSessionDriver.connect()
-    # always does) that has already delivered real, fresh frames on the
-    # recovered link.
+    # Reconnect installs a brand-new transport and credits a genuine reply.
     fresh_transport = SimpleNamespace(rx_packet_count=5)
     radio._civ_transport = fresh_transport  # type: ignore[assignment]
+    radio._serial_link_health.record_response()
 
     crossed = radio._serial_civ_timeout_evidence_crossed_threshold()
 
@@ -1303,7 +1292,10 @@ async def test_serial_civ_watchdog_rebaselines_after_transport_swap_with_banked_
     )
     assert radio._civ_consecutive_timeouts == 0
     assert radio._civ_watchdog_last_transport is fresh_transport
-    assert radio._civ_watchdog_last_seen_rx_packets == 5
+    assert (
+        radio._civ_watchdog_last_seen_responses
+        == radio._serial_link_health.response_count
+    )
     assert (
         radio._civ_watchdog_last_seen_timeouts
         == radio._civ_request_tracker.timeout_count

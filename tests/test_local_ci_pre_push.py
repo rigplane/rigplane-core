@@ -349,6 +349,18 @@ def test_prose_only_changes_run_nothing(sandbox) -> None:
     assert not any(s.startswith(("npm", "npx")) for s in _steps(env))
 
 
+def test_a_tests_only_change_runs_the_ledger_check(sandbox) -> None:
+    # The ledger goes stale when Python tests land (MOR-4890), so the python leg runs
+    # the freshness check even when no src/ file changed.
+    repo, env = sandbox
+    _change(repo, "tests/test_bridge.py")
+    result = _host_run(repo, env)
+    assert "PRE-PUSH-HOST: PASS" in result.stdout, result.stdout + result.stderr
+    assert "uv run python scripts/regen_assertion_free_ledger.py --check" in _uv_steps(
+        env
+    )
+
+
 def test_every_failing_step_is_reported_not_just_the_first(sandbox) -> None:
     repo, env = sandbox
     _change(repo, "src/rigplane/web/server.py")

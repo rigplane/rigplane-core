@@ -1427,6 +1427,7 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        reply_timeout: float | None = None,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
@@ -1438,6 +1439,7 @@ class CivRuntime:
             dedupe=dedupe,
             wait_response=wait_response,
             timeout=timeout,
+            reply_timeout=reply_timeout,
             wait_dispatch=wait_dispatch,
             is_current=is_current,
         )
@@ -4760,21 +4762,31 @@ class CivRuntime:
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: "float | None" = None,
+        reply_timeout: float | None = None,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
-            await self._wait_for_civ_transport_recovery(timeout=timeout)
+            try:
+                await self._wait_for_civ_transport_recovery(timeout=timeout)
+            except (ConnectionError, TimeoutError, asyncio.TimeoutError) as exc:
+                raise StaleBeforeWireError(
+                    "CI-V transport unavailable before dispatch"
+                ) from exc
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
 
-        if self._host._commander is None:
-            coro = self._execute_civ_raw(
+        async def dispatch() -> CivFrame | None:
+            return await self._execute_civ_raw(
                 civ_frame,
                 wait_response=wait_response,
                 is_current=is_current,
+                reply_timeout=reply_timeout,
             )
+
+        if self._host._commander is None:
+            coro = dispatch()
             if timeout is not None:
                 return await asyncio.wait_for(coro, timeout=timeout)
             return await coro
@@ -4788,6 +4800,7 @@ class CivRuntime:
             timeout=timeout,
             wait_dispatch=wait_dispatch,
             is_current=is_current,
+            **({"dispatch": dispatch} if reply_timeout is not None else {}),
         )
 
     @staticmethod
@@ -4906,6 +4919,7 @@ class CivRuntime:
         *,
         is_current: Callable[[], bool] | None = None,
         deferred_read: _ReadReceipt | None = None,
+        reply_timeout: float | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker).
 
@@ -4922,7 +4936,7 @@ class CivRuntime:
         ``nak_terminal=True`` default already carry.
         """
         if self._host._civ_transport is None:
-            raise ConnectionError("Not connected to radio")
+            raise StaleBeforeWireError("Not connected to radio")
         self._ensure_civ_runtime()
         transport = self._host._civ_transport
         tracker = self._host._civ_request_tracker
@@ -4934,7 +4948,8 @@ class CivRuntime:
                 or self._host._civ_request_tracker is not tracker
                 or self._host._civ_epoch != epoch
             ):
-                return ConnectionError("CI-V execution belongs to a retired session")
+                error_type = StaleBeforeWireError if pre_wire else ConnectionError
+                return error_type("CI-V execution belongs to a retired session")
             try:
                 current = is_current is None or is_current()
             except Exception:
@@ -5130,7 +5145,11 @@ class CivRuntime:
             )
             done, _ = await asyncio.wait(
                 waiters,
-                timeout=self._host._civ_get_timeout,
+                timeout=(
+                    self._host._civ_get_timeout
+                    if reply_timeout is None
+                    else reply_timeout
+                ),
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
@@ -5140,6 +5159,8 @@ class CivRuntime:
                     "CI-V command 0x%02X timed out",
                     request_key.command,
                 )
+                if reply_timeout is not None:
+                    return None
                 raise TimeoutError("CI-V response timed out")
             if pending in done:
                 check_current()

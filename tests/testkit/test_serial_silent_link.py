@@ -58,7 +58,7 @@ _TIMEOUT_THRESHOLD = 3
 # crossed, and slack for event loop scheduling on a loaded test host.
 _SCHEDULING_SLACK_S = 0.2
 _LINK_DOWN_BUDGET_S = _SILENCE_LIMIT_S + 2 * _WATCHDOG_TICK_S + _SCHEDULING_SLACK_S
-_SILENCE_EVIDENCE_LOG = "polls outstanding and no CI-V frame parsed"
+_SILENCE_EVIDENCE_LOG = "polls outstanding and no qualified radio reply"
 
 # Shutdown budgets, scaled down from cli: _MANAGED_TX_SHUTDOWN_DRAIN_S and
 # _MANAGED_TX_SHUTDOWN_SETTLE_S in _shutdown_managed_tx_composition.
