@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - New TX setting **Microphone processing**: Raw (default, as before) sends the microphone without the browser's echo cancellation, noise suppression and automatic gain control; Browser processing turns all three on for a noisy room or a weak microphone. It is in the TX levels dialog on the phone and the standard sidebars, and under TX AUDIO in the desktop Settings dialog; the choice is kept per browser (and per desktop app) and applies from the next transmission. New strings `core.txMic.processing.*` in en-US, ru-RU and ja-JP. (MOR-4596)
+- When Windows refuses the radio's audio device with access-denied (E_ACCESSDENIED), RX start now fails with the `device_access_denied` category and an actionable toast ("Another program is using the radio's audio device, or Windows privacy settings block access to it...") instead of the generic capture failure; the refusal code is logged server-side for the support report. New string `core.toast.rxAudioAccessDenied` in en-US, ru-RU and ja-JP.
 
 ## [3.3.0] — 2026-11-21
 

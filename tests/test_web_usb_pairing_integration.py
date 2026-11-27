@@ -500,7 +500,7 @@ ACCESS_DENIED_ERROR = (
                 -9999,
                 ("Windows WASAPI", -2147024891, "Access is denied. (0x80070005)"),
             ),
-            "other",
+            "device_access_denied",
             "python.exe",
             None,
         ),
@@ -521,7 +521,7 @@ async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
     Only ``sounddevice`` is faked. The exclusive open and the shared fallback
     both raise the real run's ``Invalid device [PaErrorCode -9996]`` (the codec
     is held by another program), so the refusal is ``device_in_use``; a shared
-    failure that says access denied keeps the old ``other`` category. A fake
+    failure that says access denied is ``device_access_denied`` (P22). A fake
     holder lookup (the only other fake) names the program: the frame and
     ``/api/v1/info`` carry ``holder`` (the bare file name) for ``device_in_use``
     only, and no ``holder`` key when the lookup finds nothing. The frame below is
