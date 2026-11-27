@@ -9,6 +9,8 @@ import pytest
 from rigplane.audio import AudioPacket
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.bus import AudioBus
+from rigplane.audio.usb_driver import UsbAudioDriver
+from rigplane.backends.ic705.serial import Ic705SerialRadio
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.radio_protocol import AudioCapable
@@ -18,7 +20,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.core.types import AudioCodec, CivFrame
+from rigplane.core.types import AudioCodec, CivFrame, Mode
 from rigplane.profiles import get_radio_profile
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 from rigplane.runtime.radio import IcomRadio
@@ -28,7 +30,6 @@ from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
 
 MAIN_DCD = FieldPath.receiver("main", "operator_toggles", "dcd")
 MAIN_MODE = FieldPath.active("main", "freq_mode", "mode")
-MAIN_DATA_MODE = FieldPath.active("main", "freq_mode", "data_mode")
 ACTIVE = FieldPath.global_("slow_state", "active")
 DUAL = FieldPath.global_("tx_state", "dual_watch")
 PCM = b"\x01\x02" * 960
@@ -39,16 +40,11 @@ def _observe(store: StateStore, path: FieldPath, value: object, at: float) -> No
 
 
 @pytest.mark.timeout(5)
-@pytest.mark.parametrize("model", ["FTX-1", "IC-705", "FT-991A"])
+@pytest.mark.parametrize("model", ["FTX-1", "FT-991A"])
 async def test_live_squelch_leaves_scope_and_audio_bridge_open(
     model: str, virtual_clock: VirtualClock
 ) -> None:
     profile = get_radio_profile(model)
-    dcd_path = (
-        FieldPath.receiver("0", "operator_toggles", "dcd")
-        if model == "IC-705"
-        else MAIN_DCD
-    )
     store = StateStore()
     now = virtual_clock.now
     _observe(store, ACTIVE, "MAIN", now)
@@ -88,7 +84,7 @@ async def test_live_squelch_leaves_scope_and_audio_bridge_open(
     def report_squelch(value: bool) -> None:
         store.apply(
             Observation(
-                dcd_path,
+                MAIN_DCD,
                 value,
                 SourceMetadata("poll_response", "test"),
                 virtual_clock.now,
@@ -108,9 +104,6 @@ async def test_live_squelch_leaves_scope_and_audio_bridge_open(
         _observe(store, MAIN_MODE, "CW", now)
         await check_pcm(PCM)
         _observe(store, MAIN_MODE, "FM", now)
-        _observe(store, MAIN_DATA_MODE, 1, now)
-        await check_pcm(PCM)
-        _observe(store, MAIN_DATA_MODE, 0, now)
         if model == "FTX-1":
             _observe(store, ACTIVE, "SUB", now)
             await check_pcm(PCM)
@@ -126,6 +119,76 @@ async def test_live_squelch_leaves_scope_and_audio_bridge_open(
         broadcaster.set_pcm_tap(None)
         await broadcaster.unsubscribe(live)
         await bridge.aclose()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("data_mode", [0, 1], ids=["voice", "data"])
+async def test_ic705_usb_live_squelch(
+    data_mode: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    device = AudioDeviceInfo(AudioDeviceId(1), "USB Audio CODEC", 2, 1)
+    backend = FakeAudioBackend([device])
+    radio = Ic705SerialRadio(
+        device="/dev/null",
+        audio_driver=UsbAudioDriver(rx_device=device.name, backend=backend),
+    )
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    resolve = acquisition_query_resolver_for_profile(radio.profile)
+    squelch_query = resolve(MAIN_DCD)
+    mode_query = resolve(MAIN_MODE)
+    assert squelch_query is not None
+    assert mode_query is not None
+
+    def receive(command: int, sub: int | None, data: bytes) -> None:
+        radio._civ_runtime._update_state_cache_from_frame(
+            CivFrame(0xE0, radio.profile.civ_addr, command, sub, data)
+        )
+
+    def report_mode(mode: Mode) -> None:
+        receive(
+            mode_query.command,
+            mode_query.sub,
+            mode_query.data + bytes((mode, data_mode, 1)),
+        )
+
+    def report_squelch(open_: bool) -> None:
+        receive(squelch_query.command, squelch_query.sub, bytes((open_,)))
+
+    # The IC-705 can retain DATA when changing the base mode from USB to FM.
+    report_mode(Mode.USB)
+    report_mode(Mode.FM)
+    assert radio.state_store.field("receiver.0.active.freq_mode.mode").value == "FM"
+    data = radio.state_store.field("receiver.0.active.freq_mode.data_mode")
+    assert data.value == data_mode
+
+    broadcaster = AudioBroadcaster(radio, state_store=radio.state_store)
+    live = await broadcaster.subscribe(preferred_rx_codec=AUDIO_CODEC_PCM16)
+    try:
+        assert len(backend.rx_streams) == 1
+        bridge = await radio.audio_session.subscribe_rx("audio-bridge")
+
+        async def check_pcm(expected: bytes) -> None:
+            backend.rx_streams[0].inject_frame(PCM)
+            assert (await live.get())[AUDIO_HEADER_SIZE:] == expected
+            bridge_frame = bridge.get_nowait()
+            assert bridge_frame is not None and bridge_frame.data == PCM
+
+        try:
+            report_squelch(True)
+            await check_pcm(PCM)
+            report_squelch(False)
+            dcd = radio.state_store.field("receiver.0.operator_toggles.dcd")
+            assert dcd.value is False
+            await check_pcm(bytes(len(PCM)))
+            report_squelch(True)
+            await check_pcm(PCM)
+            report_squelch(False)
+            report_mode(Mode.USB)
+            await check_pcm(PCM)
+        finally:
+            await bridge.release()
+    finally:
+        await broadcaster.unsubscribe(live)
 
 
 @pytest.mark.timeout(5)

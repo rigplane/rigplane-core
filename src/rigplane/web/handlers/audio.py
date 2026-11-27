@@ -86,9 +86,6 @@ _MAIN_DCD_PATHS = tuple(
 _MAIN_MODE_PATHS = tuple(
     FieldPath.active(receiver, "freq_mode", "mode") for receiver in ("main", "0")
 )
-_MAIN_DATA_MODE_PATHS = tuple(
-    FieldPath.active(receiver, "freq_mode", "data_mode") for receiver in ("main", "0")
-)
 _DUAL_WATCH_PATH = FieldPath.global_("tx_state", "dual_watch")
 
 _PLAYBACK_COUNTERS = {
@@ -1577,9 +1574,8 @@ class AudioBroadcaster:
 
         if self._fresh_monitor_value(*_MAIN_DCD_PATHS) is not False:
             return False
-        mode = self._fresh_monitor_value(*_MAIN_MODE_PATHS)
-        data_mode = self._fresh_monitor_value(*_MAIN_DATA_MODE_PATHS)
-        return mode in ("FM", "FM-N") and data_mode in (None, 0)
+        # FM's reported squelch also governs LIVE when DATA is enabled.
+        return self._fresh_monitor_value(*_MAIN_MODE_PATHS) in ("FM", "FM-N")
 
     def _fresh_monitor_value(self, *paths: FieldPath) -> object:
         store = self._state_store
