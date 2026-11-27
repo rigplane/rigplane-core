@@ -1928,6 +1928,8 @@
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
+      {:else if runtime.caps !== null && selectedScopeId === null}
+        <div class="scope-disconnected-overlay" data-testid="scope-no-source-overlay">{t('core.overlay.scopeNoSource')}</div>
       {:else if scopeTxKnown && !scopeConnected}
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
       {:else if scopeHiddenOnRadio && !scopeConnected}

@@ -113,6 +113,7 @@
   "core.overlay.poweredOff.failedPowerOn": "Failed to power on: {detail}",
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",
   "core.overlay.scopeHiddenOnRadio": "Scope is off on the radio — it is showing a menu or another screen",
+  "core.overlay.scopeNoSource": "This radio does not send a spectrum scope over its CAT connection.",
   "core.overlay.scopeOutOfRange": "Frequency outside the fixed scope edges ({start}–{end} MHz)",
   "core.overlay.scopeSwitchToCtr": "Switch to CTR",
   "core.scope.webglRequired": "WebGL required for the waterfall",
