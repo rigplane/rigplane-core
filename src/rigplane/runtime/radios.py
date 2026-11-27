@@ -92,10 +92,7 @@ RADIOS: dict[str, RadioModel] = {
         has_lan=False,
         has_wifi=True,
     ),
-    # Xiegu X6100 (MOR-4801): its own CI-V address 0x70 (rigs/x6100.toml),
-    # where no Icom model sits, so no disambiguation is needed — the
-    # shared address table names it. ``--model X6100`` resolves here so
-    # the CLI and factory paths can address it.
+    # Default address for explicit X6100 selection (rigs/x6100.toml).
     "X6100": RadioModel(
         name="X6100",
         civ_addr=0x70,
@@ -135,11 +132,6 @@ SERIAL_RADIO_MAP: dict[int, tuple[str, bytes]] = {
     0xAC: ("IC-905", b""),
     0x8E: ("IC-7851", b"\x01\x35"),
     0x96: ("IC-R8600", b"\x01\x26"),
-    # X6100 (MOR-4801): its own stock address, where no Icom model sits.
-    # The CI-V guide lists no 19 00 reply bytes for it, so no model token
-    # is invented — the 0xB6 (MK2) precedent: the address alone identifies
-    # the radio (identify_radio only logs a debug line on a mismatch).
-    0x70: ("X6100", b""),
 }
 
 
@@ -154,7 +146,6 @@ CIV_PROFILE_MAP: dict[int, str] = {
     0xAC: "icom_ic905",
     0x8E: "",  # IC-7851 — no profile file yet
     0x96: "",  # IC-R8600 — no profile file yet
-    0x70: "xiegu_x6100",  # MOR-4801: stock X6100 address, unambiguous
 }
 
 

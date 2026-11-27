@@ -20,7 +20,7 @@ from rigplane.backends.factory import (
     create_radio,
     supports_serial_model,
 )
-from rigplane.profiles import resolve_radio_profile
+from rigplane.profiles import profile_by_xiegu_model_id, resolve_radio_profile
 from rigplane.backends.discovery import (
     CivProbeResult,
     SerialPortCandidate,
@@ -139,14 +139,7 @@ class TestCreateRadioSymbolSeam:
 
 
 class TestX6100SerialSelection:
-    """MOR-4801: the Xiegu X6100 is selectable and identifiable on serial.
-
-    The customer defect: ``--model X6100`` was refused on the serial path
-    (no factory route), so identification fell back to the X6200 profile.
-    The fix is profile data plus the shared identification — no per-radio
-    mechanism, no model-name branch in code — so these tests pin the
-    shared paths, not X6100-specific code.
-    """
+    """MOR-4801: explicit X6100 selection uses the shared serial backend."""
 
     def test_explicit_choice_selects_x6100_profile(self) -> None:
         """``--model X6100`` builds the Xiegu serial backend on the X6100
@@ -161,24 +154,47 @@ class TestX6100SerialSelection:
         assert radio._profile.id == "xiegu_x6100"
         assert radio._radio_addr == 0x70
 
-    def test_explicit_choice_wins_over_the_shared_address(self) -> None:
-        """A custom-firmware X6100 answering at the shared 0xA4 address
-        still resolves to X6100 when the user names it: the explicit model
-        outranks the address, exactly like every other explicit choice in
-        ``resolve_radio_profile``."""
-        profile = resolve_radio_profile(model="X6100", radio_addr=0xA4)
+    @pytest.mark.parametrize("address", [0xA4, 0x00])
+    def test_explicit_choice_wins_over_the_shared_address(self, address: int) -> None:
+        profile = resolve_radio_profile(model="X6100", radio_addr=address)
         assert profile.model == "X6100"
         assert profile.id == "xiegu_x6100"
+        radio = create_radio(
+            SerialBackendConfig(
+                device="/dev/ttyUSB0", model="X6100", radio_addr=address
+            )
+        )
+        assert radio.model == "X6100"
+        assert radio._profile.id == "xiegu_x6100"
+        assert radio._radio_addr == address
+
+    def test_unverified_model_id_is_not_assigned_to_x6100(self) -> None:
+        assert resolve_radio_profile(model="X6100").xiegu_model_id is None
+        # 61 00 is illustrative, not a captured X6100 opcode response.
+        assert profile_by_xiegu_model_id(b"\x61\x00") is None
 
     @pytest.mark.asyncio
-    async def test_stock_address_auto_identifies_without_serial_io(self) -> None:
-        """A stock X6100 answers the broadcast probe at its own address
-        0x70, where no Icom model sits — the shared address table names
-        it with no extra probe."""
+    async def test_address_alone_does_not_select_x6100(self) -> None:
         model, profile_id = await resolve_civ_radio_identity(
             _civ_hit(0x70, b"\x61\x00"), _open_serial=_never_open
         )
-        assert (model, profile_id) == ("X6100", "xiegu_x6100")
+        assert (model, profile_id) == ("Unknown (0x70)", "")
+
+    @pytest.mark.parametrize("address", [0xA4, 0x00])
+    @pytest.mark.asyncio
+    async def test_unverified_reply_at_shared_address_requires_explicit_choice(
+        self, address: int
+    ) -> None:
+        # This synthetic reply must not become an invented X6100 identity.
+        reply = bytes([0xFE, 0xFE, 0xE0, address, 0x1D, 0x19, 0x61, 0x00, 0xFD])
+        writer = _Writer()
+        result = await resolve_civ_radio_identity(
+            _civ_hit(address, b"\x01\x05"),
+            _xiegu_port(),
+            _open_serial=_make_open(_Reader([reply]), writer),
+        )
+        assert result == ("Unknown Xiegu (model id 6100)", "")
+        assert writer.written == [bytes([0xFE, 0xFE, address, 0xE0, 0x1D, 0x19, 0xFD])]
 
 
 def _civ_hit(address: int, model_id: bytes) -> CivProbeResult:
@@ -227,6 +243,45 @@ async def _never_open(**_kw: object) -> tuple[Any, Any]:
 
 
 class TestResolveCivRadioIdentity:
+    @pytest.mark.parametrize("split", [6, 7, 8])
+    @pytest.mark.asyncio
+    async def test_fragmented_reply_preserves_x6200_identification(
+        self, split: int
+    ) -> None:
+        writer = _Writer()
+        reader = _Reader([_XIEGU_MODEL_ID_REPLY[:split], _XIEGU_MODEL_ID_REPLY[split:]])
+        result = await resolve_civ_radio_identity(
+            _civ_hit(0xA4, b"\x01\x05"),
+            _xiegu_port(),
+            _open_serial=_make_open(reader, writer),
+        )
+        assert result == ("X6200", "xiegu_x6200")
+        assert reader._queue.empty()
+        assert writer.written == [_XIEGU_MODEL_ID_CMD_A4]
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            _XIEGU_MODEL_ID_REPLY[:6],
+            _XIEGU_MODEL_ID_REPLY[:7],
+            _XIEGU_MODEL_ID_REPLY[:8],
+            b"\xfe\xfe\xe0\xa4\x1d\x19\xfd",
+            b"\xfe\xfe\xe0\xa4\x1d\x19\x62\xfe\xfe\xe0\xa4\x03\x00\xfd",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_incomplete_or_malformed_reply_keeps_fingerprint(
+        self, reply: bytes
+    ) -> None:
+        writer = _Writer()
+        result = await resolve_civ_radio_identity(
+            _civ_hit(0xA4, b"\x01\x05"),
+            _xiegu_port(),
+            _open_serial=_make_open(_Reader([reply, b""]), writer),
+        )
+        assert result == ("X6200", "xiegu_x6200")
+        assert writer.written == [_XIEGU_MODEL_ID_CMD_A4]
+
     @pytest.mark.asyncio
     async def test_ic7610_address_resolves_without_any_serial_io(self) -> None:
         model, profile_id = await resolve_civ_radio_identity(
@@ -251,10 +306,7 @@ class TestResolveCivRadioIdentity:
         assert writer.written == [_XIEGU_MODEL_ID_CMD_A4]
 
     @pytest.mark.asyncio
-    async def test_x6200_fingerprint_silent_opcode_keeps_x6200(self) -> None:
-        """MOR-4801: a fingerprint match whose radio NAKs ``0x1D 0x19``
-        (or stays silent) keeps the MOR-170 X6200 verdict — the fingerprint
-        is the fallback for radios that do not answer the opcode."""
+    async def test_x6200_fingerprint_nak_keeps_x6200(self) -> None:
         writer = _Writer()
         reader = _Reader([_XIEGU_NAK_REPLY])
         model, profile_id = await resolve_civ_radio_identity(
@@ -266,11 +318,7 @@ class TestResolveCivRadioIdentity:
         assert writer.written == [_XIEGU_MODEL_ID_CMD_A4]
 
     @pytest.mark.asyncio
-    async def test_x6200_fingerprint_foreign_model_id_defers_to_radio(self) -> None:
-        """MOR-4801: a CH342 fingerprint must not mislabel a radio whose own
-        ``0x1D 0x19`` answer maps to another profile — e.g. an X6100 with
-        custom firmware answering at 0xA4 behind a CH342 bridge. The radio's
-        answer outranks the USB-chip guess."""
+    async def test_x6200_fingerprint_g7250_model_id_defers_to_radio(self) -> None:
         writer = _Writer()
         reader = _Reader([_XIEGU_G7250_ID_REPLY_A4])
         model, profile_id = await resolve_civ_radio_identity(

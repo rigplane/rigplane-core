@@ -49,9 +49,6 @@ class TestRadioModels:
         assert r.receivers == 1
 
     def test_x6100(self) -> None:
-        # MOR-4801: the Xiegu X6100 lives at its own CI-V address 0x70,
-        # where no Icom model sits, so the shared address table names it
-        # with no disambiguation. Has WiFi, no LAN.
         r = RADIOS["X6100"]
         assert r.civ_addr == 0x70
         assert r.has_lan is False
@@ -148,9 +145,12 @@ class TestIdentifyRadio:
         assert "model id" in caplog.text.lower()
 
     def test_all_map_entries_covered(self) -> None:
-        # 9 since MOR-4801: the X6100 (0x70) row joined the table
-        # (8 since MOR-3984, when the IC-905 (0xAC) row joined).
-        assert len(SERIAL_RADIO_MAP) == 9
+        assert len(SERIAL_RADIO_MAP) == 8
+
+    def test_x6100_default_address_requires_explicit_model(self) -> None:
+        assert 0x70 not in SERIAL_RADIO_MAP
+        assert 0x70 not in CIV_PROFILE_MAP
+        assert identify_radio(0x70, b"\x61\x00") == "Unknown (0x70)"
 
 
 class TestCivIdentityDataConsistency:

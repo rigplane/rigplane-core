@@ -705,10 +705,13 @@ async def probe_xiegu_model_id(
                 break
             try:
                 chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
+                if not chunk:
+                    break
                 buf.extend(chunk)
             except asyncio.TimeoutError:
                 break
-            if buf.find(response_preamble) != -1:
+            start = buf.find(response_preamble)
+            if start != -1 and buf.find(0xFD, start + 3) != -1:
                 break
 
         return _parse_xiegu_model_id_reply(port, bytes(buf))
@@ -733,9 +736,13 @@ def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
         logger.debug("probe_xiegu_model_id: no reply from %s (not a Xiegu)", port)
         return None
 
-    frame = data[idx:]
+    end_idx = data.find(0xFD, idx + 3)
+    if end_idx == -1:
+        logger.debug("probe_xiegu_model_id: incomplete reply from %s", port)
+        return None
+    frame = data[idx : end_idx + 1]
     if len(frame) < 6:
-        logger.debug("probe_xiegu_model_id: reply too short from %s", port)
+        logger.debug("probe_xiegu_model_id: malformed reply from %s", port)
         return None
 
     if frame[4] == 0xFA:
@@ -749,11 +756,11 @@ def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
         )
         return None
 
-    end_idx = frame.find(0xFD, 6)
-    model = bytes(frame[6:end_idx]) if end_idx != -1 else b""
-    logger.info(
-        "probe_xiegu_model_id: %s is a Xiegu (model id %s)", port, model.hex() or "?"
-    )
+    if len(frame) < 8 or b"\xfe" in frame[3:-1] or b"\xff" in frame[3:-1]:
+        logger.debug("probe_xiegu_model_id: malformed reply from %s", port)
+        return None
+    model = bytes(frame[6:-1])
+    logger.info("probe_xiegu_model_id: %s is a Xiegu (model id %s)", port, model.hex())
     return model
 
 

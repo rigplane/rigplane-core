@@ -1,8 +1,6 @@
 # Rig Configuration — Xiegu X6100
 #
-# Xiegu X6100 QRP transceiver. CIV address: 0x70 (NOT 0xA4 -- no address
-# collision with IC-705/X6200, so the 0x1D 0x19 Xiegu-vs-Icom disambiguator
-# in backends/discovery.py, which is hardcoded to 0xA4, does not apply here).
+# Xiegu X6100 QRP transceiver. Default CI-V address: 0x70.
 #
 # Sources of truth (MOR-2488/MOR-2489 re-sourcing of the D2 MOR-2018
 # sibling-copy basis):
@@ -42,6 +40,9 @@ receiver_count = 1
 has_lan = false
 has_wifi = true
 default_baud = 115200
+# No xiegu_model_id: the local X6100 sources below document the opcode,
+# not its reply value. Selection requires an explicit model or profile
+# (tests/test_serial_capabilities.py: TestX6100SerialSelection).
 
 [protocol]
 type = "civ"
@@ -381,17 +382,11 @@ end_hz = 136000000
 #   which now has its own rows. The former note "none of the three can
 #   ever be closed for X6100 -- there is no manual to re-check" was
 #   wrong: the manual exists (see file header).
-# - get_xiegu_model_id [0x1D, 0x19] is DELIBERATELY OMITTED, not copied.
-#   X6200 declares it as a positive Xiegu-vs-Icom disambiguator at the
-#   shared CI-V address 0xA4 (MOR-170/MOR-226). The X6100 manual's §15
-#   Table 1 does list ``0x1d 0x19`` ("Get XIEGU radio ID, See Table
-#   2-7"), so the opcode is documented for this radio -- but
-#   ``backends/discovery.py: probe_xiegu_model_id`` hardcodes that probe to
-#   address 0xA4 and never reads civ_addr from a profile at all. X6100
-#   lives at 0x70, where no Icom model in ``CIV_PROFILE_MAP`` collides, so
-#   there is no disambiguation problem for this opcode to solve here.
-#   Declaring it would be an orphan: unreachable by the one piece of code
-#   that consumes this command name today.
+# - get_xiegu_model_id [0x1D, 0x19] remains omitted. The X6100 manual's
+#   §15 Table 1 lists the opcode ("Get XIEGU radio ID, See Table 2-7"),
+#   but no X6100 reply value has been established here. The 0x6100 value
+#   in docs/validation/cat-audits/x6200-unofficial.md is for 0x19 0x00,
+#   not this opcode; it is not used as xiegu_model_id.
 # - set_split [0x0F]: the opcode is copied from X6200 (same register), but
 #   NOT the X6200 wording. Hamlib master ``rigs/icom/xiegu.c`` contains a
 #   comment stating the X6100 ITSELF -- not by inference -- rejects
