@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.4.0rc1] — 2026-11-27
+## [3.4.0] — 2026-11-27
 
-This is the first release candidate of 3.4.0. It contains everything merged to main after 3.3.0 (up to #4828, the commit this candidate was tested on by the green release rehearsal).
+Version-only final of 3.4.0rc1. It contains everything merged to main after 3.3.1 (up to #4828).
 
 ### Added
 
@@ -5423,8 +5423,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.4.0rc1...HEAD
-[3.4.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.3.1...v3.4.0rc1
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/rigplane/rigplane-core/compare/v3.3.1...v3.4.0
 [3.3.0]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0
 [3.3.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...v3.3.0rc5
 [3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
