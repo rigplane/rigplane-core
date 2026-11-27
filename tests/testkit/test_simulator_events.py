@@ -14,12 +14,13 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from rigplane.radio import IcomRadio
-from rigplane.runtime import radio_reconnect
+from rigplane.runtime import _control_phase, radio_reconnect
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
 from rigplane.testing.timing import VirtualClock, await_until
@@ -69,8 +70,6 @@ async def _states_until(
     end = now() + deadline_s
 
     def sample() -> bool:
-        if clock is not None:
-            clock.advance(min(0.02, max(0.0, end - clock())))
         state = radio.conn_state
         if not seen or seen[-1] is not state:
             seen.append(state)
@@ -79,9 +78,8 @@ async def _states_until(
     await await_until(
         sample,
         timeout=deadline_s,
-        interval=0.001 if clock is not None else 0.02,
+        interval=0.02,
         description="the expected connection states",
-        clock=clock,
     )
     return seen
 
@@ -101,6 +99,25 @@ async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
     )
 
 
+async def test_states_until_observes_events_without_advancing_clock() -> None:
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
+    clock = VirtualClock()
+    loop = asyncio.get_running_loop()
+    real_loop_time = loop.time
+    loop.call_soon(setattr, radio, "_conn_state", RadioConnectionState.CONNECTED)
+
+    seen = await _states_until(
+        radio,
+        1.0,
+        lambda states: states[-1] is RadioConnectionState.CONNECTED,
+        clock=clock,
+    )
+
+    assert seen == [RadioConnectionState.DISCONNECTED, RadioConnectionState.CONNECTED]
+    assert clock() == 0.0
+    assert loop.time == real_loop_time
+
+
 @pytest.mark.timeout(30)
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
@@ -108,53 +125,71 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
 ) -> None:
     assert not isinstance(asyncio.get_running_loop().time, VirtualClock)
     radio = _client(sim)
-    statuses: list[dict] = []
-    radio.set_reconnect_status_callback(statuses.append)
+    clock = VirtualClock()
+    statuses: list[dict[str, Any]] = []
+
+    def on_status(status: dict[str, Any]) -> None:
+        statuses.append(status)
+        if status["state"] == "reconnecting":
+            # Keep the simulator dark until the real watchdog reports the loss.
+            clock.advance(max(0.0, sim._down_until - clock()))
+
+    radio.set_reconnect_status_callback(on_status)
     with fast_connect():
         await radio.connect()
         try:
             old_token = radio._token
             assert old_token == sim.token
 
-            # MOR-3920: a post-dark login that lands inside the busy
-            # window enters _connect_once's within-attempt reject pause
-            # (ControlPhaseRuntime._STATUS_REJECT_COOLDOWN, 30 s), which no
-            # 20 s sampling deadline can cover — the committed 0.5 s window
-            # lost this lottery on some CI runs. Like
-            # test_power_off_with_notice_recovers_with_one_login, this test
-            # pins the recovery, not the pause: pausing exactly busy_for
-            # lands the retry at or after the window ends, wherever inside
-            # it the login landed.
             busy_for = 0.5
             monkeypatch.setattr(
-                "rigplane.runtime._control_phase.ControlPhaseRuntime"
-                "._STATUS_REJECT_COOLDOWN",
+                _control_phase.ControlPhaseRuntime,
+                "_STATUS_REJECT_COOLDOWN",
                 busy_for,
             )
 
+            real_sleep = asyncio.sleep
+
+            async def reconnect_sleep(delay: float) -> None:
+                if asyncio.current_task() is radio._reconnect_task:
+                    await clock.sleep(delay)
+                else:
+                    await real_sleep(delay)
+
+            async def control_sleep(delay: float) -> None:
+                if delay == busy_for:
+                    await clock.sleep(delay)
+                else:
+                    await real_sleep(delay)
+
+            # Only simulator thresholds and retry pauses use virtual time.
+            # Socket delivery, protocol timeouts and watchdog checks stay real.
+            clock.scope_to(monkeypatch, simulator)
+            monkeypatch.setattr(simulator, "asyncio", asyncio)
+            for module, sleep in (
+                (radio_reconnect, reconnect_sleep),
+                (_control_phase, control_sleep),
+            ):
+                clock.scope_to(monkeypatch, module)
+                monkeypatch.setattr(module, "time", time)
+                monkeypatch.setattr(module.asyncio, "sleep", sleep)
+
             def reconnected(seen: list[RadioConnectionState]) -> bool:
-                # The RECONNECTING window can be shorter than the 20 ms
-                # sampling step, so the reconnect evidence is the status
-                # callback, not the sampled states.
                 return (
                     seen[-1] is RadioConnectionState.CONNECTED
                     and bool(statuses)
                     and statuses[-1]["state"] == "connected"
                 )
 
-            # Connect/flush on the real loop before installing virtual timers.
-            async with VirtualClock.on_running_loop() as clock:
-                for module in (simulator, radio_reconnect):
-                    clock.scope_to(monkeypatch, module)
-                    monkeypatch.setattr(module, "asyncio", asyncio)
-                sim.reboot(at=0.1, down_for=3.0, busy_for=busy_for)
-                seen = await _states_until(radio, 20.0, reconnected, clock=clock)
+            sim.reboot(at=0.1, down_for=3.0, busy_for=busy_for)
+            seen = await _states_until(radio, 20.0, reconnected, clock=clock)
             assert reconnected(seen), seen
             assert any(s["state"] == "reconnecting" for s in statuses), statuses
             assert statuses[-1]["state"] == "connected", statuses
             await _wait_usable(radio, 5.0)
             assert radio.connected
             assert sim.reboot_count == 1
+            assert sim.busy_rejects > 0
             assert radio._token == sim.token
             assert radio._token != old_token
             assert await radio.get_freq() == 14_074_000
