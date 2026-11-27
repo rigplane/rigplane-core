@@ -11,8 +11,13 @@ import pytest
 
 from rigplane.backends.yaesu_cat.parser import format_command
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+)
 from rigplane.command_spec import CatCommandSpec
+from rigplane.core.exceptions import CommandError
 from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxActuator,
@@ -25,6 +30,11 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
     ManagedTxEffect,
     ManagedTxRefusalReason,
+    ManagedTxState,
+    PttDown,
+    ReleasePlan,
+    TransmitOn,
+    reduce_managed_tx,
 )
 from rigplane.rig_loader import load_rig
 
@@ -83,6 +93,55 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
     # MOR-2862: an ON still returns right after the write, without a read.
     radio._transport.query.assert_not_awaited()
     assert radio.radio_state.ptt is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["ftx1", "ft991a"])
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+@pytest.mark.parametrize("error_type", [CommandError, CatTransportError])
+async def test_positive_tx_post_send_failure_is_uncertain_and_keeps_release_debt(
+    profile: str, operation: ActuationOperation, error_type: type[Exception]
+) -> None:
+    config = load_rig(_RIGS_DIR / f"{profile}.toml")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    handed_frames: list[str] = []
+
+    def fail_after_handoff(command: str, **_: object) -> None:
+        handed_frames.append(command)
+        raise error_type("write failed after key frame handoff")
+
+    radio._transport.write = AsyncMock(side_effect=fail_after_handoff)
+    radio._transport.query = AsyncMock()
+    now = asyncio.get_running_loop().time()
+    event = (
+        PttDown("owner", 7, "post-send", now, None)
+        if operation is ActuationOperation.PTT_ON
+        else TransmitOn(7, "post-send", now, None)
+    )
+    keyed = reduce_managed_tx(ManagedTxState(), event)
+    effect = keyed.effects[0]
+    assert effect.operation is operation
+
+    settled = await ManagedTxEffectLane(radio).settle(
+        effect, deadline_monotonic=now + 1
+    )
+
+    assert handed_frames == ["TX1;"]
+    radio._transport.write.assert_awaited_once()
+    assert radio._transport.write.await_args.kwargs["tier"] is ExchangeTier.ORDINARY
+    radio._transport.query.assert_not_awaited()
+    assert settled is not None
+    assert settled.result is ActuationResult.UNCERTAIN
+    assert settled.refusal_reason is None
+    assert settled.error == "write failed after key frame handoff"
+    state = reduce_managed_tx(keyed.state, settled).state
+    assert state.release_required
+    assert state.release_plan is ReleasePlan.FORCE_RELEASE
+    assert state.last_actuation is not None
+    assert state.last_actuation.result is ActuationResult.UNCERTAIN
 
 
 @pytest.mark.asyncio
