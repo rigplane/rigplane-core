@@ -3,7 +3,7 @@ import { onControlSessionTransition, onMessage, sendCommand } from '$lib/transpo
 
 export type AudioRetryResult =
   | { accepted: true }
-  | { accepted: false; reason: 'unsupported' | 'not_applicable' };
+  | { accepted: false; reason?: string };
 
 export function retryAudio(signal: AbortSignal): Promise<AudioRetryResult> {
   const id = makeCommandId();
@@ -28,9 +28,9 @@ export function retryAudio(signal: AbortSignal): Promise<AudioRetryResult> {
         cleanup();
         resolve({ accepted: true });
       } else if (result?.accepted === false
-        && (result.reason === 'unsupported' || result.reason === 'not_applicable')) {
+        && (result.reason === undefined || typeof result.reason === 'string')) {
         cleanup();
-        resolve({ accepted: false, reason: result.reason });
+        resolve({ accepted: false, ...(result.reason === undefined ? {} : { reason: result.reason }) });
       } else fail();
     });
     const removeTransition = onControlSessionTransition((transition) => {

@@ -11,7 +11,8 @@
 
   let pending = $state(false);
   const retryAudio = getAudioRetryHandler();
-  let refusal = $state<'unsupported' | 'not_applicable' | 'failed' | null>(null);
+  type RetryRefusal = Extract<Awaited<ReturnType<typeof retryAudio>>, { accepted: false }> | 'failed' | null;
+  let refusal = $state<RetryRefusal>(null);
   let request: AbortController | null = null;
 
   function cancelRequest(): void {
@@ -29,22 +30,27 @@
   });
   onDestroy(cancelRequest);
 
-  async function retry(): Promise<void> {
+  function retry(): void {
     if (pending) return;
     const current = new AbortController();
     request = current;
     pending = true;
     refusal = null;
+
+    function finish(result: RetryRefusal): void {
+      if (request !== current) return;
+      refusal = result;
+      request = null;
+      pending = false;
+    }
+
     try {
-      const result = await retryAudio(current.signal);
-      if (request === current && !result.accepted) refusal = result.reason;
+      void retryAudio(current.signal).then(
+        (result) => finish(result.accepted ? null : result),
+        () => finish('failed'),
+      );
     } catch {
-      if (request === current) refusal = 'failed';
-    } finally {
-      if (request === current) {
-        request = null;
-        pending = false;
-      }
+      finish('failed');
     }
   }
 </script>
@@ -53,12 +59,16 @@
   <span class="restore-status" class:block role="status" data-testid="rx-audio-restore-failed">
     <span data-testid="rx-audio-restore-message">{t('core.statusbar.audio.restoreFailed')}</span>
     <button type="button" disabled={pending} onclick={retry}>{t('core.statusbar.audio.retry')}</button>
-    {#if refusal === 'unsupported'}
-      <span>{t('core.statusbar.audio.retryUnsupported')}</span>
-    {:else if refusal === 'not_applicable'}
-      <span>{t('core.statusbar.audio.retryNotApplicable')}</span>
-    {:else if refusal === 'failed'}
+    {#if refusal === 'failed'}
       <span>{t('core.statusbar.audio.retryFailed')}</span>
+    {:else if refusal?.reason === 'unsupported'}
+      <span>{t('core.statusbar.audio.retryUnsupported')}</span>
+    {:else if refusal?.reason === 'not_applicable'}
+      <span>{t('core.statusbar.audio.retryNotApplicable')}</span>
+    {:else if refusal?.reason === 'transmitting'}
+      <span>{t('core.statusbar.audio.retryTransmitting')}</span>
+    {:else if refusal}
+      <span>{t('core.statusbar.audio.retryRefused')}</span>
     {/if}
   </span>
 {/if}

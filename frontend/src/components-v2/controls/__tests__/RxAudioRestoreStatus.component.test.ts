@@ -24,14 +24,18 @@ vi.mock('$lib/transport/ws-client', () => ({
 
 import RxAudioRestoreStatus from '../RxAudioRestoreStatus.svelte';
 import { setLocale } from '$lib/i18n';
+import { retryAudio } from '$lib/runtime/commands/audio-retry';
 
 const failure: AudioReceiveFailurePublic = {
   stage: 'rx_recovery', code: 'core_rx_restore_failed', reason: 'retries_exhausted',
 };
-const locales: [LocaleCode, string, string, string][] = [
-  ['en-US', 'Retry', 'Audio retry is not supported.', 'Audio retry is not available in the current state.'],
-  ['ru-RU', 'Повторить', 'Повторное восстановление звука не поддерживается.', 'Повторное восстановление звука сейчас недоступно.'],
-  ['ja-JP', '再試行', '音声の再試行はサポートされていません。', '現在の状態では音声を再試行できません。'],
+const locales: [LocaleCode, string, string, string, string, string][] = [
+  ['en-US', 'Retry', 'Audio retry is not supported.', 'Audio retry is not available in the current state.',
+    'Audio retry is not available while transmitting.', 'Audio retry was refused.'],
+  ['ru-RU', 'Повторить', 'Повторное восстановление звука не поддерживается.', 'Повторное восстановление звука сейчас недоступно.',
+    'Повторное восстановление звука недоступно во время передачи.', 'В повторном восстановлении звука отказано.'],
+  ['ja-JP', '再試行', '音声の再試行はサポートされていません。', '現在の状態では音声を再試行できません。',
+    '送信中は音声を再試行できません。', '音声の再試行が拒否されました。'],
 ];
 let component: ReturnType<typeof mount> | null = null;
 
@@ -91,9 +95,10 @@ describe('RX restoration retry', () => {
     expect(target.textContent).not.toContain('not supported');
   });
 
-  describe.each(locales)('%s', (locale, label, unsupported, notApplicable) => {
+  describe.each(locales)('%s', (locale, label, unsupported, notApplicable, transmitting, refused) => {
     it.each([
       ['unsupported', unsupported], ['not_applicable', notApplicable],
+      ['transmitting', transmitting], ['future_reason', refused], [undefined, refused],
     ])('shows the %s refusal plainly and permits another attempt', async (reason, message) => {
       setLocale(locale);
       const target = render();
@@ -103,6 +108,8 @@ describe('RX restoration retry', () => {
       reply({ accepted: false, reason });
       await tick();
       expect(target.textContent).toContain(message);
+      expect(target.querySelector('[data-testid="rx-audio-restore-message"]')).not.toBeNull();
+      expect(target.textContent).not.toContain('future_reason');
       expect(button.disabled).toBe(false);
       button.click();
       flushSync();
@@ -146,5 +153,23 @@ describe('RX restoration retry', () => {
     const button = retryButton(render());
     expect(button.textContent).not.toContain('[missing:');
     expect(button.textContent?.trim()).not.toBe('Retry');
+  });
+});
+
+describe('audio retry command refusals', () => {
+  it.each(['unsupported', 'not_applicable', 'transmitting', 'future_reason', undefined])(
+    'preserves a structured refusal with reason %s', async (reason) => {
+      const result = retryAudio(new AbortController().signal);
+      reply({ accepted: false, ...(reason === undefined ? {} : { reason }) });
+      await expect(result).resolves.toEqual({ accepted: false, ...(reason === undefined ? {} : { reason }) });
+      expect(transport.messages.size).toBe(0);
+      expect(transport.transitions.size).toBe(0);
+    },
+  );
+
+  it.each([null, 1, {}, true])('rejects a malformed reason %j', async (reason) => {
+    const result = retryAudio(new AbortController().signal);
+    reply({ accepted: false, reason });
+    await expect(result).rejects.toThrow('Audio retry failed');
   });
 });

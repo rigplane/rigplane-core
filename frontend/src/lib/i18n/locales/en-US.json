@@ -222,6 +222,8 @@
   "core.statusbar.audio.retry": "Retry",
   "core.statusbar.audio.retryUnsupported": "Audio retry is not supported.",
   "core.statusbar.audio.retryNotApplicable": "Audio retry is not available in the current state.",
+  "core.statusbar.audio.retryTransmitting": "Audio retry is not available while transmitting.",
+  "core.statusbar.audio.retryRefused": "Audio retry was refused.",
   "core.statusbar.audio.retryFailed": "Audio retry failed. Please try again.",
   "core.toast.rxAudioResumeFailed": "Local audio could not resume. Check application sound permissions and output settings.",
   "core.toast.rxAudioStartFailed": "Radio audio capture could not start. Check the audio diagnostics before retrying.",

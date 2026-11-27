@@ -247,6 +247,8 @@
   "core.statusbar.audio.retry": "再試行",
   "core.statusbar.audio.retryUnsupported": "音声の再試行はサポートされていません。",
   "core.statusbar.audio.retryNotApplicable": "現在の状態では音声を再試行できません。",
+  "core.statusbar.audio.retryTransmitting": "送信中は音声を再試行できません。",
+  "core.statusbar.audio.retryRefused": "音声の再試行が拒否されました。",
   "core.statusbar.audio.retryFailed": "音声の再試行に失敗しました。もう一度お試しください。",
   "core.toast.rxAudioResumeFailed": "ローカル音声を再開できませんでした。アプリの音声アクセス権と出力設定を確認してください。",
   "core.toast.rxAudioStartFailed": "無線機の音声入力を開始できませんでした。再試行する前に音声診断を確認してください。",
