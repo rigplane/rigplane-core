@@ -103,7 +103,5 @@ class SerialLinkHealth:
         self.no_reply_note = ""
 
     def record_open(self) -> None:
-        """Reset I/O failure; no-reply recovery still needs a radio response."""
+        """Fence deferred replies while preserving failure and silence evidence."""
         self.generation += 1
-        self.io_failed = False
-        self.reset_poll_evidence()

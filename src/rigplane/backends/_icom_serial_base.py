@@ -1323,10 +1323,13 @@ class _IcomSerialRadioBase(CoreRadio):
                     return
                 epoch = self._civ_epoch
                 payload = await self._read_serial_identity_payload()
-                if (
-                    epoch != self._civ_epoch
-                    or not self._identity_phase_owns_open_link()
-                ):
+                if epoch != self._civ_epoch:
+                    return
+                if not self._identity_phase_owns_open_link():
+                    if self._identity_hold_status_active():
+                        self._abandon_serial_identity_hold(
+                            "the serial link stopped being ready during the identity read"
+                        )
                     return
                 if not self._record_serial_identity_payload(payload):
                     continue
