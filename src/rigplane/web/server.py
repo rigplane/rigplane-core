@@ -6468,6 +6468,7 @@ class WebServer:
                 "radio_nak",
                 "memory_write_unverified",
                 "receiver_not_selected",
+                ControlUnavailableInModeError.reason_code,
             }:
                 status, reason = 409, "Conflict"
             else:
