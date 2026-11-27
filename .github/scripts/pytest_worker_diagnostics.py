@@ -3,7 +3,7 @@
 Opt in with RIGPLANE_WORKER_DIAG_DIR and -p pytest_worker_diagnostics.
 Snapshots contain filenames/functions/line numbers, never locals or source text.
 Parameters, task names, environment values and exception text are not retained.
-Latest 120/240-second snapshots replace older ones; append logs stop at 1 MiB.
+Latest 120/240-second snapshots replace older ones; append logs retain a bounded tail.
 Raw fatal/timeout files are capped after reap and again before artifact upload.
 --finalize limits the upload to 32 MiB, 2 MiB/file and 256 known files, recording
 truncation in bounds.json. Incomplete/truncated evidence is not a PASS verdict.
@@ -450,13 +450,27 @@ def _configure_durable_exit_impl(config):
 _DURABLE_ORIGINAL = pytest.StashKey()
 
 
+def _exit_kind(code: int | None, error: object | None = None) -> str:
+    if error is not None or (code is not None and code != 0):
+        return "CRASH"
+    if code == 0:
+        return "NORMAL_COMPLETION"
+    return "UNKNOWN"
+
+
 def _testnodedown_impl(node, error):
     directory = Path(os.environ["RIGPLANE_WORKER_DIAG_DIR"])
     io = getattr(node.gateway, "_io", None)
     popen = getattr(io, "popen", None)
     code = getattr(popen, "returncode", None)
+    kind = _exit_kind(code, error)
     record = {
-        "event": "NODE_DOWN",
+        "event": {
+            "NORMAL_COMPLETION": "NODE_COMPLETED",
+            "CRASH": "NODE_CRASHED",
+            "UNKNOWN": "NODE_DISCONNECTED",
+        }[kind],
+        "exitKind": kind,
         "gateway": getattr(node.gateway, "id", None),
         "errorType": type(error).__name__ if error is not None else None,
         "controllerChildPid": getattr(popen, "pid", None),
@@ -511,6 +525,7 @@ def _record_reaped_exit(gateway, io, code, outcome):
             "pid": getattr(popen, "pid", None),
             "returncode": code,
             "signal": -code if isinstance(code, int) and code < 0 else None,
+            "exitKind": _exit_kind(code),
             "waitOutcome": outcome,
             "evidence": "REAPED_AVAILABLE" if code is not None else "UNKNOWN",
             "monotonic": time.monotonic(),
@@ -555,6 +570,7 @@ def pytest_testnodedown(node, error):
 
 
 MAX_APPEND_BYTES = 1024 * 1024
+_APPEND_LOCK = threading.Lock()
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_FILES = 256
@@ -571,16 +587,33 @@ def _append_bounded(path, line):
     encoded = line.encode("utf-8", errors="replace")
     if len(encoded) > 8192:
         return
-    marker = b'{"event":"TRUNCATED_APPEND_LOG"}\n'
-    size = path.stat().st_size if path.exists() else 0
-    if size > MAX_APPEND_BYTES - len(marker):
-        return
-    if size + len(encoded) > MAX_APPEND_BYTES - len(marker):
-        encoded = marker
-    with path.open("ab") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
+    marker = b'{"event":"TRUNCATED_APPEND_LOG","retained":"tail"}\n'
+    # Execnet reaper callbacks can share a controller journal. Serialize
+    # appends with compaction so a concurrent append is not replaced away.
+    with _APPEND_LOCK:
+        size = path.stat().st_size if path.exists() else 0
+        if size + len(encoded) <= MAX_APPEND_BYTES:
+            with path.open("ab") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
+        # Reserve space for more appends rather than rewriting on every event.
+        reserve = min(64 * 1024, MAX_APPEND_BYTES // 4)
+        budget = MAX_APPEND_BYTES - reserve - len(marker) - len(encoded)
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - budget))
+            stream.readline()  # Drop the partial oldest record, including UTF-8 bytes.
+            tail = stream.read()
+        temporary = path.with_name(f".{path.name}.tmp")
+        try:
+            with temporary.open("wb") as stream:
+                stream.write(marker + tail + encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _truncate(path, limit):

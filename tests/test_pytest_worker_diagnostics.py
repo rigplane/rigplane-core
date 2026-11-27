@@ -12,6 +12,7 @@ import runpy
 import subprocess
 import sys
 import time
+from types import ModuleType, SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
@@ -91,6 +92,11 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics" in run
     )
     assert "PYTHONPATH: ${{ github.workspace }}/.github/scripts" in run
+    assert "--junitxml=pytest-junit.xml" in run
+    assert "2>&1 | tee pytest-output.txt" in run
+    assert 'echo "Pytest exit code: $rc" | tee -a pytest-output.txt' in run
+    assert run.index("set +e") < run.index("uv run pytest")
+    assert 'exit "$rc"' in run
     finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
         0
     ]
@@ -115,6 +121,8 @@ def test_quick_worker_diagnostics_wiring() -> None:
     assert "        if: failure() && needs.classify.outputs.core == 'true'" in lines
     assert "          retention-days: 1" in lines
     assert "always()" not in upload
+    assert "            pytest-output.txt" in lines
+    assert "            pytest-junit.xml" in lines
     for leaf in (
         "events-*.jsonl",
         "phases-*.jsonl",
@@ -125,6 +133,145 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "bounds.json",
     ):
         assert f"${{{{ runner.temp }}}}/pytest-worker-diagnostics/{leaf}" in upload
+
+
+@pytest.fixture
+def worker_diagnostics() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("worker_diag_retention", HELPER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "filename", ["events-123.jsonl", "phases-123.jsonl", "controller-node-exit.jsonl"]
+)
+def test_append_log_keeps_recent_complete_records_after_repeated_overflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    filename: str,
+) -> None:
+    module = worker_diagnostics
+    monkeypatch.setattr(module, "MAX_APPEND_BYTES", 4096)
+    path = tmp_path / filename
+    lines = [
+        json.dumps(
+            {"event": "END", "sequence": i, "context": "é" * 30}, ensure_ascii=False
+        )
+        + "\n"
+        for i in range(200)
+    ]
+    for line in lines:
+        module._append_bounded(path, line)
+        assert path.stat().st_size <= module.MAX_APPEND_BYTES
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0] == {"event": "TRUNCATED_APPEND_LOG", "retained": "tail"}
+    retained = rows[1:]
+    assert 20 < len(retained) < len(lines)
+    assert [row["sequence"] for row in retained] == list(
+        range(200 - len(retained), 200)
+    )
+    assert path.read_bytes().endswith(lines[-1].encode())
+    module.finalize_directory(tmp_path)
+    assert path.read_bytes().endswith(lines[-1].encode())
+
+
+def test_append_log_below_limit_is_unchanged(
+    tmp_path: Path, worker_diagnostics: ModuleType
+) -> None:
+    path = tmp_path / "events-123.jsonl"
+    lines = ['{"event":"START","sequence":1}\n', '{"event":"END","sequence":1}\n']
+    for line in lines:
+        worker_diagnostics._append_bounded(path, line)
+    assert path.read_text() == "".join(lines)
+
+
+def test_failed_compaction_preserves_previous_journal_and_allows_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+) -> None:
+    module = worker_diagnostics
+    monkeypatch.setattr(module, "MAX_APPEND_BYTES", 4096)
+    path = tmp_path / "events-123.jsonl"
+    original = json.dumps({"event": "START", "context": "x" * 3900}) + "\n"
+    module._append_bounded(path, original)
+    latest = json.dumps({"event": "END", "context": "y" * 200}) + "\n"
+
+    def fail_replace(self: Path, target: Path) -> None:
+        raise OSError("synthetic replacement failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="synthetic replacement failure"):
+            module._append_bounded(path, latest)
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path]
+    module._append_bounded(path, latest)
+    assert path.read_text().endswith(latest)
+
+
+@pytest.mark.parametrize(
+    ("code", "error", "event", "kind"),
+    [
+        (0, None, "NODE_COMPLETED", "NORMAL_COMPLETION"),
+        (1, None, "NODE_CRASHED", "CRASH"),
+        (-9, None, "NODE_CRASHED", "CRASH"),
+        (None, None, "NODE_DISCONNECTED", "UNKNOWN"),
+        (None, RuntimeError("synthetic"), "NODE_CRASHED", "CRASH"),
+        (0, RuntimeError("synthetic"), "NODE_CRASHED", "CRASH"),
+    ],
+)
+def test_worker_disconnect_names_only_observed_exit_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    code: int | None,
+    error: Exception | None,
+    event: str,
+    kind: str,
+) -> None:
+    monkeypatch.setenv("RIGPLANE_WORKER_DIAG_DIR", str(tmp_path))
+    node = SimpleNamespace(
+        gateway=SimpleNamespace(
+            id="gw0",
+            _io=SimpleNamespace(popen=SimpleNamespace(pid=123, returncode=code)),
+        )
+    )
+    worker_diagnostics.pytest_testnodedown(node, error)
+    row = json.loads((tmp_path / "controller-node-exit.jsonl").read_text())
+    assert row["event"] == event
+    assert row["exitKind"] == kind
+    assert row["availableReturncode"] == code
+    assert row["signal"] == (-code if code is not None and code < 0 else None)
+    assert row["errorType"] == (type(error).__name__ if error is not None else None)
+
+
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [(0, "NORMAL_COMPLETION"), (1, "CRASH"), (-6, "CRASH"), (None, "UNKNOWN")],
+)
+def test_reaped_worker_exit_records_actual_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    code: int | None,
+    kind: str,
+) -> None:
+    monkeypatch.setenv("RIGPLANE_WORKER_DIAG_DIR", str(tmp_path))
+    worker_diagnostics._record_reaped_exit(
+        SimpleNamespace(id="gw0"),
+        SimpleNamespace(popen=SimpleNamespace(pid=123)),
+        code,
+        "ORIGINAL_WAIT_RETURNED" if code is not None else "ORIGINAL_WAIT_RAISED",
+    )
+    row = json.loads((tmp_path / "controller-reaped-exit.jsonl").read_text())
+    assert row["exitKind"] == kind
+    assert row["returncode"] == code
+    assert row["signal"] == (-code if code is not None and code < 0 else None)
 
 
 # The synthetic child took ~1.4 s in a green quick run on main (2026-10-22,
@@ -489,6 +636,11 @@ def test_03_fatal():
     ]
     assert sorted(row["returncode"] for row in exits) == [-6, 0, 1]
     assert next(row for row in exits if row["returncode"] == -6)["signal"] == 6
+    assert {row["returncode"]: row["exitKind"] for row in exits} == {
+        -6: "CRASH",
+        0: "NORMAL_COMPLETION",
+        1: "CRASH",
+    }
     timeout = next(diagnostic.glob("timeout-*.log")).read_text()
     assert "PYTEST_TIMEOUT_CALLBACK" in timeout and "test_02_timeout" in timeout
     fatal = [p.read_text() for p in diagnostic.glob("fatal-*.log")]

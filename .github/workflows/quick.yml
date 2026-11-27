@@ -787,9 +787,11 @@ jobs:
           # pytest's code so failing tests fail the step.
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
-          uv run pytest tests/ -p pytest_shard --shard "$SHARD/$QUICK_PYTHON_SHARDS" -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
-            | tee pytest-output.txt
+          set +e
+          uv run pytest tests/ -p pytest_shard --shard "$SHARD/$QUICK_PYTHON_SHARDS" -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread --junitxml=pytest-junit.xml \
+            2>&1 | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
+          echo "Pytest exit code: $rc" | tee -a pytest-output.txt
           exit "$rc"
 
       - name: Bound worker diagnostics
@@ -804,6 +806,8 @@ jobs:
         with:
           name: worker-diagnostics-quick-${{ matrix.shard }}
           path: |
+            pytest-output.txt
+            pytest-junit.xml
             ${{ runner.temp }}/pytest-worker-diagnostics/events-*.jsonl
             ${{ runner.temp }}/pytest-worker-diagnostics/phases-*.jsonl
             ${{ runner.temp }}/pytest-worker-diagnostics/controller-*.jsonl
