@@ -12,6 +12,7 @@ import ast
 import asyncio
 import gc
 import json
+import math
 import os
 import select
 import time
@@ -22,6 +23,7 @@ from pathlib import Path
 import pytest
 import serial
 
+from rigplane.testing.timing import VirtualClock
 from rigplane_testkit.fixture_rows import CatPairRow, Direction, dump_rows
 from rigplane_testkit.serial.endpoints import PtyEndpoint, TcpEndpoint, pty_supported
 from rigplane_testkit.sim.adapters import yaesu_cat as adapter
@@ -578,6 +580,39 @@ async def test_delayed_replies_keep_fifo_at_equal_deadlines(chunks) -> None:
     assert not clock.active
     assert connection._timer is None
     writer.close()
+
+
+@pytest.mark.parametrize("milliseconds", [9, 25])
+@pytest.mark.timeout(30)
+async def test_reply_timer_firing_early_does_not_spin(
+    virtual_clock: VirtualClock, milliseconds: int
+) -> None:
+    fake = _with_latency(milliseconds)
+    reader, writer = await fake.open_serial_connection()
+    connection = writer._connection
+    try:
+        writer.write(b"ID;FA;")
+        assert connection._timer is not None
+        first_due = connection._timer.when()
+        await virtual_clock.elapse(milliseconds / 2000)
+        assert not reader._buffer
+        writer.write(b"MD0;")
+
+        # asyncio can dispatch a timer one clock resolution before its deadline.
+        early = math.nextafter(first_due, -math.inf)
+        await virtual_clock.elapse(early - virtual_clock.now)
+        assert virtual_clock.now < first_due
+        assert bytes(reader._buffer) == b"ID0840;FA147225000;"
+        assert len(connection._pending) == 1
+        assert connection._timer is not None
+        assert connection._timer.when() > first_due
+
+        await virtual_clock.elapse(milliseconds / 1000)
+        assert bytes(reader._buffer) == b"ID0840;FA147225000;MD04;"
+        assert not connection._pending
+        assert connection._timer is None
+    finally:
+        writer.close()
 
 
 async def test_separate_deadlines_schedule_only_the_fifo_head() -> None:
