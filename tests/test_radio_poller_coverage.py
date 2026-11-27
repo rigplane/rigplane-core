@@ -119,6 +119,7 @@ from _acquisition_query_helpers import acquisition_query, send_state_query
 from rigplane.core.capabilities import CAP_AUDIO
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.web_startup import stop_web_server
+from rigplane.testing.timing import VirtualClock
 
 _TEARDOWN = ["stop_tx", "restart_rx"]
 
@@ -1579,19 +1580,32 @@ async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
     path: FieldPath,
     expected_cmd: int,
     expected_receiver: int,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio = _make_radio(active="MAIN")
-    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
-    radio._acquisition_scheduler = scheduler
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+    import rigplane.core.acquisition_drain as acquisition_drain_module
 
-    _tick_cadence(poller)
+    virtual_clock.scope_to(monkeypatch, acquisition_drain_module)
+    clock = FreshnessClock(start=virtual_clock())
+    radio = _make_radio(active="MAIN")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path), clock=clock)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=StateStore(freshness_clock=clock),
+        clock=virtual_clock,
+    )
+
+    _tick_cadence(poller, now=virtual_clock())
     await poller._send_query()  # noqa: SLF001
-    _tick_cadence(poller)
+    _tick_cadence(poller, now=virtual_clock())
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once_with(

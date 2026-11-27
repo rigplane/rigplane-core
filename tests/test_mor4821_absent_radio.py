@@ -26,10 +26,13 @@ from unittest.mock import AsyncMock
 
 from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
 from rigplane.runtime.radio import CoreRadio
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 
 import pytest
 
+import rigplane.core.acquisition_drain as acquisition_drain_module
+import rigplane.core.state_store as state_store_module
+import rigplane.runtime.radio as radio_module
 from rigplane._connection_state import RadioConnectionState
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
@@ -47,6 +50,17 @@ from test_radio_poller_coverage import (
     _seed_fresh_rx,
     _tick_cadence,
 )
+
+
+@pytest.fixture(name="virtual_clock")
+def _acquisition_clock(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> VirtualClock:
+    virtual_clock.scope_to(monkeypatch, acquisition_drain_module)
+    monkeypatch.setattr(state_store_module, "time", acquisition_drain_module.time)
+    monkeypatch.setattr(radio_module, "time", acquisition_drain_module.time)
+    return virtual_clock
 
 
 def _absent_serial_radio() -> Any:
@@ -93,9 +107,10 @@ def _poller_with_counted_wire(radio: Any) -> tuple[RadioPoller, AsyncMock]:
         radio_state=RadioState(),
         acquisition_executor=executor,
         diagnostics=StateDiagnosticsRecorder(enabled=True),
+        clock=asyncio.get_running_loop().time,
     )
     _seed_fresh_rx(poller)
-    _tick_cadence(poller)
+    _tick_cadence(poller, now=asyncio.get_running_loop().time())
     assert scheduler.pending_requests(), "cadence must queue work to send"
     return poller, send_query
 
@@ -169,6 +184,7 @@ async def test_lan_poll_loop_keeps_acquiring_without_serial_transport(
         assert probe.await_count >= 3
     finally:
         task.cancel()
+        await await_until(task.done, timeout=2.0, description="poller shutdown")
         await task
 
 
@@ -194,6 +210,7 @@ async def test_closed_transport_probe_deadline_tolerates_early_timer(
         send_query.assert_not_awaited()
     finally:
         task.cancel()
+        await await_until(task.done, timeout=2.0, description="poller shutdown")
         await task
 
 
@@ -228,6 +245,7 @@ async def test_closed_transport_keeps_backoff_probes_without_restoring(
             assert poller._provider_generation() == generation  # noqa: SLF001
         finally:
             task.cancel()
+            await await_until(task.done, timeout=2.0, description="poller shutdown")
             await task
 
 
@@ -258,6 +276,7 @@ async def test_absent_port_sends_no_acquisition_and_release_wakes_pacing(
         radio.set_ptt.assert_awaited_once_with(False)
     finally:
         task.cancel()
+        await await_until(task.done, timeout=2.0, description="poller shutdown")
         await task
 
 
@@ -266,49 +285,48 @@ async def test_open_transport_resumes_acquisition_before_freshness_reply(
     virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import rigplane.runtime.radio as radio_module
-
-    # Scope time.monotonic to the actual CoreRadio.radio_ready property.
-    class _ClockTime:
-        monotonic = staticmethod(virtual_clock)
-
-        def __getattr__(self, name: str) -> Any:
-            import time
-
-            return getattr(time, name)
-
-    monkeypatch.setattr(radio_module, "time", _ClockTime())
     radio = _SerialPropertiesRadio()
     poller, send_query = _poller_with_counted_wire(radio)
     original_send = poller._send_query  # noqa: SLF001
     query_times: list[float] = []
+    wire_times: list[float] = []
+    wire_ready: list[bool] = []
+
+    def record_wire_send(request: Any) -> None:
+        wire_times.append(virtual_clock())
+        wire_ready.append(radio.radio_ready)
+
+    send_query.side_effect = record_wire_send
 
     async def counted_send() -> None:
         query_times.append(virtual_clock())
-        previous_count = send_query.await_count
         await original_send()
-        if send_query.await_count > previous_count:
-            asyncio.get_running_loop().call_soon(
-                setattr, radio, "_last_civ_data_received", virtual_clock()
-            )
 
     monkeypatch.setattr(poller, "_send_query", counted_send)
     task = asyncio.create_task(poller._run())  # noqa: SLF001
     try:
         await virtual_clock.elapse(35.0)
         assert send_query.await_count == 0
+        assert poller._state_store.snapshot().generated_at_monotonic == virtual_clock()  # noqa: SLF001
         radio._serial_session.connected = True
         radio._conn_state = RadioConnectionState.CONNECTED
         assert not radio.radio_ready
         opened = virtual_clock()
         await virtual_clock.elapse(0.3)
         assert send_query.await_count >= 1
+        assert opened <= wire_times[0] <= opened + 0.3
+        assert wire_ready[0] is False
+        assert not radio.radio_ready
+        radio._last_civ_data_received = virtual_clock()
         assert radio.radio_ready
-        await virtual_clock.elapse(10.0)
+        await virtual_clock.elapse(2.1)
+        assert not radio.radio_ready
+        await virtual_clock.elapse(7.9)
         # A 2 s freshness window must not strand polling at the 5 s cap.
         assert sum(t >= opened for t in query_times) >= 20
     finally:
         task.cancel()
+        await await_until(task.done, timeout=2.0, description="poller shutdown")
         await task
 
 
@@ -328,6 +346,7 @@ async def test_open_serial_identity_hold_allows_acquisition(
         assert send_query.await_count >= 1
     finally:
         task.cancel()
+        await await_until(task.done, timeout=2.0, description="poller shutdown")
         await task
 
 
