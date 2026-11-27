@@ -144,7 +144,7 @@ async def test_nonserial_provider_acquires_without_connection_facts(
 
     await poller._send_query()  # noqa: SLF001
 
-    send_query.assert_awaited_once()
+    assert send_query.await_count == 1
 
 
 @pytest.mark.timeout(30)
