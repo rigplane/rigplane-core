@@ -29,10 +29,13 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ForceOff,
     ManagedTxEffect,
+    ManagedTxActuationRefused,
     ManagedTxRefusalReason,
     ManagedTxState,
     PttDown,
+    PttUp,
     ReleasePlan,
     TransmitOn,
     reduce_managed_tx,
@@ -352,6 +355,8 @@ async def test_managed_abort_uses_urgent_profile_command(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["ftx1", "ft991a"])
+@pytest.mark.parametrize("case", ["missing", "not-cat", "no-write-template"])
 @pytest.mark.parametrize(
     ("operation", "missing_profile_key"),
     [
@@ -362,15 +367,112 @@ async def test_managed_abort_uses_urgent_profile_command(
     ids=["force_receive", "stop_cw", "stop_tune"],
 )
 async def test_missing_profile_command_refuses_before_io(
+    profile: str,
+    case: str,
     operation: ActuationOperation | AbortOperation,
     missing_profile_key: str,
 ) -> None:
-    radio = _profile_radio(omit=missing_profile_key)
+    config = load_rig(_RIGS_DIR / f"{profile}.toml")
+    commands = dict(config.commands)
+    if case == "missing":
+        commands.pop(missing_profile_key, None)
+    elif case == "not-cat":
+        commands[missing_profile_key] = CivCommandSpec(bytes=(0x1C, 0x00))
+    else:
+        commands[missing_profile_key] = CatCommandSpec(read="TX;")
+    radio = YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._transport.query = AsyncMock()
 
-    result = await radio.actuate(_token(), operation, is_current=lambda: True)
+    with pytest.raises(ManagedTxActuationRefused) as raised:
+        await radio.actuate(_token(), operation, is_current=lambda: True)
 
-    assert result is ActuationResult.REJECTED
+    assert raised.value.reason is ManagedTxRefusalReason.OTHER
+    outcome = await ManagedTxEffectLane(radio)._settle(
+        _token(), operation, asyncio.get_running_loop().time() + 1, None
+    )
+    assert outcome is not None
+    assert outcome.result is ActuationResult.REJECTED
+    assert outcome.refusal_reason is ManagedTxRefusalReason.OTHER
     radio._transport.write.assert_not_awaited()
+    radio._transport.query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["ftx1", "ft991a"])
+@pytest.mark.parametrize("operation", list(AbortOperation))
+async def test_unmapped_abort_refuses_with_non_radio_reason_before_io(
+    profile: str, operation: AbortOperation, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(_RIGS_DIR / f"{profile}.toml"))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._transport.query = AsyncMock()
+    monkeypatch.setattr(YaesuCatRadio, "_ABORT_COMMANDS", {})
+
+    with pytest.raises(ManagedTxActuationRefused) as raised:
+        await radio.actuate(_token(), operation, is_current=lambda: True)
+
+    assert raised.value.reason is ManagedTxRefusalReason.OTHER
+    assert not radio.abort_applicable(operation)
+    radio._transport.write.assert_not_awaited()
+    radio._transport.query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["ftx1", "ft991a"])
+@pytest.mark.parametrize("release_plan", list(ReleasePlan))
+@pytest.mark.parametrize("case", ["missing", "no-write-template", "nak"])
+async def test_force_receive_refusal_reason_preserves_release_debt(
+    profile: str, release_plan: ReleasePlan, case: str
+) -> None:
+    config = load_rig(_RIGS_DIR / f"{profile}.toml")
+    commands = dict(config.commands)
+    if case == "missing":
+        commands.pop("set_ptt")
+    elif case == "no-write-template":
+        commands["set_ptt"] = CatCommandSpec(read="TX;")
+    radio = YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock(
+        side_effect=CatCommandRejected("?;", command="TX0;") if case == "nak" else None
+    )
+    radio._transport.query = AsyncMock()
+    now = asyncio.get_running_loop().time()
+    keyed = reduce_managed_tx(ManagedTxState(), PttDown("owner", 7, "key", now, None))
+    released = reduce_managed_tx(
+        keyed.state,
+        PttUp("owner", 7, "release")
+        if release_plan is ReleasePlan.PTT_RELEASE
+        else ForceOff(7, "release"),
+    )
+    assert released.state.release_plan is release_plan
+
+    settled = await ManagedTxEffectLane(radio).settle(
+        released.effects[0], deadline_monotonic=now + 1
+    )
+
+    assert settled is not None
+    assert settled.result is ActuationResult.REJECTED
+    if case == "nak":
+        assert settled.rejection_reason is ManagedTxRefusalReason.RADIO_REFUSED
+        radio._transport.write.assert_awaited_once()
+        assert radio._transport.write.await_args.args == ("TX0;",)
+        assert (
+            radio._transport.write.await_args.kwargs["tier"]
+            is ExchangeTier.FORCE_RELEASE
+        )
+    else:
+        assert settled.refusal_reason is ManagedTxRefusalReason.OTHER
+        assert settled.rejection_reason is ManagedTxRefusalReason.OTHER
+        radio._transport.write.assert_not_awaited()
+    radio._transport.query.assert_not_awaited()
+    state = reduce_managed_tx(released.state, settled).state
+    assert state.release_required
+    assert state.release_plan is release_plan
+    assert state.last_actuation is not None
+    assert state.last_actuation.result is ActuationResult.REJECTED
 
 
 @pytest.mark.asyncio
@@ -532,8 +634,7 @@ async def test_abort_mapping_alone_drives_applicability_and_dispatch(
     )
     assert radio.abort_applicable(AbortOperation.STOP_CW) is False
     radio._transport.write.reset_mock()
-    assert (
+    with pytest.raises(ManagedTxActuationRefused) as raised:
         await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=lambda: True)
-        is ActuationResult.REJECTED
-    )
+    assert raised.value.reason is ManagedTxRefusalReason.OTHER
     radio._transport.write.assert_not_awaited()
