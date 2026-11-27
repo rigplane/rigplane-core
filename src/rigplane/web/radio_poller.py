@@ -1715,6 +1715,7 @@ class RadioPoller:
 
     async def _run(self) -> None:
         _backoff = 0.0
+        _closed_pause = False
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
 
         def entries_for_turn() -> Iterator[CommandQueueEntry]:
@@ -1833,6 +1834,20 @@ class RadioPoller:
                             )
                     await asyncio.sleep(self._adaptive_gap())
 
+                # Closed-transport pacing is separate from command/query error
+                # recovery. Recheck openness at the normal poll interval because
+                # backends do not expose a common link-open notification; queue
+                # notifications wake this wait immediately for safety commands.
+                if not self._transport_open_for_acquisition():
+                    _closed_pause = True
+                    await self._queue.wait(timeout=self._fast_interval)
+                    continue
+                if _closed_pause:
+                    _closed_pause = False
+                    # Errors while the transport was closed must not keep an
+                    # open link behind the old readiness-based error backoff.
+                    _backoff = 0.0
+
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
                     await asyncio.sleep(_backoff)
@@ -1854,19 +1869,6 @@ class RadioPoller:
                         continue
 
                 # 2. Send fast meter query
-                if not self._transport_open_for_acquisition():
-                    # MOR-4821: same gate as the drain filter above, for
-                    # the pass pacing. A withheld pass sends nothing, so
-                    # hold the loop on the existing capped backoff instead
-                    # of spinning the drain at full poll cadence; the
-                    # message matches the other disconnected branches.
-                    _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                    logger.info(
-                        "radio-poller: radio disconnected, backing off %.1fs",
-                        _backoff,
-                    )
-                    await asyncio.sleep(_backoff)
-                    continue
                 try:
                     await self._send_query()
                 except (ConnectionError, RadioConnectionError):
@@ -3566,18 +3568,14 @@ class RadioPoller:
     def _transport_open_for_acquisition(self) -> bool:
         """Whether acquisition may put requests on the wire this pass.
 
-        MOR-4821: the fire-and-forget sends never raise, so a closed
-        transport never trips the exception-driven backoff — without this
-        gate every pass re-sent at full poll cadence and banked a
-        guaranteed failure per path (~10/s against an absent serial
-        port). An explicit boolean ``False`` (the contract every shipping
-        backend's ``connected`` provides) withholds the pass; anything
-        else — a missing attribute, a non-bool double — keeps today's
-        behavior. The backend's own reconnect (serial watchdog,
-        LAN reconnect loop) stays the single owner of retry timing: the
-        freshness service keeps queueing, so dispatch resumes on its own
-        when ``connected`` flips back.
+        Prefer the backend-neutral control transport fact: ``connected`` can
+        also require a healthy or identified radio. Older providers without a
+        boolean control fact retain their existing connected-based behavior.
+        The backend remains the sole owner of reconnect attempts.
         """
+        control = getattr(self._radio, "control_connected", None)
+        if isinstance(control, bool):
+            return control
         return getattr(self._radio, "connected", True) is not False
 
     def _dispatchable_acquisition_requests(

@@ -4659,13 +4659,12 @@ class WebServer:
     def _runtime_connection_payload(self) -> dict[str, Any]:
         """Connection/reconnect status block for the runtime payload (MOR-594).
 
-        MOR-4821: the ``state`` always derives from the radio's live
-        ``conn_state`` — the same value ``classify_radio_health`` reads —
-        so the connection block and the health verdict cannot disagree
-        (serial backends never emit the reconnect-status callback, which
-        used to leave this block at "disconnected, attempt 0, no retry"
-        while health said "reconnecting"). The cached callback payload is
-        used only when its state still matches live; its ``attempt`` /
+        MOR-4821: supported live ``conn_state`` values take precedence over
+        cached reconnect callbacks. In particular, serial CONNECTING and
+        RECONNECTING agree with the health verdict. Other phases and backends
+        can still have different connection and health projections. The cached
+        callback payload is used only when its state still matches live; its
+        ``attempt`` /
         ``next_retry_seconds`` detail is dropped the moment it goes stale
         rather than masking the live state.
         """
