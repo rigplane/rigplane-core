@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol
 
 from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 from ..channel_attach import (  # noqa: TID251
@@ -42,6 +43,8 @@ from ..channel_attach import (  # noqa: TID251
     DataChannelSpec,
     data_channels_for,
 )
+
+from ..protocol import audio_frame_duration_us  # noqa: TID251
 
 if TYPE_CHECKING:
     from aiortc import (  # type: ignore[import-not-found]
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
     from .webrtc_contract import WebRtcTransportStatus  # noqa: TID251
 
 __all__ = [
+    "WebRtcAudioSender",
     "WebRtcDataChannelConnection",
     "WebRtcUnavailableError",
     "add_api_channel",
@@ -73,6 +77,7 @@ _CLOSE_SENTINEL: Final = object()
 #: unread frames ends the connection instead of growing the queue.
 MAX_FRAMES_BEFORE_SERVE: Final = 64
 _RIGCTL_SEND_TIMEOUT_S: Final = 1.0
+_AUDIO_BACKLOG_US: Final = 200_000
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,45 @@ def webrtc_available() -> bool:
     except ImportError:
         return False
     return True
+
+
+class _AudioDataChannel(Protocol):
+    @property
+    def bufferedAmount(self) -> int: ...
+
+    def send(self, data: bytes, /) -> None: ...
+
+
+class WebRtcAudioSender:
+    """The sole binary writer for one lossy WebRTC audio channel.
+
+    Keeps duration metadata for buffered messages, since compressed packets
+    of the same duration need not have the same size. SCTP drains the channel
+    in enqueue order. Pending payloads remain owned by the transport.
+    """
+
+    def __init__(self, channel: _AudioDataChannel) -> None:
+        self._channel = channel
+        self._pending: deque[tuple[int, int]] = deque()
+        self._queued_bytes = 0
+        self._queued_us = 0
+
+    def try_send(self, data: bytes) -> bool:
+        """Enqueue immediately, or return False when the FIFO is full."""
+        buffered = self._channel.bufferedAmount
+        while self._pending and self._queued_bytes - self._pending[0][0] >= buffered:
+            size, duration = self._pending.popleft()
+            self._queued_bytes -= size
+            self._queued_us -= duration
+        duration = audio_frame_duration_us(data) or _AUDIO_BACKLOG_US
+        if buffered and self._queued_us + duration > _AUDIO_BACKLOG_US:
+            return False
+        self._channel.send(data)
+        size = max(1, len(data))  # SCTP represents an empty message with one byte.
+        self._pending.append((size, duration))
+        self._queued_bytes += size
+        self._queued_us += duration
+        return True
 
 
 class WebRtcDataChannelConnection:
@@ -123,6 +167,7 @@ class WebRtcDataChannelConnection:
         self._queue: asyncio.Queue[tuple[int, bytes] | object] = asyncio.Queue()
         self._closed = False
         self._rigctl_attach_pending = False
+        self._audio_sender: WebRtcAudioSender | None = None
         self._rigctl_send_ready = asyncio.Event() if channel.label == "rigctl" else None
         if self._rigctl_send_ready is not None:
             channel.on("bufferedamountlow", self._rigctl_send_ready.set)
@@ -246,6 +291,12 @@ class WebRtcDataChannelConnection:
     async def send_binary(self, data: bytes) -> None:
         """Send a binary message (on the lossy channel when split)."""
         self._channel.send(data)
+
+    def try_send_audio(self, data: bytes) -> bool:
+        """Send one binary audio frame, reporting whether it was queued."""
+        if self._audio_sender is None:
+            self._audio_sender = WebRtcAudioSender(self._channel)
+        return self._audio_sender.try_send(data)
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         """Close ONLY this connection's DataChannel (MOR-4498).

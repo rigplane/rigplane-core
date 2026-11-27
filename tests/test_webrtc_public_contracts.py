@@ -75,6 +75,7 @@ _PUBLIC = (
     ("GATHER_TIMEOUT_S", "rigplane.web.transport.ice_gathering"),
     ("install_ice_gathering_policy", "rigplane.web.transport.ice_gathering"),
     ("apply_ice_gathering_policy", "rigplane.web.transport.ice_gathering"),
+    ("WebRtcAudioSender", "rigplane.web.transport.webrtc"),
     ("WebRtcOffer", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcAnswer", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcClose", "rigplane.web.transport.webrtc_contract"),
@@ -418,3 +419,41 @@ async def test_capabilities_webrtc_block_parses_as_transport_status() -> None:
     _, body = _parse_response(writer)
     status = rigplane.WebRtcTransportStatus.from_json(body["webrtc"])
     assert status == rigplane.WebRtcTransportStatus(available=True, enabled=True)
+
+
+def test_audio_sender_counts_duration_for_variable_size_opus_packets() -> None:
+    from rigplane.web.protocol import (
+        AUDIO_CODEC_OPUS,
+        MSG_TYPE_AUDIO_RX,
+        encode_audio_frame,
+    )
+
+    class BufferedChannel:
+        bufferedAmount = 0
+
+        def send(self, data: bytes) -> None:
+            self.bufferedAmount += len(data)
+
+    port = BufferedChannel()
+    sender = rigplane.WebRtcAudioSender(port)
+
+    def packet(n: int) -> bytes:
+        # Configuration 31: one 20 ms Opus frame. The wire duration is advisory.
+        return encode_audio_frame(
+            MSG_TYPE_AUDIO_RX,
+            AUDIO_CODEC_OPUS,
+            0,
+            480,
+            1,
+            1,
+            bytes([31 << 3]) + bytes(n),
+        )
+
+    frames = [packet(50), packet(500)] * 5
+    assert all(sender.try_send(frame) for frame in frames)
+    assert not sender.try_send(packet(12))
+    port.bufferedAmount -= len(frames[0])
+    assert sender.try_send(packet(12))
+    assert not sender.try_send(packet(400))
+    port.bufferedAmount = 0
+    assert sender.try_send(packet(400))
