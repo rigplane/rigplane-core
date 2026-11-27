@@ -1138,6 +1138,52 @@ line as the startup contract instead of parsing the human-readable banner:
 }
 ```
 
+### Startup failures
+
+`web` and `station` startup aborts emit one line to **stderr**, with the fixed
+prefix `RIGPLANE_STARTUP_FAILURE ` followed by a JSON object:
+
+```text
+RIGPLANE_STARTUP_FAILURE {"schema":1,"cause":"serial_open_failed","phase":"radio_open","detail":"The serial radio connection could not be opened."}
+```
+
+The public Python contract is `core/startup_failure.py: StartupFailure`,
+`StartupCause`, `StartupPhase`, and `parse_startup_failure`. `schema` is the
+integer `1`; `cause`, `phase`, and `detail` are strings. Producers use these
+closed code sets:
+
+| Cause | Meaning / phase |
+| --- | --- |
+| `configuration_invalid` | Rejected startup configuration; `configuration` |
+| `profile_unresolved` | Profile resolution or loading failed; `profile_resolution` |
+| `discovery_failed` | Discovery did not select one radio; `discovery` |
+| `audio_bridge_failed` | An explicitly requested audio bridge failed; `audio_bridge` |
+| `radio_in_use` | Local ownership lock refused (`radio_lock`) or a live radio session held (`radio_open`) |
+| `serial_open_failed` | Serial connection could not open; `radio_open` |
+| `radio_open_failed` | Other radio connection failed; `radio_open` |
+| `port_busy` | A serial-open or listener operation reported `EADDRINUSE` or `EBUSY`; its operation phase is retained |
+| `listener_bind_failed` | Listener preflight bind failed; `listener_preflight` |
+| `web_bind_failed` | Web listener bind failed; `web_bind` |
+| `rigctld_bind_failed` | Bundled rigctld listener start failed; `rigctld_bind` |
+| `tci_bind_failed` | Bundled TCI listener start failed; `tci_bind` |
+| `web_start_failed` | Other web startup failure, including the initial-state gate; `web_start` |
+| `unknown` | Unclassified abort; `configuration` |
+
+`detail` is fixed short text selected by the cause, without interpolating
+exception messages, device paths, addresses, or credentials. Existing human
+logs are separate from this document. Nested CLI and server startup boundaries
+share one report; `WebServer.start` also reports when called directly. Failure
+documents stop once `WebServer.serve_forever` has completed startup. These
+behaviors are covered by `tests/test_startup_failure.py`.
+
+Receivers must tolerate a missing document (including older Core versions or a
+process terminated before reporting), unknown cause/phase codes, extra fields,
+and unsupported schema versions. Do not derive causes from `detail` or human
+logs. `parse_startup_failure` returns `None` for unrelated lines, malformed
+documents, and unsupported versions; it preserves unknown string codes in
+schema 1. A missing or unrecognized document does not imply successful startup:
+use process exit and the existing startup-success event/readiness endpoints.
+
 ---
 
 ## `GET /api/v1/info`

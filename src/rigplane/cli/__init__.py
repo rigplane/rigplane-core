@@ -135,6 +135,14 @@ from rigplane.core.radio_protocol import (  # noqa: E402
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
+from rigplane.core.startup_failure import (  # noqa: E402
+    StartupCause,
+    StartupPhase,
+    record_startup_failure,
+    report_startup_failures,
+    startup_failure_scope,
+    startup_operation,
+)
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.managed_tx_authority import (  # noqa: E402
     ATTEMPT_TIMEOUT_S,
@@ -2143,7 +2151,10 @@ def check_ports_available(bindings: list[tuple[str, int]]) -> None:
             if hasattr(_sock, "SO_REUSEPORT"):
                 s.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEPORT, 1)
             try:
-                s.bind((host, port))
+                with startup_operation(
+                    StartupCause.LISTENER_BIND_FAILED, StartupPhase.LISTENER_PREFLIGHT
+                ):
+                    s.bind((host, port))
             except OSError:
                 pid = _find_port_pid(port)
                 pid_info = f" (PID {pid})" if pid else ""
@@ -2167,9 +2178,12 @@ async def _build_backend_config(
     Runs auto-discovery when host / serial-port is not provided.
     Infers backend type from the model's protocol when --backend is not set.
     """
-    radio_addr, model_name, model_default_baud, protocol_type, has_lan = _resolve_model(
-        args
-    )
+    with startup_operation(
+        StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+    ):
+        radio_addr, model_name, model_default_baud, protocol_type, has_lan = (
+            _resolve_model(args)
+        )
 
     # Infer backend from context when not explicitly set.
     backend = getattr(args, "backend", None)
@@ -2194,7 +2208,10 @@ async def _build_backend_config(
 
     if model_name is None and backend in ("lan", "serial"):
         try:
-            resolve_radio_profile(radio_addr=radio_addr)
+            with startup_operation(
+                StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+            ):
+                resolve_radio_profile(radio_addr=radio_addr)
         except ValueError:
             from rigplane.rig_loader import discover_available_rigs
 
@@ -2214,7 +2231,10 @@ async def _build_backend_config(
             )
         device = serial_port
         if not device:
-            device, discovered_baud = await _auto_discover_serial()
+            with startup_operation(
+                StartupCause.DISCOVERY_FAILED, StartupPhase.DISCOVERY
+            ):
+                device, discovered_baud = await _auto_discover_serial()
             if discovered_baud and not getattr(args, "serial_baud", None):
                 args.serial_baud = discovered_baud
         return YaesuCatBackendConfig(
@@ -2252,7 +2272,10 @@ async def _build_backend_config(
             )
         device = serial_port
         if not device:
-            device, discovered_baud = await _auto_discover_serial()
+            with startup_operation(
+                StartupCause.DISCOVERY_FAILED, StartupPhase.DISCOVERY
+            ):
+                device, discovered_baud = await _auto_discover_serial()
             if discovered_baud and not getattr(args, "serial_baud", None):
                 args.serial_baud = discovered_baud
         return SerialBackendConfig(
@@ -2274,7 +2297,8 @@ async def _build_backend_config(
         )
     host = getattr(args, "host", _HOST_NOT_SET)
     if not host or host == _HOST_NOT_SET:
-        host = await _auto_discover_lan(timeout=args.timeout)
+        with startup_operation(StartupCause.DISCOVERY_FAILED, StartupPhase.DISCOVERY):
+            host = await _auto_discover_lan(timeout=args.timeout)
     return LanBackendConfig(
         host=host,
         port=args.control_port,
@@ -2777,6 +2801,18 @@ def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.command not in ("web", "station"):
+        return await _run_command(args)
+    with startup_failure_scope(StartupCause.UNKNOWN, StartupPhase.CONFIGURATION):
+        result = await _run_command(args)
+        if result != 0:
+            record_startup_failure(
+                None, StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+            )
+        return result
+
+
+async def _run_command(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
         return await _cmd_audio_caps(args)
@@ -2798,6 +2834,15 @@ async def _run(args: argparse.Namespace) -> int:
         # --model resolves through the rig profiles; one that does not load
         # (MOR-3678: e.g. an incomplete [cw_text] enable) is a readable
         # error naming the file and key, like the create_radio() path.
+        record_startup_failure(
+            exc,
+            StartupCause.PROFILE_UNRESOLVED
+            if isinstance(exc, RigLoadError)
+            else StartupCause.CONFIGURATION_INVALID,
+            StartupPhase.PROFILE_RESOLUTION
+            if isinstance(exc, RigLoadError)
+            else StartupPhase.CONFIGURATION,
+        )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     # web, serve and station run for the life of the process on one radio, so
@@ -2825,6 +2870,9 @@ async def _run(args: argparse.Namespace) -> int:
         try:
             acquire_resident_lock(radio_lock_identity(config))
         except ResidentAlreadyRunningError as exc:
+            record_startup_failure(
+                exc, StartupCause.RADIO_IN_USE, StartupPhase.RADIO_LOCK
+            )
             if args.command in RESIDENT_COMMANDS:
                 print(f"Error: {exc}", file=sys.stderr)
             else:
@@ -2861,6 +2909,9 @@ async def _run(args: argparse.Namespace) -> int:
     except (ValueError, RigLoadError) as exc:
         # A profile that does not load (MOR-3678: e.g. an incomplete
         # [cw_text] enable) is a readable error naming the file and key.
+        record_startup_failure(
+            exc, StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+        )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
@@ -2893,6 +2944,9 @@ async def _run(args: argparse.Namespace) -> int:
         try:
             check_ports_available(bindings)
         except RuntimeError as exc:
+            record_startup_failure(
+                exc, StartupCause.LISTENER_BIND_FAILED, StartupPhase.LISTENER_PREFLIGHT
+            )
             print(f"Error: {exc}", file=sys.stderr)
             return 1
     elif args.command == "serve":
@@ -2920,6 +2974,9 @@ async def _run(args: argparse.Namespace) -> int:
             install_managed_tx_composition(radio, candidate_composition)
             managed_tx_composition = candidate_composition
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            record_startup_failure(
+                exc, StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+            )
             if candidate_composition is not None:
                 await _shutdown_managed_tx_composition(candidate_composition)
             print(f"Error: managed TX composition unavailable: {exc}", file=sys.stderr)
@@ -3095,6 +3152,14 @@ async def _run(args: argparse.Namespace) -> int:
             else:
                 return await _cmd_status(radio, args)
     except Exception as exc:
+        cause = (
+            StartupCause.RADIO_IN_USE
+            if isinstance(exc, RadioSessionHeldError)
+            else StartupCause.SERIAL_OPEN_FAILED
+            if isinstance(config, (SerialBackendConfig, YaesuCatBackendConfig))
+            else StartupCause.RADIO_OPEN_FAILED
+        )
+        record_startup_failure(exc, cause, StartupPhase.RADIO_OPEN)
         print(f"Error: {exc}", file=sys.stderr)
         logger.debug("Traceback:", exc_info=True)
         # A live owner holds the radio session: a deliberate stop, not a
@@ -4793,6 +4858,7 @@ def _print_serial_baud_notice(radio: Radio) -> None:
         print(notice)
 
 
+@report_startup_failures(StartupCause.WEB_START_FAILED, StartupPhase.WEB_START)
 async def _cmd_web(
     radio: Radio,
     args: argparse.Namespace,
@@ -4921,7 +4987,10 @@ async def _cmd_web(
     if isinstance(_radio_model, str) and _radio_model:
         config_kwargs["radio_model"] = _radio_model
     config_kwargs["await_initial_state"] = True
-    config = WebConfig(**config_kwargs)
+    with startup_operation(
+        StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+    ):
+        config = WebConfig(**config_kwargs)
     _print_serial_identity_no_response(radio)
     _print_serial_baud_notice(radio)
     server = WebServer(radio, config)
@@ -5006,6 +5075,9 @@ async def _cmd_web(
                 logger.warning("Audio bridge auto-start failed: %s", exc)
                 bridge_info = "loopback not found, bridge disabled"
             else:
+                record_startup_failure(
+                    exc, StartupCause.AUDIO_BRIDGE_FAILED, StartupPhase.AUDIO_BRIDGE
+                )
                 print(f"Error: audio bridge failed: {exc}", file=sys.stderr)
                 print(
                     "The --bridge flag was explicitly requested with a device. "
@@ -5021,6 +5093,9 @@ async def _cmd_web(
                 logger.error("Audio bridge auto-start failed (non-loopback): %s", exc)
                 bridge_info = f"disabled: {exc}"
             else:
+                record_startup_failure(
+                    exc, StartupCause.AUDIO_BRIDGE_FAILED, StartupPhase.AUDIO_BRIDGE
+                )
                 print(f"Error: audio bridge failed: {exc}", file=sys.stderr)
                 print(
                     "The --bridge flag was explicitly requested with a device. "
@@ -5103,7 +5178,10 @@ async def _cmd_web(
                 command_service=server.command_service,
             )
         try:
-            await candidate.start()
+            with startup_operation(
+                StartupCause.RIGCTLD_BIND_FAILED, StartupPhase.RIGCTLD_BIND
+            ):
+                await candidate.start()
         except OSError as exc:
             # MOR-1437: every declared-listener bind failure aborts startup —
             # a busy port most often means an orphaned rigplane instance is
@@ -5167,7 +5245,8 @@ async def _cmd_web(
             tci_kwargs["command_service"] = server.command_service
         candidate_tci = TciAdapterServer(**tci_kwargs)
         try:
-            await candidate_tci.start()
+            with startup_operation(StartupCause.TCI_BIND_FAILED, StartupPhase.TCI_BIND):
+                await candidate_tci.start()
         except OSError as exc:
             server._runtime_last_error = f"tci bind failed: {exc}"
             if exc.errno == errno.EADDRINUSE:

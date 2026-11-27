@@ -28,6 +28,8 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from .startup_failure import StartupCause, StartupPhase, startup_operation
+
 logger = logging.getLogger(__name__)
 
 _WINDOWS_OPEN_CODES = {
@@ -122,7 +124,8 @@ async def open_serial_port(
     """
     if opener is None:
         opener = _open_with_idle_lines
-    reader, writer = await opener(url=url, baudrate=baudrate, **kwargs)
+    with startup_operation(StartupCause.SERIAL_OPEN_FAILED, StartupPhase.RADIO_OPEN):
+        reader, writer = await opener(url=url, baudrate=baudrate, **kwargs)
     _deassert_control_lines(writer, url)
     return reader, writer
 
