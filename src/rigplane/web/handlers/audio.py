@@ -25,6 +25,7 @@ from ...audio._usb_pairing import AudioCandidate
 from ...audio.usb_driver import (
     AudioAlreadyStartedError,
     AudioStartFailureReason,
+    audio_start_failure_access_code,
     audio_start_failure_details,
     audio_start_failure_holder,
     audio_start_failure_reason,
@@ -1477,6 +1478,16 @@ class AudioBroadcaster:
             if source is not None:
                 reason, candidates = audio_start_failure_details(exc)
                 holder = audio_start_failure_holder(exc)
+                if reason == "device_access_denied":
+                    # P22: the refusal code is the one actionable detail the
+                    # frame must not carry (MOR-3823), so it goes to the
+                    # server log, which the support report bundles.
+                    logger.warning(
+                        "audio-broadcaster: RX start refused: radio audio "
+                        "device access denied (code %s); another program is "
+                        "using it or Windows privacy settings block it",
+                        audio_start_failure_access_code(exc),
+                    )
                 if reason == "other" and serial_identity_hold(radio) is not None:
                     # MOR-4858: connection-state precedence. The
                     # connect-time identity hold owns the radio (a

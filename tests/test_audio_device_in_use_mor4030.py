@@ -11,6 +11,10 @@ category ``device_in_use``), which the RX-start refusal frame and the
 its current category and message.
 
 A fake ``sounddevice`` stands in for PortAudio: no audio device, no Windows.
+
+P22 moved the access-denied refusal out of ``other`` into its own
+``device_access_denied`` category (see tests/test_audio_access_denied_p22.py);
+this file keeps the open-layer pins and every non-denied category.
 """
 
 from __future__ import annotations
@@ -165,10 +169,9 @@ ACCESS_DENIED = FakePortAudioError(
             "Error opening InputStream: Invalid number of channels", -9998
         ),
         FakePortAudioError("Error opening InputStream: Invalid sample rate", -9997),
-        ACCESS_DENIED,
         OSError("Error opening stream: shared refused"),
     ],
-    ids=["channels", "sample-rate", "access-denied", "plain-oserror"],
+    ids=["channels", "sample-rate", "plain-oserror"],
 )
 async def test_other_shared_failures_keep_their_own_error(shared, direction):
     sd = FakeSd(
@@ -187,6 +190,10 @@ async def test_access_denied_on_both_attempts_stays_the_old_error():
     with pytest.raises(FakePortAudioError) as raised:
         await _start(_backend(sd), "rx")
     assert raised.value is ACCESS_DENIED
+    # The open layer is unchanged (the raw refusal still propagates, never a
+    # holder error); only the start-failure category moved (P22: see
+    # tests/test_audio_access_denied_p22.py).
+    assert audio_start_failure_reason(raised.value) == "device_access_denied"
 
 
 @pytest.mark.parametrize("direction", ["rx", "tx"])
