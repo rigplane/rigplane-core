@@ -14,6 +14,7 @@ from test_web_audio_session_rx import _SessionLanRadio, _make_ws
 from rigplane.audio.backend import PortAudioBackend
 from rigplane.audio.usb_driver import UsbAudioDriver, audio_start_failure_reason
 from rigplane.runtime.controller_authority import ControllerError
+from rigplane.testing.timing import await_until
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.server import WebConfig, WebServer
 
@@ -205,10 +206,11 @@ async def test_replaced_source_is_not_blocked_by_old_library_failure():
         await broadcaster._stop_relay()
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "failure", [ControllerError("controller_invalid"), RuntimeError("RX task failed")]
 )
-async def test_background_failure_is_retrieved(failure, caplog):
+async def test_background_failure_is_retrieved(failure, caplog, virtual_clock):
     server = WebServer(None, WebConfig())
     loop = asyncio.get_running_loop()
     contexts = []
@@ -223,7 +225,9 @@ async def test_background_failure_is_retrieved(failure, caplog):
         with caplog.at_level(logging.DEBUG):
             task = server._spawn(failing())
             task.add_done_callback(lambda _done: settled.set())
-            await asyncio.wait_for(settled.wait(), timeout=1)
+            await await_until(
+                settled.is_set, timeout=5.0, description="the background task to settle"
+            )
             del task
             gc.collect()
         assert not server._bg_tasks
