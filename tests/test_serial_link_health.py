@@ -14,6 +14,7 @@ from rigplane.backends import _icom_serial_base
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers import serial_civ_link
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.backends.icom7610.drivers.serial_session import _unwrap_civ_frame
 from rigplane.backends.yaesu_cat import poller as cat_poller
 from rigplane.backends.yaesu_cat import radio as cat_radio
 from rigplane.backends.yaesu_cat import transport as cat_transport
@@ -1324,6 +1325,100 @@ async def test_isolated_solicited_timeouts_do_not_accumulate_across_replies(
         assert cable.opens == 1
     finally:
         await _finish(serial_clock, radio.disconnect())
+
+
+@pytest.mark.asyncio
+async def test_plain_civ_link_public_reads_reset_serial_silence_evidence(
+    serial_clock: VirtualClock,
+) -> None:
+    link = _FakeSerialCivLink(model_id=0x94)
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        timeout=0.1,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    try:
+        await _finish(serial_clock, radio.connect())
+        await radio._stop_civ_data_watchdog()
+        radio._civ_watchdog_rebaseline()
+        for _ in range(4):
+            with pytest.raises(RadioTimeoutError):
+                await _finish(serial_clock, _read_frequency_reply(radio))
+            responses = radio._serial_link_health.response_count
+            link.queue_response_on_send(
+                len(link.sent_frames) + 1,
+                b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd",
+            )
+            assert (
+                await _finish(serial_clock, radio.get_freq(bypass_cache=True))
+                == 14_074_000
+            )
+            assert radio._serial_link_health.response_count > responses
+            assert not radio._serial_civ_timeout_evidence_crossed_threshold()
+            assert radio._civ_consecutive_timeouts == 0
+            assert radio.connected and radio.radio_ready
+        assert link.connect_calls == 1
+    finally:
+        await _finish(serial_clock, radio.disconnect())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidate", ["failure", "reopen"])
+async def test_plain_civ_link_deferred_reply_is_fenced(
+    invalidate: str, serial_clock: VirtualClock
+) -> None:
+    link = _FakeSerialCivLink(model_id=0x94)
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    session = radio._serial_session
+    health = radio._serial_link_health
+    response = b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd"
+
+    async def receive(frame: bytes = response) -> bytes:
+        link.queue_response(frame)
+        return await _finish(serial_clock, session.civ_transport.receive_packet())
+
+    async def route(packet: bytes) -> None:
+        credit = getattr(packet, "record_response", None)
+        assert credit is not None
+        await radio._civ_runtime._route_civ_frame(
+            parse_civ_frame(_unwrap_civ_frame(packet)),
+            generation=radio._civ_epoch,
+            record_response=credit,
+        )
+
+    try:
+        await session.connect()
+        if invalidate == "reopen":
+            health.record_failure()
+        old_reply = await receive()
+        if invalidate == "failure":
+            health.record_failure()
+        else:
+            await session.disconnect()
+            await session.connect()
+        assert not health.responding
+        await route(old_reply)
+        assert health.response_count == 0
+        assert not health.responding
+        for unqualified in (
+            b"\xfe\xfe\xe0\x96\x03\x00\x40\x07\x14\x00\xfd",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x02\xfd",
+        ):
+            await route(await receive(unqualified))
+            assert health.response_count == 0
+            assert not health.responding
+        await route(await receive())
+        assert health.response_count == 1
+        assert health.responding
+    finally:
+        await session.disconnect()
 
 
 @pytest.mark.asyncio

@@ -256,14 +256,16 @@ class _IcomSerialRadioBase(CoreRadio):
         # gap itself until the IC-7300 is measured.
         self._civ_rtt_estimate = self._civ_min_interval
         serial_link = civ_link or SerialCivLink(device=device, baudrate=baudrate)
-        self._serial_session = session_driver or SerialSessionDriver(serial_link)
+        self._serial_link_health: SerialLinkHealth = getattr(
+            serial_link, "_link_health", SerialLinkHealth()
+        )
+        self._serial_session = session_driver or SerialSessionDriver(
+            serial_link, link_health=self._serial_link_health
+        )
         # MOR-1453: raw link ref for rediscovery's set_device rebind. None
         # when a bespoke session_driver was supplied (its link is then
         # unreachable here -- currently unused in practice).
         self._serial_civ_link = serial_link if session_driver is None else None
-        self._serial_link_health: SerialLinkHealth = getattr(
-            serial_link, "_link_health", SerialLinkHealth()
-        )
         self._serial_audio_driver = audio_driver or UsbAudioDriver(
             AudioDeviceConfig(
                 rx_device=rx_device,
