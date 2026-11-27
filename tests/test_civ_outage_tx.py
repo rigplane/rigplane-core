@@ -87,7 +87,7 @@ def _frame(radio: IcomRadio, operation: str, wrapped: bool) -> bytes:
     elif operation == "stop_voice":
         frame = build_civ_frame(address, CONTROLLER_ADDR, 0x28, 0x00, b"\x00")
     elif operation == "ptt_read":
-        frame = commands.get_transceiver_status(to_addr=address)
+        frame = build_civ_frame(address, CONTROLLER_ADDR, 0x1C, 0x00)
     elif operation == "tuner_read":
         frame = commands.get_tuner_status(to_addr=address)
     elif operation == "frequency_read":
