@@ -4766,6 +4766,7 @@ class TestFtx1ManualOnlyCommands:
     ``vfo_equalize`` (AB; — MAIN-side to SUB-side), the FTX-1's M⇄S / M=S.
     MOR-3678 added ``write_keyer_memory`` (KM; — KEYING MEMORY, printed
     p.17), which send_cw_text writes before KY plays the channel.
+    MOR-4795 added ``get_dcd`` (RI0; — RADIO INFORMATION) for its SQL bit.
     """
 
     _REMOVED_NAMES = frozenset(
@@ -4793,8 +4794,8 @@ class TestFtx1ManualOnlyCommands:
     def test_exact_retained_membership(self):
         _assert_manual_only_membership(
             "ftx1.toml",
-            131,
-            "a295a3445022f0cf018cf53b515fd4e6fa03503d98fec7d3da995ff40ef976e7",
+            132,
+            "bcb7e4d2665ae6dbbc9fb3679ab14e039011490f10ca8c49a79f57cbb4999589",
             self._REMOVED_NAMES,
         )
 

@@ -589,6 +589,8 @@ class AcquisitionPolicy:
     #: Declared conditions, all of which must hold, for this field to exist
     #: on the radio in its current mode, band or state.
     available_when: tuple[AvailabilityClause, ...] = ()
+    #: Automatic reads for receive-side status can yield the link to TX.
+    rx_only: bool = False
 
     def __post_init__(self) -> None:
         cadence = _optional_positive_float(
@@ -618,6 +620,9 @@ class AcquisitionPolicy:
             "tx_only",
             _strict_bool(self.tx_only, label="tx_only"),
         )
+        _strict_bool(self.rx_only, label="rx_only")
+        if self.rx_only and self.tx_only:
+            raise ValueError("rx_only and tx_only are mutually exclusive")
         clauses = tuple(self.available_when)
         for clause in clauses:
             if not isinstance(clause, AvailabilityClause):
@@ -642,6 +647,7 @@ class AcquisitionPolicy:
             ),
             "txOnly": self.tx_only,
             "availableWhen": [clause.to_dict() for clause in self.available_when],
+            **({"rxOnly": True} if self.rx_only else {}),
         }
 
     @classmethod
@@ -657,6 +663,7 @@ class AcquisitionPolicy:
                     "externalCatPause",
                     "meterCoalescing",
                     "txOnly",
+                    "rxOnly",
                     "availableWhen",
                 }
             ),
@@ -694,6 +701,7 @@ class AcquisitionPolicy:
                 value.get("meterCoalescing")
             ),
             tx_only=bool(value.get("txOnly", False)),
+            rx_only=_strict_bool(value.get("rxOnly", False), label="rxOnly"),
             available_when=tuple(
                 AvailabilityClause.from_dict(clause)
                 for clause in value.get("availableWhen", ())

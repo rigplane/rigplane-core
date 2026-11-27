@@ -226,6 +226,8 @@ supported_controls = [
 ]
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.dcd"]
+reason = "LIVE audio needs a timely squelch-open reading in receive. Omit it in TX to preserve the CI-V poll budget (MOR-4795)"
+rx_only = true
 cadence_seconds = 0.4
 freshness_ttl_seconds = 1.2
 adaptive_decay = false

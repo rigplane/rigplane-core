@@ -283,6 +283,7 @@ def _make_ftx1_radio() -> MagicMock:
     radio.read_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
     )
+    radio.read_dcd = AsyncMock(return_value=True)
     radio.read_attenuator = AsyncMock(return_value=True)
     radio.read_preamp = AsyncMock(return_value=2)
     radio.read_agc = AsyncMock(return_value=3)
@@ -416,7 +417,7 @@ async def _run_ftx1_poll_cycles(
             "get_id_meter",
         )
         fast_names = (
-            ("read_s_meter",)
+            ("read_dcd", "read_s_meter")
             if not ptt
             else (
                 "read_alc_meter",
@@ -434,6 +435,7 @@ async def _run_ftx1_poll_cycles(
                 f"({'TX' if ptt else 'RX'} window): "
                 f"{count} reads in {cycles} cycles"
             )
+        assert radio.read_dcd.await_count == (0 if ptt else cycles)
     return acquired, reads, published
 
 

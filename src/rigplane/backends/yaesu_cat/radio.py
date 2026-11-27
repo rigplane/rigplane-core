@@ -2560,8 +2560,8 @@ class YaesuCatRadio:
 
     async def read_dcd(self) -> bool | None:
         """Read the profile's receive-busy status."""
-        value = (await self._query("get_dcd"))["state"]
-        return value if isinstance(value, bool) else None
+        state = (await self._query("get_dcd"))["state"]
+        return {"0": False, "1": True}.get(state)
 
     async def get_squelch(self, receiver: int = 0) -> int:
         """Get the squelch level (0–255)."""

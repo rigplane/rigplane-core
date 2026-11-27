@@ -732,7 +732,7 @@ class AcquisitionScheduler:
         A poll group is class-derived when none of its paths has a
         ``field_policies`` entry. Every other group keeps its declared
         cadence and is passed to :func:`fit_to_budget` as reserved demand:
-        in transmit all of it, in receive its non-``tx_only`` part. Each
+        excluding policies reserved for the other window. Each
         polled path counts as one query per cadence. Receive and transmit
         are fitted separately; the windows that do not fit are logged here,
         in one warning, with their numbers.
@@ -751,7 +751,8 @@ class AcquisitionScheduler:
             if any(path in self._profile.field_policies for path in paths):
                 assert key.policy.cadence_seconds is not None
                 rate = len(paths) / key.policy.cadence_seconds
-                reserved[True] += rate
+                if not key.policy.rx_only:
+                    reserved[True] += rate
                 if not key.policy.tx_only:
                     reserved[False] += rate
                 continue
@@ -1247,12 +1248,18 @@ class AcquisitionScheduler:
         """Return whether ``request`` passes the dispatch gates right now.
 
         The per-request form of :meth:`dispatchable_requests`' filter (the
-        ``tx_only`` and conditional-availability gates), for a drain that
+        phase and conditional-availability gates), for a drain that
         awaits between sends: the tuple it took at the start of the pass can
         go stale while an earlier read is in flight, so it asks again, after
         :meth:`note_availability`, before each send (MOR-3630).
         """
 
+        if (
+            self._tx_active
+            and request.policy.rx_only
+            and request.priority in _AUTOMATIC_PRIORITIES
+        ):
+            return False
         return (
             self._tx_active
             or request.priority is not AcquisitionPriority.RECONCILIATION
@@ -1354,6 +1361,7 @@ class AcquisitionScheduler:
         fresh cadence interval from the TX-start moment. Callers derive
         ``tx_active`` from their own observed PTT state; this method has no
         opinion on where that comes from.
+        A group with ``rx_only`` follows the same rule for the receive window.
 
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared ``available_when`` clauses
@@ -2457,6 +2465,8 @@ class AcquisitionScheduler:
                 continue
             policy = key.policy
             if policy.cadence_seconds is None:
+                continue
+            if policy.rx_only and tx_active:
                 continue
             if policy.tx_only and not tx_active:
                 # MOR-1485: skip entirely rather than dedupe/defer — no query

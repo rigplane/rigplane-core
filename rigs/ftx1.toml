@@ -1432,7 +1432,7 @@ get_rf_gain_sub    = { cat = { read = "RG1;", parse = "RG1{level:03d};" } }
 set_rf_gain_sub    = { cat = { write = "RG1{level:03d};" } }
 get_squelch        = { cat = { read = "SQ0;", parse = "SQ0{level:03d};" } }
 # CAT reference 2507-B, p.22. P1 and P5 are fixed at 0 and P8 is SQL open.
-get_dcd            = { cat = { read = "RI0;", parse = "RI0{value}{val}{tx}0{func}{mode}{state:bool};" } }
+get_dcd            = { cat = { read = "RI0;", parse = "RI0{value}{val}{tx}0{func}{mode}{state};" } }
 set_squelch        = { cat = { write = "SQ0{level:03d};" } }
 get_squelch_sub    = { cat = { read = "SQ1;", parse = "SQ1{level:03d};" } }
 set_squelch_sub    = { cat = { write = "SQ1{level:03d};" } }
