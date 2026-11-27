@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { mount, unmount, flushSync, tick } from 'svelte';
+
+vi.mock('$lib/runtime/commands/audio-retry', () => ({ retryAudio: vi.fn() }));
 
 vi.mock('$lib/stores/connection.svelte', () => ({
   getRadioLinkState: vi.fn(() => 'connected'),
@@ -79,6 +81,7 @@ import { radio, resetRadioState } from '$lib/stores/radio.svelte';
 import { setLocale } from '$lib/i18n';
 import type { LocaleCode } from '$lib/i18n/types';
 import type { ServerState } from '$lib/types/state';
+import { retryAudio } from '$lib/runtime/commands/audio-retry';
 
 interface AudioScene {
   rxEnabled?: boolean;
@@ -103,6 +106,7 @@ describe('StatusBar audio chip honesty (MOR-3753)', () => {
     (runtime as { remoteController: boolean }).remoteController = false;
     resetRadioState();
     setLocale('en-US');
+    vi.mocked(retryAudio).mockReset();
   });
 
   function renderAudioChip(scene: AudioScene = {}): Element {
@@ -142,12 +146,13 @@ describe('StatusBar audio chip honesty (MOR-3753)', () => {
     expect(chip.getAttribute('style')).toContain('#4ade80');
   });
 
-  it.each<[LocaleCode, string]>([
-    ['en-US', 'RX audio could not be restored'],
-    ['ru-RU', 'Не удалось восстановить звук приёма'],
-    ['ja-JP', '受信音声を復旧できませんでした'],
-  ])('renders and clears the server restoration failure in %s', (locale, message) => {
+  it.each<[LocaleCode, string, string]>([
+    ['en-US', 'RX audio could not be restored', 'Retry'],
+    ['ru-RU', 'Не удалось восстановить звук приёма', 'Повторить'],
+    ['ja-JP', '受信音声を復旧できませんでした', '再試行'],
+  ])('renders and clears the server restoration failure in %s', (locale, message, retry) => {
     const chip = renderAudioChip({ rxEnabled: true, audioConnected: true });
+    expect(target?.querySelector('[data-testid="rx-audio-restore-failed"] button')).toBeNull();
     setLocale(locale);
     radio.current = {
       audioReceive: {
@@ -159,12 +164,37 @@ describe('StatusBar audio chip honesty (MOR-3753)', () => {
     } as ServerState;
     flushSync();
     expect(target?.textContent).toContain(message);
+    const status = target?.querySelector('[data-testid="rx-audio-restore-failed"]');
+    expect(status?.querySelectorAll('button')).toHaveLength(1);
+    expect(status?.querySelector('button')?.textContent).toBe(retry);
     expect(chip.getAttribute('style')).toContain('#ef4444');
 
     radio.current = { audioReceive: { schemaVersion: 1, failure: null } } as ServerState;
     flushSync();
     expect(target?.textContent).not.toContain(message);
+    expect(target?.querySelector('[data-testid="rx-audio-restore-failed"] button')).toBeNull();
     expect(chip.getAttribute('style')).toContain('#4ade80');
+  });
+
+  it('keeps the desktop retry disabled pending its result and displays refusal', async () => {
+    let resolve!: (result: Awaited<ReturnType<typeof retryAudio>>) => void;
+    vi.mocked(retryAudio).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    renderAudioChip();
+    radio.current = {
+      audioReceive: {
+        schemaVersion: 1,
+        failure: { stage: 'rx_recovery', code: 'core_rx_restore_failed', reason: 'retries_exhausted' },
+      },
+    } as ServerState;
+    flushSync();
+    const retry = target!.querySelector<HTMLButtonElement>('[data-testid="rx-audio-restore-failed"] button')!;
+    retry.click(); retry.click(); flushSync();
+    expect(retryAudio).toHaveBeenCalledTimes(1);
+    expect(retry.disabled).toBe(true);
+    resolve({ accepted: false, reason: 'unsupported' });
+    await tick();
+    expect(retry.disabled).toBe(false);
+    expect(target?.textContent).toContain('Audio retry is not supported.');
   });
 
   it('[baseline behavior] requested but socket absent is an attempt, never a fault', () => {
