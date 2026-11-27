@@ -182,7 +182,9 @@ async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
     try:
         answer = WebRtcAnswer.from_json(await manager.negotiate(sdp, typ))
         # The real transaction has sent once and cannot finish on frozen time.
-        await await_until(check_sent.is_set, description="the first ICE check")
+        await await_until(
+            check_sent.is_set, description="the first ICE check", clock=virtual_clock
+        )
         await manager.close_session(answer.session_id)
     finally:
         await manager.close_all()
@@ -229,7 +231,11 @@ async def test_close_retrieves_gather_failure_before_snapshot(
     negotiate = asyncio.create_task(manager.negotiate(offer.sdp, offer.type))
     close: asyncio.Task[list[str]] | None = None
     try:
-        await await_until(gathering.is_set, description="ICE gather endpoint creation")
+        await await_until(
+            gathering.is_set,
+            description="ICE gather endpoint creation",
+            clock=virtual_clock,
+        )
         (session_id,) = manager.active_session_ids
         session = manager._sessions[session_id]  # noqa: SLF001 - observe gather ownership
         assert len(session.gather_inflight) == 1
@@ -287,8 +293,12 @@ async def test_close_during_gather_leaves_no_unretrieved_exceptions(
         manager.negotiate(sdp, typ, ice_servers=_ice_servers(stun_port, turn_port))
     )
     try:
-        await await_until(stun.received.is_set, description="the STUN datagram")
-        await await_until(turn.received.is_set, description="the TURN datagram")
+        await await_until(
+            stun.received.is_set, description="the STUN datagram", clock=virtual_clock
+        )
+        await await_until(
+            turn.received.is_set, description="the TURN datagram", clock=virtual_clock
+        )
         assert not negotiate.done()
         (session_id,) = manager.active_session_ids
         pc = manager._sessions[session_id].pc  # noqa: SLF001 - observe transport lifetime

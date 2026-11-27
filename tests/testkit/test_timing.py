@@ -255,6 +255,30 @@ async def test_await_until_polls_real_time_on_a_real_loop() -> None:
     assert await await_until(lambda: box and box[0], timeout=10.0) == 1
 
 
+@pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
+async def test_default_wait_keeps_real_deadline_when_virtual_time_advances(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    synchronous: bool,
+) -> None:
+    monkeypatch.setattr(
+        timing,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: 10.0, sleep=lambda _: None),
+    )
+    samples: list[float] = []
+
+    def delivered() -> int:
+        samples.append(virtual_clock.advance(0.5))
+        return 42 if len(samples) == 3 else 0
+
+    if synchronous:
+        assert wait_until(delivered, timeout=0.25) == 42
+    else:
+        assert await await_until(delivered, timeout=0.25) == 42
+    assert len(samples) == 3
+
+
 @pytest.mark.timeout(30)
 async def test_await_until_delivers_real_socket_io_without_advancing_virtual_time(
     virtual_clock: VirtualClock,
@@ -287,7 +311,9 @@ async def test_await_until_observes_explicit_elapse_without_driving_the_clock(
     started = virtual_clock()
     delivered: list[int] = []
     handle = asyncio.get_running_loop().call_later(0.25, delivered.append, 42)
-    waiter = asyncio.create_task(await_until(lambda: delivered and delivered[0]))
+    waiter = asyncio.create_task(
+        await_until(lambda: delivered and delivered[0], clock=virtual_clock)
+    )
     try:
         await asyncio.sleep(0)
         assert virtual_clock() == started
@@ -312,51 +338,48 @@ async def test_virtual_wait_observes_explicit_clock_advances_and_deadline(
         virtual_clock.advance(0.125)
         return False
 
-    with pytest.raises(AssertionError, match="waiting for a missing event"):
-        if synchronous:
-            wait_until(missing_event, timeout=0.25, description="a missing event")
-        else:
-            await await_until(
-                missing_event, timeout=0.25, description="a missing event"
-            )
-    assert virtual_clock() - started == pytest.approx(0.25)
-
-
-@pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
-async def test_frozen_virtual_wait_fails_loudly_at_the_real_safety_bound(
-    virtual_clock: VirtualClock,
-    monkeypatch: pytest.MonkeyPatch,
-    synchronous: bool,
-) -> None:
-    started = virtual_clock()
-    wall = Mock(side_effect=[10.0, 10.25])
-    monkeypatch.setattr(timing, "time", types.SimpleNamespace(monotonic=wall))
     with pytest.raises(
         AssertionError,
         match=r"condition not met.*a missing event.*virtual clock not advanced\?",
     ):
         if synchronous:
-            wait_until(lambda: False, timeout=0.25, description="a missing event")
+            wait_until(
+                missing_event,
+                timeout=0.25,
+                description="a missing event",
+                clock=virtual_clock,
+            )
         else:
             await await_until(
-                lambda: False, timeout=0.25, description="a missing event"
+                missing_event,
+                timeout=0.25,
+                description="a missing event",
+                clock=virtual_clock,
             )
-    assert virtual_clock() == started
+    assert virtual_clock() - started == pytest.approx(0.25)
 
 
-@pytest.mark.timeout(5)
 @pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
-async def test_unadvanced_virtual_wait_expires_after_real_polling(
+async def test_opt_in_virtual_deadline_does_not_read_wall_time(
     virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
     synchronous: bool,
 ) -> None:
     started = virtual_clock()
-    with pytest.raises(AssertionError, match=r"virtual clock not advanced\?"):
-        if synchronous:
-            wait_until(lambda: False, timeout=0.02)
-        else:
-            await await_until(lambda: False, timeout=0.02)
-    assert virtual_clock() == started
+    wall = Mock(side_effect=AssertionError("virtual bound read wall time"))
+    monkeypatch.setattr(
+        timing, "time", types.SimpleNamespace(monotonic=wall, sleep=lambda _: None)
+    )
+
+    def delivered() -> bool:
+        virtual_clock.advance(0.125)
+        return virtual_clock() - started >= 0.25
+
+    if synchronous:
+        assert wait_until(delivered, timeout=0.5, clock=virtual_clock)
+    else:
+        assert await await_until(delivered, timeout=0.5, clock=virtual_clock)
+    wall.assert_not_called()
 
 
 @pytest.mark.timeout(30)
@@ -371,9 +394,9 @@ async def test_virtual_wait_returns_a_real_thread_event_without_advancing_time(
     worker.start()
     try:
         if synchronous:
-            assert wait_until(delivered.is_set)
+            assert wait_until(delivered.is_set, clock=virtual_clock)
         else:
-            assert await await_until(delivered.is_set)
+            assert await await_until(delivered.is_set, clock=virtual_clock)
         assert virtual_clock() == started
     finally:
         worker.cancel()
@@ -385,12 +408,19 @@ async def test_await_until_timeout_observes_an_explicit_elapse(
     virtual_clock: VirtualClock,
 ) -> None:
     waiter = asyncio.create_task(
-        await_until(lambda: False, timeout=0.25, description="a missing event")
+        await_until(
+            lambda: False,
+            timeout=0.25,
+            description="a missing event",
+            clock=virtual_clock,
+        )
     )
     try:
         await asyncio.sleep(0)
         await virtual_clock.elapse(0.25)
-        with pytest.raises(AssertionError, match="waiting for a missing event"):
+        with pytest.raises(
+            AssertionError, match=r"condition not met.*virtual clock not advanced\?"
+        ):
             await waiter
     finally:
         waiter.cancel()
@@ -415,7 +445,9 @@ async def test_cancelling_a_virtual_wait_releases_its_real_poll_timer(
         return result
 
     monkeypatch.setattr(timing, "threading", types.SimpleNamespace(Timer=timer))
-    waiter = asyncio.create_task(await_until(lambda: False, interval=10.0))
+    waiter = asyncio.create_task(
+        await_until(lambda: False, interval=10.0, clock=virtual_clock)
+    )
     await asyncio.sleep(0)
     try:
         assert timers
@@ -446,9 +478,9 @@ async def test_virtual_wait_rejects_invalid_poll_intervals(
     started = virtual_clock()
     with pytest.raises(ValueError, match="finite and positive"):
         if synchronous:
-            wait_until(lambda: False, interval=interval)
+            wait_until(lambda: False, interval=interval, clock=virtual_clock)
         else:
-            await await_until(lambda: False, interval=interval)
+            await await_until(lambda: False, interval=interval, clock=virtual_clock)
     assert virtual_clock() == started
 
 
