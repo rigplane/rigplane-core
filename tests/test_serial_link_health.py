@@ -267,7 +267,7 @@ async def test_serial_loss_reaches_public_state_and_recovers(
         else:
             if failure == "write":
                 with pytest.raises(cat_transport.CatTransportError):
-                    await radio._transport.query("FA;")
+                    await _finish(virtual_clock, radio._transport.query("FA;"))
 
         if failure == "write":
             immediate = await _api_json(server)
