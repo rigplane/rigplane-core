@@ -4765,7 +4765,7 @@ class CivRuntime:
                 )
             )
             if cw_start or (
-                classify_raw_civ_frame_tx_family(civ_frame) is True
+                classify_raw_civ_frame_tx_family(civ_frame) is not False
                 and not is_exact_raw_dekey_frame(civ_frame)
             ):
                 raise StaleBeforeWireError("CI-V transport unavailable before dispatch")

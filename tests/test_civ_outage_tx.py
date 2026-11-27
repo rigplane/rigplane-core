@@ -15,6 +15,7 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.exceptions import StaleBeforeWireError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
+from rigplane.exceptions import TimeoutError as RadioTimeoutError
 from rigplane.runtime import _civ_rx
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -36,13 +37,14 @@ async def outage(
     monkeypatch: pytest.MonkeyPatch,
     virtual_clock: VirtualClock,
 ) -> AsyncIterator[_Outage]:
+    monkeypatch.delenv("ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S", raising=False)
     radio = IcomRadio("test.invalid", model=request.param)
+    assert radio._civ_recovery_wait_timeout == 12.0
     radio._ctrl_transport = SimpleNamespace(_udp_transport=object())
     radio._conn_state = RadioConnectionState.RECONNECTING
     radio._civ_recovering = True
     radio._civ_transport = None
     radio._civ_min_interval = 0.0
-    radio._civ_recovery_wait_timeout = 12.0
     restored_link = MockTransport()
     restored = asyncio.Event()
     monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
@@ -108,12 +110,14 @@ def _frame(radio: IcomRadio, operation: str, wrapped: bool) -> bytes:
 @pytest.mark.parametrize("operation", ["ptt_on", "cw", "tune", "voice"])
 @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "receiver-prefix"])
 @pytest.mark.parametrize("stalled", [False, True], ids=["missing", "stalled"])
+@pytest.mark.parametrize("recovery_delay", [0.5, 11.7])
 async def test_outage_key_fails_before_recovery_and_never_reaches_restored_link(
     outage: _Outage,
     virtual_clock: VirtualClock,
     operation: str,
     wrapped: bool,
     stalled: bool,
+    recovery_delay: float,
 ) -> None:
     radio = outage.radio
     old_link = MockTransport()
@@ -124,7 +128,7 @@ async def test_outage_key_fails_before_recovery_and_never_reaches_restored_link(
     try:
         await virtual_clock.elapse(0.0)
         failed_without_wait = caller.done()
-        await virtual_clock.elapse(0.5)
+        await virtual_clock.elapse(recovery_delay)
         outage.restore()
         await virtual_clock.elapse(0.25)
         assert caller.done()
@@ -153,16 +157,18 @@ async def test_outage_key_fails_before_recovery_and_never_reaches_restored_link(
     ],
 )
 @pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "receiver-prefix"])
+@pytest.mark.parametrize("recovery_delay", [0.5, 11.7])
 async def test_outage_non_key_command_waits_and_is_delivered_after_recovery(
     outage: _Outage,
     virtual_clock: VirtualClock,
     operation: str,
     wrapped: bool,
+    recovery_delay: float,
 ) -> None:
     frame = _frame(outage.radio, operation, wrapped)
     caller = asyncio.create_task(outage.radio._send_civ_raw(frame, wait_response=False))
     try:
-        await virtual_clock.elapse(0.5)
+        await virtual_clock.elapse(recovery_delay)
         assert not caller.done()
         assert outage.restored_link.sent_packets == []
         outage.restore()
@@ -172,6 +178,85 @@ async def test_outage_non_key_command_waits_and_is_delivered_after_recovery(
         assert [
             packet[CIV_HEADER_SIZE:] for packet in outage.restored_link.sent_packets
         ] == [frame]
+    finally:
+        caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    ("operation", "release"),
+    [
+        ("ptt_on", "ptt_off"),
+        ("cw", "stop_cw"),
+        ("tune", "stop_tune"),
+        ("voice", "stop_voice"),
+    ],
+)
+@pytest.mark.parametrize("prefix", ["read", "release"])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "receiver-prefix"])
+@pytest.mark.parametrize("stalled", [False, True], ids=["missing", "stalled"])
+async def test_outage_combined_raw_key_payload_is_refused_before_recovery(
+    outage: _Outage,
+    virtual_clock: VirtualClock,
+    operation: str,
+    release: str,
+    prefix: str,
+    wrapped: bool,
+    stalled: bool,
+) -> None:
+    radio = outage.radio
+    old_link = MockTransport()
+    if stalled:
+        radio._civ_transport = old_link
+    first = "frequency_read" if prefix == "read" else release
+    payload = _frame(radio, first, wrapped) + _frame(radio, operation, wrapped)
+    caller = asyncio.create_task(radio.send_civ_raw_fire_and_forget(payload))
+    try:
+        await virtual_clock.elapse(0.0)
+        failed_without_wait = caller.done()
+        await virtual_clock.elapse(11.7)
+        outage.restore()
+        await virtual_clock.elapse(0.25)
+        assert caller.done()
+        result = (await asyncio.gather(caller, return_exceptions=True))[0]
+        assert outage.restored_link.sent_packets == []
+        assert old_link.sent_packets == []
+        assert isinstance(result, StaleBeforeWireError)
+        assert failed_without_wait
+    finally:
+        caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("operation", ["ptt_off", "stop_cw", "stop_tune", "stop_voice"])
+@pytest.mark.parametrize("wrapped", [False, True], ids=["bare", "receiver-prefix"])
+async def test_outage_release_times_out_at_default_deadline_without_recovery(
+    outage: _Outage,
+    virtual_clock: VirtualClock,
+    operation: str,
+    wrapped: bool,
+) -> None:
+    frame = _frame(outage.radio, operation, wrapped)
+    caller = asyncio.create_task(outage.radio.send_civ_raw_fire_and_forget(frame))
+    try:
+        await virtual_clock.elapse(0.0)
+        await virtual_clock.elapse(11.75)
+        assert not caller.done()
+        assert outage.restored_link.sent_packets == []
+        await virtual_clock.elapse(0.25)
+        assert caller.done()
+        with pytest.raises(StaleBeforeWireError) as refused:
+            await caller
+        assert isinstance(refused.value.__cause__, RadioTimeoutError)
+        assert str(refused.value.__cause__) == "CI-V transport recovery timed out"
+        assert outage.restored_link.sent_packets == []
+        outage.restore()
+        await virtual_clock.elapse(0.25)
+        assert outage.restored_link.sent_packets == []
     finally:
         caller.cancel()
         await asyncio.gather(caller, return_exceptions=True)
