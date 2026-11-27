@@ -34,14 +34,20 @@ ledger until they gain a real assertion.
 per line (relative to ``tests/``), sorted.
 ``test_no_unlisted_assertion_free_test`` fails on an offender missing
 from it; ``test_ledger_entries_still_offend`` fails on a line that no
-longer offends. Regenerate, do not edit:
+longer offends. Both fail WITH THE DIFF against a fresh scan, so a
+stale ledger is a one-command fix with an exact message, not a mystery
+red. Regenerate, do not edit:
 
-    uv run python tests/test_meta_assertions.py --regenerate
+    uv run python scripts/regen_assertion_free_ledger.py
+
+(The module entry point ``uv run python tests/test_meta_assertions.py
+--regenerate`` still works.)
 """
 
 from __future__ import annotations
 
 import ast
+import difflib
 import functools
 import os
 import pathlib
@@ -54,6 +60,7 @@ import pytest
 TESTS_DIR = pathlib.Path(__file__).resolve().parents[1] / "tests"
 LEDGER_FILE = pathlib.Path(__file__).with_name("assertion_free_uncovered.txt")
 REGEN_ENV = "RIGPLANE_REGEN_ASSERTION_FREE_UNCOVERED"
+REGEN_COMMAND = "uv run python scripts/regen_assertion_free_ledger.py"
 TEST_FUNCTION_PREFIX = "test_"
 REAL_CALL_NAMES = frozenset({"raises", "approx", "fail", "warns"})
 MOCK_VERIFICATION_PREFIXES = ("assert_called", "assert_awaited")
@@ -135,8 +142,7 @@ def _render_ledger(offending: Mapping[str, Sequence[Offence]]) -> str:
         "# One path per line, relative to tests/, sorted. The test fails",
         "# on an offender missing here, and on a line here that no",
         "# longer offends -- delete that line, never keep it. Regenerate,",
-        "# do not edit: uv run python tests/test_meta_assertions.py",
-        "# --regenerate",
+        "# do not edit: uv run python scripts/regen_assertion_free_ledger.py",
     ]
     rows = sorted(offending)
     return "\n".join(header + rows) + "\n"
@@ -165,6 +171,50 @@ def _describe(offending: Mapping[str, Sequence[Offence]]) -> str:
         f"{path}: first assertion-free test at line {offences[0][0]}"
         f" ({offences[0][1]}, {len(offences)} total)"
         for path, offences in sorted(offending.items())
+    )
+
+
+def _ledger_diff_text(
+    committed_text: str, offending: Mapping[str, Sequence[Offence]]
+) -> str:
+    """Unified diff of the committed ledger against a fresh scan ("" when fresh)."""
+    fresh = _render_ledger(offending)
+    if committed_text == fresh:
+        return ""
+    return "".join(
+        difflib.unified_diff(
+            committed_text.splitlines(keepends=True),
+            fresh.splitlines(keepends=True),
+            fromfile="committed tests/assertion_free_uncovered.txt",
+            tofile="fresh scan of tests/",
+        )
+    )
+
+
+def _stale_ledger_message(
+    committed_text: str,
+    offending: Mapping[str, Sequence[Offence]],
+    detail: str = "",
+) -> str:
+    """Failure body for a stale ledger: the detail, the diff, the fix.
+
+    The gate regenerates the ledger in memory and fails WITH THE DIFF,
+    so a stale ledger is a one-command fix, not a mystery red. Returns
+    "" when the ledger matches the scan.
+    """
+    diff = _ledger_diff_text(committed_text, offending)
+    if not diff:
+        return ""
+    body = (
+        "Stale assertion-free ledger: tests/assertion_free_uncovered.txt "
+        "does not match a fresh scan of tests/.\n"
+    )
+    if detail:
+        body += f"{detail}\n"
+    return (
+        f"{body}Diff (committed ledger vs fresh scan):\n"
+        f"{diff}"
+        f"Regenerate, do not edit: {REGEN_COMMAND}\n"
     )
 
 
@@ -283,6 +333,25 @@ def test_ratchet_failure_directions() -> None:
     assert stale == []
 
 
+def test_stale_failure_names_the_diff_and_the_one_command_fix() -> None:
+    """A stale ledger fails WITH THE DIFF, not a bare offender line."""
+    committed = _render_ledger({"tests/test_kept.py": [(1, "test_kept")]})
+    scan: dict[str, list[Offence]] = {
+        "tests/test_kept.py": [(1, "test_kept")],
+        "tests/test_new.py": [(48, "test_new_assertion_free")],
+    }
+    message = _stale_ledger_message(committed, scan)
+    assert "tests/test_new.py" in message
+    assert "+tests/test_new.py" in message.replace(" ", "")
+    assert "regen_assertion_free_ledger" in message
+
+
+def test_fresh_ledger_has_no_drift_message() -> None:
+    """A ledger that matches the scan reports no drift."""
+    scan: dict[str, list[Offence]] = {"tests/test_kept.py": [(1, "test_kept")]}
+    assert _stale_ledger_message(_render_ledger(scan), scan) == ""
+
+
 # ── the ratchet over the real tree ──────────────────────────────────
 
 
@@ -300,18 +369,22 @@ def test_no_unlisted_assertion_free_test(
     tree_offences: Mapping[str, Sequence[Offence]],
 ) -> None:
     """An assertion-free test function needs a ledger line."""
-    listed = _parse_ledger_text(LEDGER_FILE.read_text(encoding="utf-8"))
+    committed = LEDGER_FILE.read_text(encoding="utf-8")
+    listed = _parse_ledger_text(committed)
     unlisted, _ = _ratchet_failures(tree_offences, listed)
-    assert not unlisted, _describe({p: tree_offences[p] for p in unlisted})
+    assert not unlisted, _stale_ledger_message(
+        committed, tree_offences, _describe({p: tree_offences[p] for p in unlisted})
+    )
 
 
 def test_ledger_entries_still_offend(
     tree_offences: Mapping[str, Sequence[Offence]],
 ) -> None:
     """A ledger line whose file no longer offends must be deleted."""
-    listed = _parse_ledger_text(LEDGER_FILE.read_text(encoding="utf-8"))
+    committed = LEDGER_FILE.read_text(encoding="utf-8")
+    listed = _parse_ledger_text(committed)
     _, stale = _ratchet_failures(tree_offences, listed)
-    assert not stale, "\n".join(stale)
+    assert not stale, _stale_ledger_message(committed, tree_offences, "\n".join(stale))
 
 
 if __name__ == "__main__":
