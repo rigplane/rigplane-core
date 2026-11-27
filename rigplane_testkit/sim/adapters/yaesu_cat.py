@@ -509,7 +509,10 @@ class _CatConnection:
         self._timer = None
         if self._closed:
             return
-        while self._pending and self._pending[0][0] <= self._loop.time():
+        # A timer may fire one loop-clock resolution early. Honor its head
+        # deadline instead of rescheduling that same timer until time advances.
+        due = max(self._pending[0][0], self._loop.time())
+        while self._pending and self._pending[0][0] <= due:
             _, data = self._pending.popleft()
             self.reader.feed_data(data)
         if self._pending:
