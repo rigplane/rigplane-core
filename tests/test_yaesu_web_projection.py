@@ -24,7 +24,7 @@ from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
-from rigplane.backends.yaesu_cat.radio import FilterWidthReading
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading, YaesuCatRadio
 
 # (store path, public fieldStatus key, expected value) for the five TX controls.
 _TX_CONTROL_CASES = (
@@ -222,6 +222,7 @@ def _make_radio() -> MagicMock:
     radio.get_id_meter = AsyncMock(return_value=0)
     # An unrelated RX-meter read used to prove no snap-back.
     radio.read_s_meter = AsyncMock(return_value=150)
+    radio.read_dcd = AsyncMock(spec=YaesuCatRadio.read_dcd, return_value=False)
     # Filter / IF-shift / narrow DSP controls (MOR-445). filter_width is read
     # in the medium (freq/mode) lane; if_shift/narrow in the slow lane.
     radio.read_freq = AsyncMock(side_effect=lambda receiver=0: 14_074_000)

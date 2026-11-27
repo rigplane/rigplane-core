@@ -240,6 +240,7 @@ def test_frontend_reset_reaches_the_wire_only_through_the_two_clicks() -> None:
 _STATIC_ANSWERS = {
     "FA;": "FA014043200",
     "FB;": "FB144500000",
+    "RI0;": "RI00000000",
     "SM0;": "SM0000",
     "SM1;": "SM0078",
     "FT;": "FT0",

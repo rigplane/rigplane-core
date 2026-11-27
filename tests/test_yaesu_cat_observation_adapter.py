@@ -135,6 +135,7 @@ def _make_radio() -> MagicMock:
     radio.read_s_meter = AsyncMock(
         side_effect=lambda receiver=0: 150 if receiver == 0 else 75
     )
+    radio.read_dcd = AsyncMock(spec=YaesuCatRadio.read_dcd, return_value=False)
     radio.get_squelch = AsyncMock(
         side_effect=lambda receiver=0: 12 if receiver == 0 else 8
     )
@@ -1818,6 +1819,8 @@ async def test_rx_meters_emit_calibrated_db_domain() -> None:
     assert main.quality == ("confirmed", "calibrated")
     assert sub.value == -37
     assert sub.quality == ("confirmed", "calibrated")
+    assert by_path["receiver.main.operator_toggles.dcd"].value is False
+    radio.read_dcd.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -2705,8 +2708,10 @@ async def test_unparseable_sub_s_meter_is_unavailable() -> None:
     assert refusal["frame"] == "SM0048;"
     assert "invalid reply" in refusal["message"]
     assert sub_path not in scheduler.unobserved_startup_paths(())
-    # The failed read skipped only itself: MAIN's meter still emitted.
-    assert {str(item.path) for item in observations} == {"receiver.main.meters.s_meter"}
+    assert {str(item.path) for item in observations} == {
+        "receiver.main.meters.s_meter",
+        "receiver.main.operator_toggles.dcd",
+    }
 
 
 def _split_containment_radio(
@@ -2988,11 +2993,16 @@ async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
     radio._acquisition_scheduler = scheduler
 
     with caplog.at_level("DEBUG"):
-        signal_on_sub = await _poll(radio, {"SM0;": "SM0000", "SM1;": "SM0052"})
-    signal_on_main = await _poll(_radio(), {"SM0;": "SM0052", "SM1;": "SM0000"})
+        signal_on_sub = await _poll(
+            radio, {"RI0;": "RI00000000", "SM0;": "SM0000", "SM1;": "SM0052"}
+        )
+    signal_on_main = await _poll(
+        _radio(), {"RI0;": "RI00000001", "SM0;": "SM0052", "SM1;": "SM0000"}
+    )
 
     assert set(signal_on_sub) == {
         "receiver.main.meters.s_meter",
+        "receiver.main.operator_toggles.dcd",
         "receiver.sub.meters.s_meter",
     }
     assert (
@@ -3636,7 +3646,7 @@ async def test_a_garbled_frame_on_the_wire_is_noise_not_a_defect() -> None:
     radio._transport._connected = True
     radio._transport._writer = MagicMock(drain=AsyncMock())
     radio._transport._reader = MagicMock(
-        readuntil=AsyncMock(return_value=b"SM\x00048;")
+        readuntil=AsyncMock(side_effect=[b"RI00000000;", b"SM\x00048;"])
     )
 
     with pytest.raises(CatGarbledFrameError):

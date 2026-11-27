@@ -1067,10 +1067,11 @@ class TestBuildStateQueries:
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
         # read; MOR-3624 adds repeater_offset_hz (0C) without merging into
-        # any of those; without an observed fixed-edge slot, 40 paths yield
-        # 36 queries.
-        assert len(pollable) == 40
-        assert len(queries) == 36
+        # any of those. MOR-4795 adds the main squelch status via 15 01.
+        assert FieldPath.receiver("main", "operator_toggles", "dcd") in pollable
+        assert len(pollable) == 41
+        assert len(queries) == 37
+        assert sum((query.command, query.sub) == (0x15, 0x01) for query in queries) == 1
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
