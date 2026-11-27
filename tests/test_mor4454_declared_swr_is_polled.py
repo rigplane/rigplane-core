@@ -110,6 +110,11 @@ class _Rig:
         self.clock = FreshnessClock(start=100.0)
         monkeypatch.setattr("time.monotonic", self.clock.now)
         self.radio = radio
+        session = getattr(radio, "_serial_session", None)
+        if session is not None:
+            # A serial radio here models an OPEN port (the wire is stubbed via
+            # ``_civ`` below); acquisition pauses only on a closed serial link.
+            monkeypatch.setattr(type(session), "connected", property(lambda _s: True))
         self.store = radio.state_store
         self.store._freshness_clock = self.clock
         acquisition = radio.profile.state_acquisition
