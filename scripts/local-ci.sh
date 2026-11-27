@@ -17,9 +17,12 @@
 #
 # What runs on the host is decided by scripts/pre_push_scope.py from the diff against the merge
 # base, through CI's own path classifier:
-#   python    ruff == uv.lock version, ruff check/format, lint-imports, validation dry-run goldens
+#   python    ruff == uv.lock version, ruff check/format, lint-imports, validation dry-run
+#             goldens, the assertion-free ledger freshness check (the ledger goes stale
+#             exactly when Python test/src changes land, MOR-4890) and the tests that
+#             mention a changed file (a changed test file counts as mentioning)
 #   mypy-web  mypy --strict src/rigplane/web (CI: only when core and frontend are both selected)
-#   always    the tests that mention a changed file (a changed test file counts as mentioning)
+#   prose-only diffs select no leg and run nothing
 #   frontend  npm ci (cached by package.json + lockfile hash), lint, i18n:check, svelte-check, vitest,
 #             build, with NODE_OPTIONS=--max-old-space-size=3072 as in quick.yml
 # Not covered (they need a browser and run in CI only): the Playwright i18n visual, fixture
@@ -205,6 +208,7 @@ pre_push_on_host() {
         run_step "Ruff format --check"      uv run ruff format --check src/ tests/
         run_step "Import boundaries"        uv run lint-imports
         run_step "Validation dry-run goldens" pre_push_goldens
+        run_step "Assertion-free ledger fresh" pre_push_ledger_fresh
     fi
     if has_leg mypy-web; then
         run_step "Mypy --strict (web boundary)" uv run mypy --strict src/rigplane/web
@@ -221,6 +225,14 @@ pre_push_on_host() {
         run_step "Frontend build"            frontend_in npm run build
     fi
     if [[ $FAILED -eq 1 ]]; then echo "PRE-PUSH-HOST: FAIL"; else echo "PRE-PUSH-HOST: PASS"; fi
+}
+
+# The ledger goes stale exactly when Python test/src changes land (MOR-4890: a
+# branch-added test staled it and the red surfaced only in CI), so the check rides on
+# the python leg -- CI's own classifier, not a new rule. A prose-only diff selects no
+# leg and runs nothing.
+pre_push_ledger_fresh() {
+    uv run python scripts/regen_assertion_free_ledger.py --check
 }
 
 # ---- Orchestration (the laptop or any non-test host) -----------------------------
