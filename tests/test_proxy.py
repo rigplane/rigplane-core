@@ -7,6 +7,8 @@ import socket
 
 import pytest
 
+from rigplane_testkit.ports import udp_ports as udp_ports
+
 from rigplane.proxy import _RelayProtocol, run_proxy
 
 _LISTEN_HOST = "127.0.0.1"
@@ -15,54 +17,17 @@ _LISTEN_HOST = "127.0.0.1"
 # its `labels` list — so reserving a single ephemeral port is not enough.
 _RELAY_PORTS = 3
 
-_PORT_SEARCH_ATTEMPTS = 20
-
 # Logged by run_proxy once all relay endpoints are bound.
 _STARTED_LOG_PREFIX = "Proxy started"
 
 
 def _udp_bind_error(port: int) -> OSError | None:
-    """Bind and release a UDP socket on ``port``; return the error, if any."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.bind((_LISTEN_HOST, port))
-    except OSError as exc:
-        return exc
-    finally:
-        probe.close()
-    return None
-
-
-def _reserve_consecutive_udp_ports(count: int) -> int:
-    """Return a base port with ``count`` consecutive free UDP ports.
-
-    The probes are released before returning, so this does not hold the
-    ports against another process; it only avoids the fixed port that every
-    concurrent copy of this test aimed at (MOR-2271).
-    """
-    for _ in range(_PORT_SEARCH_ATTEMPTS):
-        probes: list[socket.socket] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
-            head = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            probes.append(head)
-            head.bind((_LISTEN_HOST, 0))
-            base = int(head.getsockname()[1])
-            if base + count - 1 > 65535:
-                continue
-            for offset in range(1, count):
-                follower = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                probes.append(follower)
-                follower.bind((_LISTEN_HOST, base + offset))
-        except OSError:
-            continue
-        finally:
-            for probe in probes:
-                probe.close()
-        return base
-    raise RuntimeError(
-        f"no run of {count} free UDP ports on {_LISTEN_HOST} "
-        f"after {_PORT_SEARCH_ATTEMPTS} attempts"
-    )
+            probe.bind((_LISTEN_HOST, port))
+        except OSError as exc:
+            return exc
+    return None
 
 
 def _why_it_ended(task: asyncio.Task[None]) -> str:
@@ -172,11 +137,13 @@ class TestRelayProtocol:
 #   * delete `t.close()` from run_proxy's finally -> "still bound after
 #     run_proxy was cancelled".
 @pytest.mark.asyncio
-async def test_run_proxy_starts_and_stops(caplog: pytest.LogCaptureFixture) -> None:
+async def test_run_proxy_starts_and_stops(
+    caplog: pytest.LogCaptureFixture, udp_ports
+) -> None:
     """run_proxy binds its relay ports and releases them when cancelled."""
     caplog.set_level(logging.INFO, logger="rigplane.runtime.proxy")
-    base_port = _reserve_consecutive_udp_ports(_RELAY_PORTS)
-    ports = [base_port + offset for offset in range(_RELAY_PORTS)]
+    ports = udp_ports.reserve(_RELAY_PORTS)
+    base_port = ports[0]
 
     task = asyncio.create_task(run_proxy("192.168.1.100", _LISTEN_HOST, base_port))
     try:

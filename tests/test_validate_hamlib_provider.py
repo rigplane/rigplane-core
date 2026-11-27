@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import socket
 from typing import Any
 
 from fake_rigctld import FakeRigctldServer
+from rigplane_testkit.ports import unavailable_tcp_port as unavailable_tcp_port
 
 from rigplane.backends.config import RigctldBackendConfig
 from rigplane.backends.hamlib_models import HamlibCaps
@@ -353,16 +353,11 @@ async def test_await_tcp_ready_true() -> None:
     assert result is True
 
 
-async def test_await_tcp_ready_timeout() -> None:
+async def test_await_tcp_ready_timeout(unavailable_tcp_port: int) -> None:
     """_await_tcp_ready returns False when nothing is listening on the port."""
     from rigplane.cli._validate import _await_tcp_ready
 
-    # Bind a socket to obtain a free port, then close it immediately (not listening).
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        closed_port = s.getsockname()[1]
-    # Port is now closed; _await_tcp_ready should time out quickly.
-    result = await _await_tcp_ready("127.0.0.1", closed_port, timeout=1.0)
+    result = await _await_tcp_ready("127.0.0.1", unavailable_tcp_port, timeout=1.0)
     assert result is False
 
 

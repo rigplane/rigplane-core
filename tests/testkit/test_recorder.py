@@ -14,6 +14,11 @@ import logging
 import socket
 import struct
 
+import pytest
+
+from rigplane_testkit.ports import udp_ports as udp_ports
+from rigplane_testkit.ports import UdpPorts
+
 from rigplane.core.auth import (
     build_conninfo_packet,
     build_login_packet,
@@ -39,26 +44,55 @@ _PASS = "recorderpass9"  # 12-16 chars so the encoding span is distinctive
 _GUID_SALT = b"rigplane-testkit-guid:"
 
 
-def _free_port_run(count: int = 3) -> int:
-    """Find a UDP port whose run of ``count`` ports (itself included) is free."""
-    for _ in range(100):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            base = probe.getsockname()[1]
-        held: list[socket.socket] = []
-        try:
-            for offset in range(count):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.bind(("127.0.0.1", base + offset))
-                held.append(sock)
-        except OSError:
-            for sock in held:
-                sock.close()
-            continue  # occupied run; try another base
-        for sock in held:
-            sock.close()
-        return base
-    raise RuntimeError("no free consecutive UDP port run found")
+async def test_udp_reservations_stay_bound_until_endpoint_handoff(udp_ports) -> None:
+    ports = udp_ports.reserve(3)
+    assert ports == tuple(range(ports[0], ports[0] + 3))
+    loop = asyncio.get_running_loop()
+    transports = []
+    try:
+        for port in ports:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rival:
+                with pytest.raises(OSError):
+                    rival.bind(("127.0.0.1", port))
+            transport, _ = await loop.create_datagram_endpoint(
+                asyncio.DatagramProtocol, local_addr=("127.0.0.1", port)
+            )
+            transports.append(transport)
+            assert transport.get_extra_info("sockname") == ("127.0.0.1", port)
+    finally:
+        for transport in transports:
+            transport.close()
+
+
+async def test_udp_reservation_handoff_preserves_connected_peer(udp_ports) -> None:
+    (peer_port,) = udp_ports.reserve()
+    (local_port,) = udp_ports.reserve()
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        asyncio.DatagramProtocol,
+        local_addr=("127.0.0.1", local_port),
+        remote_addr=("127.0.0.1", peer_port),
+    )
+    try:
+        assert transport.get_extra_info("sockname") == ("127.0.0.1", local_port)
+        assert transport.get_extra_info("peername") == ("127.0.0.1", peer_port)
+    finally:
+        transport.close()
+
+
+def test_unused_udp_reservations_close_without_handoff() -> None:
+    ports = UdpPorts()
+    try:
+        (port,) = ports.reserve()
+        sock = ports.pending[("127.0.0.1", port)]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rival:
+            with pytest.raises(OSError):
+                rival.bind(("127.0.0.1", port))
+        ports.close()
+        assert sock.fileno() == -1
+        assert not ports.pending
+    finally:
+        ports.close()
 
 
 async def _record_session(
@@ -340,10 +374,10 @@ class TestRecordSession:
         assert [t for t, _ in timeline] == sorted(t for t, _ in timeline)
         assert all(f[4] in (0x00, 0x03) for _, f in timeline)
 
-    async def test_fixed_listen_ports(self, tmp_path) -> None:
+    async def test_fixed_listen_ports(self, tmp_path, udp_ports) -> None:
         """listen_port=N binds control=N, civ=N+1, audio=N+2, and a full
         client session through the pinned ports still logs in."""
-        base = _free_port_run()
+        base = udp_ports.reserve(3)[0]
         mock = MockIcomRadio(username=_USER, password=_PASS)
         await mock.start()
         out = tmp_path / "fixed.jsonl"
@@ -371,10 +405,10 @@ class TestRecordSession:
             await recorder.stop()
             await mock.stop()
 
-    async def test_fixed_upstream_ports(self, tmp_path) -> None:
+    async def test_fixed_upstream_ports(self, tmp_path, udp_ports) -> None:
         """upstream_port=N binds the CI-V upstream socket to N and the
         audio upstream to N+1; the control upstream stays ephemeral."""
-        base = _free_port_run()
+        base = udp_ports.reserve(2, host="0.0.0.0")[0]
         recorder = IcomSessionRecorder(
             "127.0.0.1", 1, tmp_path / "upstream.jsonl", upstream_port=base
         )

@@ -57,6 +57,8 @@ import struct
 
 import pytest
 
+from rigplane_testkit.ports import udp_ports as udp_ports
+
 from rigplane.audio import AudioStream
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.transport import CONTROL_SIZE, IcomTransport
@@ -215,6 +217,7 @@ async def test_ensure_audio_transport_rearm_no_stale_fd_leak(monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_ensure_audio_transport_failure_releases_local_port(
     monkeypatch,
+    udp_ports,
 ) -> None:
     """A failed rebuild must release the fixed local audio port it bound.
 
@@ -230,19 +233,14 @@ async def test_ensure_audio_transport_failure_releases_local_port(
     monkeypatch.setattr(_core_transport, "DISCOVERY_RETRIES", 1)
     monkeypatch.setattr(_core_transport, "DISCOVERY_TIMEOUT", 0.05)
 
-    def _free_port() -> int:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
-        return port
-
-    host = _StaleFdHost(host="127.0.0.1", audio_port=_free_port())
-    host._audio_local_port = _free_port()
+    (silent_port,) = udp_ports.reserve()
+    (local_port,) = udp_ports.reserve()
+    host = _StaleFdHost(host="127.0.0.1", audio_port=silent_port)
+    host._audio_local_port = local_port
     host._audio_sock_pending = None
     host._audio_resume_seq = 7
 
-    # Discovery against a dead loopback port times out.
+    # The reserved peer stays silent during discovery.
     with pytest.raises(TimeoutError):
         await host._ensure_audio_transport()
 

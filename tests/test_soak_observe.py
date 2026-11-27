@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-import socket
 import sys
 from collections import Counter
 from pathlib import Path
@@ -28,6 +27,8 @@ from typing import Any, Callable
 
 import aiohttp
 import pytest
+
+from rigplane_testkit.ports import unavailable_tcp_port as unavailable_tcp_port
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -375,10 +376,9 @@ async def test_a_server_that_stops_answering_counts_as_down(tmp_path: Path) -> N
 
 async def test_server_that_never_answers_is_one_open_episode_and_fails(
     tmp_path: Path,
+    unavailable_tcp_port: int,
 ) -> None:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        url = f"http://127.0.0.1:{probe.getsockname()[1]}"
+    url = f"http://127.0.0.1:{unavailable_tcp_port}"
     report = await observe.run_observe(_cfg(url, tmp_path, 1.0))
     (episode,) = report["episodes"]
     assert (episode["recovered"], episode["exceedsBudget"]) == (False, True)

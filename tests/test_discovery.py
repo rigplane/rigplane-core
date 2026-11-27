@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
+from rigplane_testkit.ports import udp_ports as udp_ports
+
 from civ_fake import CivRadioFake, CivSerialPort
 from rigplane.discovery import (
     CivProbeResult,
@@ -2689,16 +2691,18 @@ class TestProbeLanRadioRealSocket:
 
         assert result is True
 
-    async def test_closed_loopback_port_returns_false_within_window(self) -> None:
-        # Nothing listens on the port (the ICMP port-unreachable path, or
-        # plain silence on platforms that do not report it to unconnected
-        # sockets): the probe ends in False, never an exception.
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
-        finally:
-            sock.close()
+    async def test_closed_loopback_port_returns_false_within_window(
+        self,
+        udp_ports,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (port,) = udp_ports.reserve()
+
+        def unreachable(sock, size):
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "port unreachable")
+
+        # Inject the ICMP error while retaining the target socket reservation.
+        monkeypatch.setattr(socket.socket, "recvfrom", unreachable)
 
         t0 = time.monotonic()
         result = await probe_lan_radio("127.0.0.1", port, timeout=1.0)
