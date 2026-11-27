@@ -377,14 +377,20 @@ class AudioSession:
         subscription).
         """
         async with self._lock:
+            recover = self._state in (
+                AudioSessionState.RECOVERING,
+                AudioSessionState.FAILED,
+            )
             sub = RxSubscription(self, self._bus.subscribe(name=name))
             self._rx_subs.append(sub)
             try:
-                await self._apply()
+                await self._apply(recover=recover)
             except BaseException:
                 self._rx_subs.remove(sub)
                 await sub._inner.aclose()
                 raise
+            if recover:
+                self._emit("rx_reopened")
             return sub
 
     async def acquire_tx(self, owner: str = "") -> TxLease:
@@ -534,9 +540,13 @@ class AudioSession:
             return "rx_first"
         return cast(_SetupOrder, order)
 
-    async def _apply(self, *, closing_rx: RxSubscription | None = None) -> None:
+    async def _apply(
+        self, *, closing_rx: RxSubscription | None = None, recover: bool = False
+    ) -> None:
         try:
-            await self._converge(closing_rx=closing_rx)
+            await self._converge(closing_rx=closing_rx, recover=recover)
+            if recover:
+                self._rx_armed_at = self._monotonic()
         finally:
             if self._state is not AudioSessionState.RECOVERING:
                 self._recovering_from = None
@@ -728,6 +738,7 @@ class AudioSession:
                 "(AudioBus.rx_active is False after re-arm); see "
                 "'audio-bus: failed to re-arm RX' in the log"
             )
+        await self._arm_rx()
 
     async def _disarm_tx(self) -> None:
         try:
@@ -775,11 +786,7 @@ class AudioSession:
             # lease re-arms TX (TX_ONLY) with no phantom RX, RX-bearing demand
             # re-arms in the declared order. A dead-RX re-arm surfaces as a
             # RuntimeError so the recovery caller can report FAILED.
-            await self._converge(recover=True)
-            # Fresh liveness reference: silence is measured from this re-arm,
-            # not from the stale pre-outage heartbeat.
-            self._rx_armed_at = self._monotonic()
-            await self._sync_watchdog()
+            await self._apply(recover=True)
 
     # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
 

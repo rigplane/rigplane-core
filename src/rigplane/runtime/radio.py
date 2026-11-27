@@ -1542,10 +1542,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         it is the SAME episode and the attempt count continues. Measuring
         from the settled baseline absorbs one buffered pre-death frame
         landing mid-task. A round whose ``reestablish()`` succeeds
-        therefore never resets the budget — only frames (or a new epoch)
-        do — so a leg that re-arms but stays frameless still caps
+        therefore never resets the budget, so a leg that re-arms but stays
+        frameless still caps
         at 3 attempts with one FAILED instead of looping forever. A second
         ``rx_silent`` while the task runs schedules nothing.
+        An explicit client ``rx_reopened`` starts a fresh episode too.
         ``rx_resumed`` is itself frame-based so it still ends the episode,
         but only once its repair task is done: a stray resumed edge (e.g. a
         buffered frame landing mid-repair) must not fund an extra round.
@@ -1554,7 +1555,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         and rigctld are separate classes outside this path entirely.
         """
         reason = event.reason
-        if reason == "rx_resumed":
+        if reason in ("rx_resumed", "rx_reopened"):
             task = self._audio_silence_repair_task
             if task is None or task.done():
                 self._audio_silence_repair_attempts = 0
@@ -1676,9 +1677,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
         ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
         precondition is re-checked after each await. Every round consumes
-        one attempt. Re-establishing demand does NOT reset the budget:
-        only real RX frames (or a new CI-V epoch) close the episode, so a
-        leg that re-arms yet stays frameless
+        one attempt. Automatic re-establishment does NOT reset the budget:
+        a leg that re-arms yet stays frameless
         consumes the shared budget and reports FAILED once through
         ``_on_audio_recovery`` instead of looping with a fresh budget per
         task. A successful final round observes frames for at most
@@ -1707,7 +1707,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                         owner_stop_epoch,
                     ):
                         return
-                    await self._ensure_audio_transport()
+                    await self._ensure_audio_transport(reestablish=False)
                     if not self._silence_repair_preconditions_ok(
                         civ_epoch,
                         owner_stop_epoch,

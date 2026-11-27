@@ -378,7 +378,7 @@ class _SoftReconnectHost:
         if self.bump_owner_stop_in_backoff:
             self._owner_stop_epoch += 1
 
-    async def _ensure_audio_transport(self) -> None:
+    async def _ensure_audio_transport(self, *, reestablish: bool = True) -> None:
         self._ensure_calls += 1
         if self._ensure_calls <= self.ensure_failures:
             if self.bump_owner_stop_in_backoff or self.bump_civ_epoch_in_backoff:
@@ -652,7 +652,7 @@ class _DiscardHost(AudioRuntimeMixin):
     def _check_connected(self) -> None:
         return None
 
-    async def _ensure_audio_transport(self) -> None:
+    async def _ensure_audio_transport(self, *, reestablish: bool = True) -> None:
         return None
 
     def _arm_pcm_ingress(self) -> None:

@@ -346,7 +346,7 @@ async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -385,7 +385,7 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -434,7 +434,7 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -475,11 +475,11 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_first_ensure() -> None:
+        async def _fail_first_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             if len(ensure_calls) == 1:
                 raise CoreConnectionError("first round fails")
-            await orig_ensure()
+            await orig_ensure(reestablish=reestablish)
 
         radio._ensure_audio_transport = _fail_first_ensure  # type: ignore[method-assign]
         try:
@@ -546,11 +546,11 @@ async def test_third_successful_round_waits_for_real_frames(
                 heartbeats.append(heartbeat)
                 delivery_order.append("frame")
 
-        async def _fail_first_two_ensures() -> None:
+        async def _fail_first_two_ensures(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             if len(ensure_calls) <= 2:
                 raise CoreConnectionError("first two rounds fail")
-            await orig_ensure()
+            await orig_ensure(reestablish=reestablish)
 
         async def _reestablish_with_frame_gate() -> None:
             nonlocal release_frames
@@ -616,7 +616,7 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -642,7 +642,7 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             # watchdog itself emits rx_resumed.
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
             await radio._teardown_audio_transport()
-            await radio._ensure_audio_transport()
+            await radio._ensure_audio_transport(reestablish=False)
             await radio.audio_bus.restart_rx()
             assert await await_until(
                 lambda: (
@@ -828,7 +828,7 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path(
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -981,8 +981,8 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         orig_reestablish = session.reestablish
         reestablished: list[int] = []
 
-        async def _dead_ensure() -> None:
-            await orig_ensure()
+        async def _dead_ensure(*, reestablish: bool = True) -> None:
+            await orig_ensure(reestablish=reestablish)
             # The new leg is dead on arrival, but the call succeeds: the
             # radio accepted the handshake yet sends no RX frames. The RX
             # callback is only (re-)registered by reestablish below, so no
@@ -1085,7 +1085,7 @@ async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> N
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 

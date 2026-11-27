@@ -87,7 +87,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             ConnectionError: If not connected or audio port unavailable.
         """
         self._check_connected()
-        await self._ensure_audio_transport()
+        await self._ensure_audio_transport(reestablish=False)
         assert self._audio_stream is not None
         self._opus_rx_user_callback = callback
         self._opus_rx_jitter_depth = jitter_depth
@@ -158,7 +158,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             ConnectionError: If not connected or audio port unavailable.
         """
         self._check_connected()
-        await self._ensure_audio_transport()
+        await self._ensure_audio_transport(reestablish=False)
         assert self._audio_stream is not None
         await self._audio_stream.start_tx()
 
@@ -771,7 +771,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._audio_resume_seq = audio_transport.send_seq
             self._audio_transport = None
 
-    async def _ensure_audio_transport(self) -> None:
+    async def _ensure_audio_transport(self, *, reestablish: bool = True) -> None:
         """Connect the audio transport if not already connected.
 
         Single flight (MOR-3400): the whole rebuild runs under
@@ -804,6 +804,11 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         test mocks/stubs) are intentionally *not* treated as stale — they fall
         through to the ``if self._audio_stream is not None: return``
         short-circuit below.
+
+        A rebuilt transport with held RX demand completes through
+        ``AudioSession.reestablish`` after releasing the ensure lock.
+        Session arming calls pass ``reestablish=False`` to avoid re-entering
+        the session lock; silence repair also owns its explicit reestablish.
 
         Raises:
             ConnectionError: Audio port unavailable; connect failed with an
@@ -915,3 +920,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
             # Start EPIPE-storm watchdog for this transport session.
             self._start_audio_watchdog()
+
+        session = getattr(self, "_audio_session", None)
+        if reestablish and session is not None and session.rx_demand > 0:
+            await session.reestablish()
