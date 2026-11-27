@@ -389,6 +389,29 @@ class IcomCivAcquisitionExecutor:
         *,
         already_sent_paths: frozenset[FieldPath],
     ) -> AcquisitionExecutionResult:
+        return await self._execute(
+            request, already_sent_paths=already_sent_paths, one_query=False
+        )
+
+    async def execute_next(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        """Send one distinct query, including every path that shares it."""
+
+        return await self._execute(
+            request, already_sent_paths=already_sent_paths, one_query=True
+        )
+
+    async def _execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+        one_query: bool,
+    ) -> AcquisitionExecutionResult:
         sent: list[FieldPath] = []
         failed: list[FieldPath] = []
         failure_reason = ""
@@ -409,6 +432,8 @@ class IcomCivAcquisitionExecutor:
             query = routed
             if query in sent_queries:
                 sent.append(path)
+                continue
+            if one_query and sent_queries:
                 continue
             try:
                 await self._send_query(

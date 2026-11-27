@@ -35,6 +35,7 @@ from typing import Protocol
 
 from .acquisition_scheduler import (
     AcquisitionExecutor,
+    AcquisitionPriority,
     AcquisitionRequest,
     AcquisitionScheduler,
     tx_active,
@@ -50,8 +51,19 @@ __all__ = [
 ]
 
 #: request id -> (paths already sent for it, the clock reading of the latest
-#: pass that sent any of them, taken before its sends).
+#: execution that sent any of them, taken before that execution's sends).
 InFlightLedger = MutableMapping[str, tuple[frozenset[FieldPath], float]]
+
+# Interactive writes can keep arriving while this drain awaits a slow read.
+# Strict priority would starve cadence acquisition; allow one background
+# execution after four readback executions (test_readback_acquisition_priority).
+_READBACK_BURST_LIMIT = 4
+_READBACK_PRIORITIES = frozenset(
+    (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
+)
+_BACKGROUND_PRIORITIES = frozenset(
+    (AcquisitionPriority.BACKGROUND, AcquisitionPriority.RECONCILIATION)
+)
 
 
 class AcquisitionExpiryPolicy(Protocol):
@@ -225,11 +237,50 @@ class AcquisitionDrain:
         )
         return True
 
+    def _next_request(
+        self,
+        scheduler: AcquisitionScheduler,
+        *,
+        initial_ids: set[str],
+        attempted: set[tuple[str, tuple[FieldPath, ...]]],
+        whole_request_attempts: set[str],
+        readback_streak: int,
+    ) -> AcquisitionRequest | None:
+        candidates: list[AcquisitionRequest] = []
+        for request in self._dispatchable(scheduler.dispatchable_requests()):
+            if request.id in whole_request_attempts:
+                continue
+            if (
+                request.id not in initial_ids
+                and request.priority not in _READBACK_PRIORITIES
+            ):
+                continue
+            sent_paths, _ = self._in_flight.get(request.id, (frozenset(), 0.0))
+            remaining = tuple(p for p in request.paths if p not in sent_paths)
+            if not remaining and any(
+                request_id == request.id for request_id, _ in attempted
+            ):
+                continue
+            if (request.id, remaining) not in attempted:
+                candidates.append(request)
+        if not candidates:
+            return None
+        request = candidates[0]
+        if readback_streak >= _READBACK_BURST_LIMIT:
+            request = next(
+                (r for r in candidates if r.priority in _BACKGROUND_PRIORITIES),
+                request,
+            )
+        sent_paths, _ = self._in_flight.get(request.id, (frozenset(), 0.0))
+        attempted.add(
+            (request.id, tuple(p for p in request.paths if p not in sent_paths))
+        )
+        return request
+
     async def run_once(self) -> None:
         scheduler = self._scheduler()
         if scheduler is None:
             return
-        now = time.monotonic()
         store = self._store()
         # MOR-1532: keep the scheduler's tx_active cache current on this drain
         # path too. Same ``tx_active`` over the same canonical store as
@@ -251,10 +302,29 @@ class AcquisitionDrain:
             if request_id not in pending_ids:
                 self._forget_ledger(request_id)
 
-        # Eligibility is asked once per pass, over the unfiltered pending view
-        # above: a request the seat declines to send is still pending, and its
-        # ledger entry must survive the pass.
-        for request in self._dispatchable(pending):
+        # Re-select after awaits: a coalesced post-write readback must join
+        # this pass instead of waiting out its original background snapshot.
+        # New cadence work waits for the next pass. Bound admission as well
+        # as the readback streak so continuing writes cannot extend a pass
+        # indefinitely: the attempt budget is the initial path count plus
+        # four, and an unchanged remaining-path set is attempted only once.
+        initial_ids = {request.id for request in pending}
+        attempted: set[tuple[str, tuple[FieldPath, ...]]] = set()
+        whole_request_attempts: set[str] = set()
+        readback_streak = 0
+        for _ in range(
+            sum(len(request.paths) for request in pending) + _READBACK_BURST_LIMIT
+        ):
+            request = self._next_request(
+                scheduler,
+                initial_ids=initial_ids,
+                attempted=attempted,
+                whole_request_attempts=whole_request_attempts,
+                readback_streak=readback_streak,
+            )
+            if request is None:
+                break
+            now = time.monotonic()
             # MOR-3630: ``pending`` was gated once, at the top of the pass, but
             # an earlier send in this loop awaits the radio, and its answer can
             # change the mode that a later read's ``available_when`` reads. Ask
@@ -320,8 +390,19 @@ class AcquisitionDrain:
             # write confirmation still gets its own dispatch, and a read
             # answer that beats the last send can still be credited.
             scheduler.note_execute_started(request.id, now=now)
+            if request.priority in _READBACK_PRIORITIES:
+                readback_streak += 1
+            elif request.priority in _BACKGROUND_PRIORITIES:
+                readback_streak = 0
             try:
-                result = await executor.execute(
+                # The shared CI-V executor can yield between queries of a
+                # multi-path envelope. Backend-provided executors retain
+                # the existing execute contract when they lack this hook.
+                execute = getattr(executor, "execute_next", None)
+                if execute is None:
+                    whole_request_attempts.add(request.id)
+                    execute = executor.execute
+                result = await execute(
                     request,
                     already_sent_paths=sent_paths,
                 )
