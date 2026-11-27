@@ -143,6 +143,16 @@ function githubIssuesClient(github, repo) {
     })};
   }
   return {
+    open: async channel => (await issues()).filter(issue => issue.state === 'open'
+      && issue.body?.includes(`<!-- main-red:episode:${channel}:green-`)),
+    findEvent: async (channel, eventKey) => {
+      for (const issue of await issues()) {
+        if (!issue.body?.includes(`<!-- main-red:episode:${channel}:green-`)) continue;
+        const full = await comments(issue);
+        if ([full.body, ...full.comments.map(comment => comment.body)].some(body => body?.includes(marker(eventKey)))) return full;
+      }
+      return null;
+    },
     find: async key => comments((await issues()).find(issue => issue.body?.includes(marker(key)))),
     findRun: async id => {
       for (const issue of await issues()) {
@@ -188,6 +198,14 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
   }
   const observed = await observe(current);
   if (!RED.has(observed.conclusion) && observed.conclusion !== 'success') return;
+  const channel = `${repo.owner}/${repo.repo}/${current.workflow_id}`;
+  const issues = githubIssuesClient(github, repo);
+  const open = await issues.open(channel);
+  const anchorId = issue => /<!-- main-red:first-red-run-(\d+) -->/u.exec(issue.body)?.[1]
+    || /<!-- main-red:run-(\d+)-attempt-\d+ -->/u.exec(issue.body)?.[1];
+  const pending = new Set(open.map(anchorId).filter(Boolean));
+  pending.delete(String(current.id));
+  const observedRuns = [observed];
   const history = [];
   let newerGreen = null;
   for await (const response of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
@@ -197,22 +215,40 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
       if (!eligible(candidate)) continue;
       if (candidate.run_number === current.run_number) continue;
       const past = await observe({...candidate, path: current.path});
+      observedRuns.push(past);
+      pending.delete(String(candidate.id));
       if (candidate.run_number > current.run_number) {
         if (past.conclusion === 'success') newerGreen = past;
         continue;
       }
       history.push(past);
-      if (past.conclusion === 'success') break;
     }
-    if (history.some(past => past.conclusion === 'success')) break;
+    if (!pending.size && history.some(past => past.conclusion === 'success')) break;
   }
-  const channel = `${repo.owner}/${repo.repo}/${current.workflow_id}`;
   const title = `Main red [${channel}]`;
-  const issues = githubIssuesClient(github, repo);
+  const dryRun = env.MAIN_RED_DRY_RUN === 'true';
+  for (const issue of open) {
+    const first = observedRuns.find(run => String(run.id) === anchorId(issue));
+    if (!first) continue;
+    const green = observed.conclusion === 'success' && observed.run_number >= first.run_number ? observed
+      : observedRuns.filter(run => run.conclusion === 'success' && run.run_number >= first.run_number)
+        .sort((a, b) => a.run_number - b.run_number)[0];
+    if (!green) continue;
+    const key = /<!-- main-red:(episode:[^ ]+) -->/u.exec(issue.body)[1];
+    const result = await publish(issues, {key, eventKey: `run-${green.id}-attempt-${green.run_attempt || 1}`,
+      recovered: true, body: `Green main run: ${green.html_url || green.id}`}, dryRun);
+    core.info(JSON.stringify({...result, key, dryRun}));
+  }
+  if (RED.has(observed.conclusion)) {
+    const reported = await issues.findEvent(channel, `run-${current.id}-attempt-${current.run_attempt || 1}`);
+    if (reported) {
+      core.info(JSON.stringify({action: reported.state === 'closed' ? 'resolved' : 'duplicate', dryRun}));
+      return;
+    }
+  }
   const recovery = observed.conclusion === 'success' ? observed : newerGreen;
   const eventRun = recovery || current;
   const eventKey = `run-${eventRun.id}-attempt-${eventRun.run_attempt || 1}`;
-  const dryRun = env.MAIN_RED_DRY_RUN === 'true';
   const episode = findEpisode(observed, history);
   if (!episode && recovery) {
     const issue = await issues.findRun(current.id);
