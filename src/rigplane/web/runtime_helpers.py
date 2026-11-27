@@ -994,11 +994,14 @@ def classify_radio_health(
 
     connected = _bool_attr(radio, "connected")
     control_connected = _bool_attr(radio, "control_connected", default=True)
-    ready = radio_ready(radio) and control_connected
+    serial_control_failed = (
+        _serial_link_episodes(radio) is not None and not control_connected
+    )
+    ready = radio_ready(radio) and not serial_control_failed
     conn_state = _conn_state_value(radio)
     if conn_state in {"connecting", "reconnecting"}:
         radio_link = "reconnecting"
-    elif not control_connected and (
+    elif serial_control_failed and (
         connected
         or conn_state == "connected"
         or (

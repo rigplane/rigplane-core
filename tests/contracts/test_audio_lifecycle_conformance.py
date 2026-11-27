@@ -182,7 +182,7 @@ async def _make_harness(case: str, monkeypatch: pytest.MonkeyPatch) -> _Harness:
         # topology) — the handoff lives in the driver, so this row needs
         # no backend cooperation.
         monkeypatch.setattr(
-            "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
+            "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.io_available", True
         )
         monkeypatch.setattr(
             "rigplane.audio.usb_driver.resolve_usb_duplex_mode",
@@ -206,7 +206,7 @@ async def _make_harness(case: str, monkeypatch: pytest.MonkeyPatch) -> _Harness:
         )
     if case == "yaesu-ftx1":
         monkeypatch.setattr(
-            "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
+            "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.io_available", True
         )
         return _usb_harness(
             lambda driver: YaesuCatRadio(device="/dev/cu.fake", audio_driver=driver)
@@ -242,6 +242,15 @@ async def harness(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 # Scenario matrix (every shipping backend)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", ["yaesu-ftx1", "yaesu-ftx1-exclusive"])
+async def test_yaesu_harness_has_open_cat_stream(
+    case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h = await _make_harness(case, monkeypatch)
+    assert h.radio._transport.io_available is True
+    assert h.radio.connected is True
 
 
 async def test_rx_then_tx_then_ptt_cycle_then_stop(harness: _Harness) -> None:

@@ -4420,15 +4420,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if on
             else self._commands.ptt_off(to_addr=self._radio_addr)
         )
-        if on:
-            self._require_keying_control()
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
-
-    def _require_keying_control(self) -> None:
-        check = getattr(self._civ_transport, "require_keying_control", None)
-        if callable(check):
-            check()
 
     _PTT_READBACK_SETTLE_S: float = 0.2
 
@@ -4470,7 +4463,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ActuationOperation.PTT_ON,
                 ActuationOperation.TRANSMIT_ON,
             ):
-                self._require_keying_control()
                 civ = self._commands.ptt_on(to_addr=self._radio_addr)
                 priority = Priority.IMMEDIATE
             elif operation is ActuationOperation.FORCE_RECEIVE:
@@ -4744,16 +4736,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Fire-and-forget SET command.
         """
         self._check_connected()
-        if value == 2:
-            self._require_keying_control()
         civ = self._commands.set_tuner_status(value, to_addr=self._radio_addr)
         if value == 0 or self._local_tx_work is None:
             await self._send_civ_raw(civ, wait_response=False)
             return
 
         async def send(is_current: Callable[[], bool]) -> None:
-            if value == 2:
-                self._require_keying_control()
             await self._send_civ_raw(
                 civ,
                 wait_response=False,
@@ -6169,7 +6157,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         admit_cw_text(self.profile, text)
         self._check_connected()
-        self._require_keying_control()
         frames = self._commands.send_cw(text, to_addr=self._radio_addr)
 
         async def send_frames(
@@ -6177,7 +6164,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ) -> None:
             try:
                 for frame in frames:
-                    self._require_keying_control()
                     if is_current is None:
                         resp = await self._send_civ_expect(
                             frame,

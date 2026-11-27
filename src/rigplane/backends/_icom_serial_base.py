@@ -649,7 +649,6 @@ class _IcomSerialRadioBase(CoreRadio):
         if self._conn_state != RadioConnectionState.CONNECTED:
             self._advance_civ_generation("serial-disconnect")
         self.serial_open_error = None
-        self._serial_link_health.end_session()
         # MOR-3436: move the owner-stop counter on EVERY teardown branch.
         # The two early returns below never reach ``CoreRadio.disconnect``
         # (which increments it itself), and the connect/soft_reconnect
@@ -675,10 +674,12 @@ class _IcomSerialRadioBase(CoreRadio):
             self._conn_state = RadioConnectionState.DISCONNECTED
             self._civ_stream_ready = False
             self._civ_recovering = False
+            self._serial_link_health.end_session()
             return
         await super().disconnect()
         await self._serial_session.disconnect()
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
+        self._serial_link_health.end_session()
 
     async def soft_reconnect(self) -> None:
         if (
@@ -1144,7 +1145,11 @@ class _IcomSerialRadioBase(CoreRadio):
                 start=start,
                 retune=self._retune_serial_link,
                 heard_at=heard_at,
-                usable=lambda: not retired() and self._serial_io_available(),
+                usable=lambda: (
+                    not retired()
+                    and self._serial_io_available()
+                    and not self._serial_link_health.io_failed
+                ),
             )
             return None if retired() else payload
         finally:

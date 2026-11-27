@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
-from ....core.serial_health import SerialResponse, require_keying_control
+from ....core.serial_health import SerialResponse
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -151,9 +151,6 @@ class SerialCivTransport:
     @property
     def connected(self) -> bool:
         return bool(getattr(self._civ_link, "connected", False))
-
-    def require_keying_control(self) -> None:
-        require_keying_control(self.connected)
 
     @property
     def ready(self) -> bool:

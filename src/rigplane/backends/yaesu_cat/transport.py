@@ -614,6 +614,7 @@ class YaesuCatTransport:
             await self.flush_rx()
             writer = self._writer
             reconnects = self._stats.reconnects
+            health_generation = self._link_health.generation
             capture = self._capture_provider_generation
             generation = None if capture is None else capture()
 
@@ -627,7 +628,10 @@ class YaesuCatTransport:
                 )
 
             def record_response() -> None:
-                if response_is_current():
+                if (
+                    response_is_current()
+                    and self._link_health.generation == health_generation
+                ):
                     self._link_health.record_response()
 
             await self._raw_write(command, is_current=is_current)

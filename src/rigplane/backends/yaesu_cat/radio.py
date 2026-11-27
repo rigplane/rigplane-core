@@ -22,7 +22,6 @@ from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.serial_open import serial_open_diagnostic
-from ...core.serial_health import require_keying_control
 from ...core.state_diagnostics import UNKNOWN_STATUS
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
@@ -538,9 +537,6 @@ class YaesuCatRadio:
         self._waiting_for_serial_port = False
         self.last_error = None
         self._transport.last_valid_frame_monotonic = None
-        health = getattr(self._transport, "_link_health", None)
-        if health is not None:
-            health.end_session()
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
@@ -550,6 +546,9 @@ class YaesuCatRadio:
         await self._audio_driver.stop_tx()
         async with self._serial_open_lock:
             await self._transport.close()
+        health = getattr(self._transport, "_link_health", None)
+        if health is not None:
+            health.end_session()
 
     async def __aenter__(self) -> "YaesuCatRadio":
         await self.connect()
@@ -1477,12 +1476,8 @@ class YaesuCatRadio:
             raise CommandError(f"Command {name!r} is not a CAT command spec")
         return spec
 
-    def _require_connected(self, *, allow_failed_io: bool = False) -> None:
-        if (
-            not self._transport.io_available
-            or not self._identity_permits_commands()
-            or (not allow_failed_io and not self.control_connected)
-        ):
+    def _require_connected(self) -> None:
+        if not self._transport.io_available or not self._identity_permits_commands():
             raise RadioConnectionError("Radio not connected — call connect() first")
 
     async def _query(
@@ -1508,7 +1503,7 @@ class YaesuCatRadio:
         a managed confirming read can ride its own write's admission tier
         and currency; ordinary callers leave both at their defaults.
         """
-        self._require_connected(allow_failed_io=True)
+        self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.read is None:
             raise CommandError(f"Command {cmd_name!r} has no read template")
@@ -1613,7 +1608,7 @@ class YaesuCatRadio:
                 sent — can identify it structurally, by type, instead of
                 re-deriving it from the exception's message text.
         """
-        self._require_connected(allow_failed_io=True)
+        self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.write is None:
             raise CommandError(f"Command {cmd_name!r} has no write template")
@@ -2144,9 +2139,6 @@ class YaesuCatRadio:
         Args:
             on: ``True`` to transmit, ``False`` to receive.
         """
-        if on:
-            self._require_connected(allow_failed_io=True)
-            require_keying_control(self.control_connected)
         await self._write("set_ptt", state="1" if on else "0")
 
     # The profile command each managed-release abort executes (MOR-4352).
@@ -2208,9 +2200,6 @@ class YaesuCatRadio:
             return ActuationResult.REJECTED
 
         try:
-            if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-                self._require_connected(allow_failed_io=True)
-                require_keying_control(self.control_connected)
             await self._write(
                 command,
                 is_current=is_current,
@@ -3637,14 +3626,11 @@ class YaesuCatRadio:
             msg_type: Message type character.
             mem: CW message text to send.
         """
-        if mem and mem != "0":
-            require_keying_control(self.control_connected)
         if not mem or self._local_tx_work is None:
             await self._write("send_cw", type=msg_type, mem=mem)
             return
 
         async def write(is_current: Callable[[], bool]) -> None:
-            require_keying_control(self.control_connected)
             await self._write("send_cw", type=msg_type, mem=mem, is_current=is_current)
 
         await self._local_tx_work.run(write)
@@ -4109,16 +4095,12 @@ class YaesuCatRadio:
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
         """Write native AC state to the explicitly selected source and type."""
-        if state == 3:
-            require_keying_control(self.control_connected)
         params = {"src": str(src), "type": str(typ), "state": str(state)}
         if state == 0 or self._local_tx_work is None:
             await self._write("set_tuner", **params)
             return
 
         async def write(is_current: Callable[[], bool]) -> None:
-            if state == 3:
-                require_keying_control(self.control_connected)
             await self._write("set_tuner", is_current=is_current, **params)
 
         await self._local_tx_work.run(write)
@@ -4380,16 +4362,11 @@ class YaesuCatRadio:
         if type(value) is not int or value not in (0, 1, 2):
             raise ValueError("Tuner value must be 0, 1, or 2")
 
-        if value == 2:
-            require_keying_control(self.control_connected)
-
         async def write(fence_current: Callable[[], bool]) -> None:
             try:
                 src, typ, _, route_current = await self._read_atu_route()
             except (ValueError, KeyError) as exc:
                 raise CommandError(f"Cannot acquire ATU route: {exc}") from exc
-            if value == 2:
-                require_keying_control(self.control_connected)
             await self._write(
                 "set_tuner",
                 src=src,
@@ -4431,7 +4408,6 @@ class YaesuCatRadio:
         )
 
         admit_cw_text(self.profile, text)
-        require_keying_control(self.control_connected)
         spec = self.profile.cw_text
         if spec.memory_channel is None or not 1 <= spec.memory_channel <= 5:
             # KM P1 is one digit, keyer memory 1-5 (printed p.17).
@@ -4462,7 +4438,6 @@ class YaesuCatRadio:
             # it before it can write KM or KY.
             async with self._cw_text_lock:
                 try:
-                    require_keying_control(self.control_connected)
                     await self._write(
                         "write_keyer_memory",
                         chan=channel,
@@ -4472,7 +4447,6 @@ class YaesuCatRadio:
                     # A stale fence makes this write raise "no longer
                     # current", the same as a stale chunk: KY never plays
                     # after a force-off.
-                    require_keying_control(self.control_connected)
                     await self._write(
                         "send_cw", type=msg_type, mem=channel, is_current=current
                     )

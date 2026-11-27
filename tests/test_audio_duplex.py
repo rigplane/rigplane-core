@@ -691,9 +691,9 @@ class TestBridgeDuplexSelection:
 
 
 def _patch_yaesu_offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """YaesuCatRadio without a serial port: the transport reads connected."""
+    """YaesuCatRadio without a serial port: the transport has an open stream."""
     monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected", True
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.io_available", True
     )
 
 
@@ -709,6 +709,17 @@ def _forbid_cat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.query", _no_cat
     )
+
+
+def test_yaesu_offline_transport_has_open_cat_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+    _patch_yaesu_offline(monkeypatch)
+    radio = YaesuCatRadio(device="/dev/cu.fake")
+    assert radio._transport.io_available is True
+    assert radio.connected is True
 
 
 class TestYaesuExclusiveDuplexTx:

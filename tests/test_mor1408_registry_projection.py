@@ -353,10 +353,12 @@ def test_connection_health_projection_prefers_store_and_has_pr_a_fallback() -> N
         receiver_count=1,
         radio_health=fallback_health,
     )
+    # The live control status overrides stale stored evidence of a healthy link,
+    # matching the fallback above while the other fields still prefer the store.
     assert projected["connection"] == {
         "rigConnected": False,
         "radioReady": False,
-        "controlConnected": True,
+        "controlConnected": False,
         "liveness": {
             "lastFrameAgeMs": None,
             "staleAfterMs": 2000,

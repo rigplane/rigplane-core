@@ -634,11 +634,22 @@ def test_radio_health_classifies_ready_radio() -> None:
 def test_radio_health_control_failure_overrides_stale_ready() -> None:
     radio = _FakeRadio(connected=True, radio_ready_flag=True)
     radio.control_connected = False
+    radio.serial_reconnects_total = 0
 
     health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
 
     assert health["radioLink"] == "reconnecting"
     assert health["readiness"] == "recovering"
+
+
+def test_lan_health_does_not_infer_serial_failure_from_control_connection() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    radio.control_connected = False
+
+    health = classify_radio_health(radio, now_monotonic=100.0)
+
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "ready"
 
 
 def test_radio_health_classifies_network_loss_separately_from_server_loss() -> None:
@@ -923,6 +934,34 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["freshnessRevision"] == 2
     assert payload["main"]["freqHz"] == 14_074_000
     assert payload["main"]["sMeter"] == 42
+
+
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("live", [False, True, None, "no-radio"])
+def test_live_control_connection_overrides_stored_boolean(
+    stored: bool, live: bool | str | None
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.parse("connection.connection.control_connected"),
+            stored,
+            at=clock.now(),
+        )
+    )
+    radio = _FakeRadio()
+    radio.control_connected = live
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None if live == "no-radio" else radio,
+        receiver_count=1,
+    )
+
+    assert payload["connection"]["controlConnected"] is (
+        live if isinstance(live, bool) else stored
+    )
 
 
 def test_tx_target_missing_is_explicit_in_both_public_producers() -> None:

@@ -128,7 +128,7 @@ def radio(
         AsyncMock(),
     )
     monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected",
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.io_available",
         True,
     )
     monkeypatch.setattr(
@@ -145,6 +145,11 @@ def radio(
 # ---------------------------------------------------------------------------
 # audio_codec property
 # ---------------------------------------------------------------------------
+
+
+def test_radio_fixture_has_open_cat_stream(radio: YaesuCatRadio) -> None:
+    assert radio._transport.io_available is True
+    assert radio.connected is True
 
 
 class TestAudioCodecProperty:
@@ -590,7 +595,7 @@ def _make_traced_radio(
         AsyncMock(),
     )
     monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.connected",
+        "rigplane.backends.yaesu_cat.transport.YaesuCatTransport.io_available",
         True,
     )
     monkeypatch.setattr(
@@ -600,6 +605,12 @@ def _make_traced_radio(
     driver = TracingAudioDriver()
     r = YaesuCatRadio(device="/dev/fake0", audio_driver=driver)  # type: ignore[arg-type]
     return r, driver
+
+
+def test_traced_radio_has_open_cat_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    radio, _driver = _make_traced_radio(monkeypatch)
+    assert radio._transport.io_available is True
+    assert radio.connected is True
 
 
 class TestAudioTransportNeutral:

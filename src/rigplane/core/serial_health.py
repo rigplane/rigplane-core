@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .exceptions import CommandError
-
 
 class SerialResponse(bytes):
     """Serial bytes carrying deferred, session-bound recovery credit."""
@@ -18,12 +16,6 @@ class SerialResponse(bytes):
         response = super().__new__(cls, data)
         response.record_response = record_response
         return response
-
-
-def require_keying_control(control_connected: bool) -> None:
-    """Refuse new KEY admission without control connectivity."""
-    if not control_connected:
-        raise CommandError("Keying requires control connectivity")
 
 
 class SerialLinkHealth:
@@ -87,7 +79,8 @@ class SerialLinkHealth:
                     f"{elapsed:.1f}s (silence limit {limit_s:.1f}s)"
                 )
                 crossed = True
-        if crossed:
+        if crossed and not self.no_reply:
+            self.generation += 1
             self.no_reply = True
         return crossed
 
