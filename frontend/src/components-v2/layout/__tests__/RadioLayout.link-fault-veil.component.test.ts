@@ -136,7 +136,7 @@ const CI_HOOK_BUDGET_MS = 90_000;
 
 describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   let target: HTMLElement | null = null;
-  let instance: object | null = null;
+  const faces = new Map<string, { target: HTMLElement; instance: object }>();
   let conn: typeof import('$lib/stores/connection.svelte');
   let mount: typeof import('svelte')['mount'];
   let unmount: typeof import('svelte')['unmount'];
@@ -148,20 +148,28 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     conn = await import('$lib/stores/connection.svelte');
     ({ mount, unmount, flushSync } = await import('svelte'));
     ({ default: Fixture } = await import('./fixtures/HostedRadioLayoutFixture.svelte'));
+    mountFace();
   }, CI_HOOK_BUDGET_MS);
 
-  afterAll(() => {
-    vi.useRealTimers();
+  afterAll(async () => {
+    try {
+      for (const face of faces.values()) {
+        await unmount(face.instance);
+        face.target.remove();
+      }
+      faces.clear();
+      expect(txHarness.listenerCount()).toBe(0);
+      txHarness.reset({ stale: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   afterEach(() => {
-    if (instance) unmount(instance);
-    instance = null;
     target?.remove();
     target = null;
     conn.setWsConnected(false);
     conn.markStateUpdated();
-    if (txHarness.listenerCount() === 0) txHarness.reset({ stale: true });
   });
 
   /**
@@ -176,11 +184,17 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
   }
 
   function mountFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2'): void {
-    rt.state = structuredClone(stateFixture);
-    rt.caps = structuredClone(capsFixture);
-    target = document.createElement('div');
+    let face = faces.get(skinId);
+    if (!face) {
+      rt.state = structuredClone(stateFixture);
+      rt.caps = structuredClone(capsFixture);
+      const root = document.createElement('div');
+      document.body.appendChild(root);
+      face = { target: root, instance: mount(Fixture, { target: root, props: { skinId } }) as object };
+      faces.set(skinId, face);
+    }
+    target = face.target;
     document.body.appendChild(target);
-    instance = mount(Fixture, { target, props: { skinId } }) as object;
     flushSync();
   }
 
@@ -267,6 +281,9 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     mountFace();
 
     expect(faceRoot().hasAttribute('data-link-fault')).toBe(false);
+    const initialRoot = faceRoot();
+    mountFace();
+    expect(faceRoot()).toBe(initialRoot);
   });
 
   it('veils nothing while the WS is up and state updates are current', () => {
