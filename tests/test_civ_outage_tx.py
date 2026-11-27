@@ -9,14 +9,18 @@ from types import SimpleNamespace
 
 import pytest
 from test_radio import MockTransport
+from test_yaesu_audio import FakeAudioDriver
 
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.exceptions import StaleBeforeWireError
+from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.runtime import _civ_rx
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
+from rigplane_testkit.yaesu import FakeCatRadio
 
 
 @dataclass
@@ -185,3 +189,59 @@ async def test_connected_link_still_delivers_key_commands(
     assert [
         packet[CIV_HEADER_SIZE:] for packet in outage.restored_link.sent_packets
     ] == [frame]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_ptt_on_while_disconnected_fails_fast_and_keys_nothing_after_reconnect() -> (
+    None
+):
+    """MOR-4885 R3: the Yaesu CAT send path has no recovery wait.
+
+    ``YaesuCatRadio._write`` refuses via ``_require_connected`` before
+    touching the transport (``backends/yaesu_cat/radio.py``), so a key-type
+    command issued while the link is down fails with the plain connection
+    error instead of waiting out a recovery window — and the refused key is
+    never replayed: after the owner reconnect nothing reaches the wire.
+
+    Real ``YaesuCatRadio`` over the TCP ``FakeCatRadio``; the fake's
+    wire-exact ``commands`` log and ``ptt`` state observe the wire. Real
+    time with ``await_until`` like the other ``FakeCatRadio`` tests — no
+    virtual clock, which no TCP-fake test combines with live socket I/O.
+    """
+    fake = FakeCatRadio()
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(
+            device=fake.device_url,
+            profile="ftx1",
+            audio_driver=FakeAudioDriver(),  # type: ignore[arg-type]
+        )
+        try:
+            await radio.connect()
+            assert await await_until(lambda: radio.connected, timeout=5.0)
+            await radio.disconnect()
+            assert await await_until(lambda: not radio.connected, timeout=5.0)
+
+            # Refused immediately: a 5 s bound fails closed on any
+            # recovery-style wait instead of hanging on it.
+            with pytest.raises(RadioConnectionError):
+                await asyncio.wait_for(radio.set_ptt(True), timeout=5.0)
+            assert fake.ptt is False
+            assert "TX1;" not in fake.commands
+
+            await radio.connect()
+            assert await await_until(lambda: radio.connected, timeout=5.0)
+            assert fake.ptt is False
+            assert "TX1;" not in fake.commands
+
+            # Positive control: the reconnected link keys, so the
+            # assertions above observe a live wire, not a dead one.
+            await radio.set_ptt(True)
+            assert fake.ptt is True
+            assert "TX1;" in fake.commands
+            await radio.set_ptt(False)
+            assert fake.ptt is False
+        finally:
+            await radio.disconnect()
+    finally:
+        await fake.stop()
