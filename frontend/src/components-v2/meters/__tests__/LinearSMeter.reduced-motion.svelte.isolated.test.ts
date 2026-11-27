@@ -148,8 +148,9 @@ beforeEach(() => {
   // value) as "nothing scheduled" — an id of 0 would make a real scheduled
   // frame indistinguishable from none, silently defeating the
   // cancelAnimationFrame assertions below.
-  rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
-  cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+  // restoreAllMocks() does not clear a reused spy's call history.
+  rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockClear().mockImplementation(() => 1);
+  cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockClear().mockImplementation(() => {});
   setCapabilities(makeCaps());
 });
 
@@ -490,10 +491,15 @@ describe('MOR-2551 shared rendering clock', () => {
 
   it('retains a hidden-start wake and removes cancelled/disposed work before resuming', () => {
     const clock = frameClock(true);
+    expect(document.hidden).toBe(true);
+    expect(document.visibilityState).toBe('hidden');
+    expect(clock.request).not.toHaveBeenCalled();
     const paint = vi.fn();
+    const disposedPaint = vi.fn();
+    const cancelledPaint = vi.fn();
     const scheduler = new ScopeRenderScheduler(paint);
-    const disposed = new ScopeRenderScheduler(paint);
-    const cancelled = browserRenderTiming.requestFrame(paint);
+    const disposed = new ScopeRenderScheduler(disposedPaint);
+    const cancelled = browserRenderTiming.requestFrame(cancelledPaint);
     try {
       scheduler.wake();
       disposed.wake();
@@ -501,8 +507,11 @@ describe('MOR-2551 shared rendering clock', () => {
       browserRenderTiming.cancelFrame(cancelled);
       disposed.dispose();
       clock.visibility(false);
+      expect(clock.frames.size).toBe(1);
       clock.flush();
       expect(paint).toHaveBeenCalledTimes(1);
+      expect(disposedPaint).not.toHaveBeenCalled();
+      expect(cancelledPaint).not.toHaveBeenCalled();
       expect(clock.frames.size).toBe(0);
     } finally {
       browserRenderTiming.cancelFrame(cancelled);
