@@ -778,15 +778,11 @@ class AudioSession:
                 the next reconnect or demand edge retries.
         """
         async with self._lock:
-            self._recovering_from = None
-            # Converge against the rebuilt (RECEIVING/idle) transport. recover
-            # forces a fresh RX re-attach (the bus rx_active flag is stale).
-            # TX_ONLY / RX_ONLY / RX_TX / IDLE recovery all fall out of this:
-            # demand dropped during the outage stays dropped (IDLE), a held
-            # lease re-arms TX (TX_ONLY) with no phantom RX, RX-bearing demand
-            # re-arms in the declared order. A dead-RX re-arm surfaces as a
-            # RuntimeError so the recovery caller can report FAILED.
-            await self._apply(recover=True)
+            await self._reestablish_locked()
+
+    async def _reestablish_locked(self) -> None:
+        self._recovering_from = None
+        await self._apply(recover=True)
 
     # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
 

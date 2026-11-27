@@ -529,7 +529,7 @@ async def test_third_successful_round_waits_for_real_frames(
             radio, "_teardown_audio_transport"
         )
         orig_ensure = radio._ensure_audio_transport
-        orig_reestablish = session.reestablish
+        orig_reestablish = session._reestablish_locked
         bus = radio.audio_bus
         orig_callback = bus._on_opus_packet
         allow_frames = asyncio.Event()
@@ -565,7 +565,7 @@ async def test_third_successful_round_waits_for_real_frames(
             delivery_order.append("return")
 
         radio._ensure_audio_transport = _fail_first_two_ensures  # type: ignore[method-assign]
-        session.reestablish = _reestablish_with_frame_gate  # type: ignore[method-assign]
+        session._reestablish_locked = _reestablish_with_frame_gate  # type: ignore[method-assign]
         bus._on_opus_packet = _gate_real_frames  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
@@ -587,7 +587,7 @@ async def test_third_successful_round_waits_for_real_frames(
             if release_frames is not None:
                 release_frames.cancel()
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
-            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            session._reestablish_locked = orig_reestablish  # type: ignore[method-assign]
             bus._on_opus_packet = orig_callback  # type: ignore[method-assign]
             restore_teardown()
         await sub.release()
@@ -978,7 +978,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             radio, "_teardown_audio_transport"
         )
         orig_ensure = radio._ensure_audio_transport
-        orig_reestablish = session.reestablish
+        orig_reestablish = session._reestablish_locked
         reestablished: list[int] = []
 
         async def _dead_ensure(*, reestablish: bool = True) -> None:
@@ -994,7 +994,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             reestablished.append(1)
 
         radio._ensure_audio_transport = _dead_ensure  # type: ignore[method-assign]
-        session.reestablish = _spy_reestablish  # type: ignore[method-assign]
+        session._reestablish_locked = _spy_reestablish  # type: ignore[method-assign]
 
         # Inject the watchdog loop so wall time cannot add an unrequested
         # edge (the test_two_rx_silent_start_one_repair_task precedent);
@@ -1060,7 +1060,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             assert recovery == [AudioRecoveryState.FAILED]
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
-            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            session._reestablish_locked = orig_reestablish  # type: ignore[method-assign]
             restore_teardown()
         await sub.release()
     finally:

@@ -16,6 +16,7 @@ from test_web_command_batch_http import _post_json
 from test_web_transport_connection import FakeConnection
 
 from rigplane.audio import AudioState, AudioStream
+from rigplane.audio.usb_driver import AudioAlreadyStartedError
 from rigplane.audio.session import (
     AudioSession,
     AudioSessionState,
@@ -218,7 +219,7 @@ async def test_audio_cut_returns_with_one_retry_after_failed(
     initial_transport._handle_packet(_make_audio_bytes(b"before-cut", send_seq=1))
     assert await sub.get(timeout=2.0) is not None
     connect = IcomTransport.connect
-    reestablish = session.reestablish
+    reestablish = session._reestablish_locked
     attempts: list[float] = []
     reestablished: list[int] = []
     link_up = asyncio.Event()
@@ -244,7 +245,7 @@ async def test_audio_cut_returns_with_one_retry_after_failed(
         cut_at = clock()
         restore = asyncio.get_running_loop().call_later(cut_seconds, link_up.set)
         monkeypatch.setattr(IcomTransport, "connect", cut_connect)
-        monkeypatch.setattr(session, "reestablish", record_reestablish)
+        monkeypatch.setattr(session, "_reestablish_locked", record_reestablish)
         try:
             await initial_transport.disconnect()
             await clock.elapse(RX_LIVENESS_TIMEOUT_S)
@@ -774,9 +775,13 @@ async def test_tx_rebuild_after_spent_repair_rearms_held_rx(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(15)
+@pytest.mark.parametrize(
+    "ingress", ["session", "direct", "direct_pcm", "direct_opus", "full_duplex"]
+)
 async def test_audio_retry_teardown_serializes_session_tx_admission(
     demanded_radio: IcomRadio,
     monkeypatch: pytest.MonkeyPatch,
+    ingress: str,
 ) -> None:
     radio = demanded_radio
     session = radio.audio_session
@@ -805,14 +810,26 @@ async def test_audio_retry_teardown_serializes_session_tx_admission(
     packet = await sub.get(timeout=2.0)
     assert packet is not None and packet.data == b"before-retry-tx"
 
-    async def acquire() -> TxLease:
+    async def acquire() -> TxLease | None:
         acquiring.set()
-        return await session.acquire_tx("during-retry-teardown")
+        if ingress == "session":
+            return await session.acquire_tx("during-retry-teardown")
+        if ingress == "direct":
+            await radio.start_tx()
+        elif ingress == "direct_pcm":
+            await radio.start_audio_tx_pcm()
+        elif ingress == "direct_opus":
+            await radio.start_audio_tx_opus()
+        else:
+            assert ingress == "full_duplex"
+            await radio.start_audio_opus(session.bus._on_opus_packet, jitter_depth=0)
+        await radio.push_tx(b"direct-tx-after-admission")
+        return None
 
     assert await radio.retry_audio(wait=False)
     repair = radio._audio_silence_repair_task
     assert repair is not None
-    tx_task: asyncio.Task[TxLease] | None = None
+    tx_task: asyncio.Task[TxLease | None] | None = None
     try:
         await asyncio.wait_for(stopping.wait(), timeout=2.0)
         assert old_stream.state is AudioState.IDLE
@@ -824,9 +841,15 @@ async def test_audio_retry_teardown_serializes_session_tx_admission(
         assert not tx_task.done()
         assert session.tx_demand == 0
         assert old_stream.state is AudioState.IDLE
+        assert old_stream.get_audio_stats()["tx_packets_sent"] == 0
 
         resume.set()
-        lease = await asyncio.wait_for(tx_task, timeout=2.0)
+        if ingress == "full_duplex":
+            with pytest.raises(AudioAlreadyStartedError):
+                await asyncio.wait_for(tx_task, timeout=2.0)
+            lease = None
+        else:
+            lease = await asyncio.wait_for(tx_task, timeout=2.0)
         await asyncio.wait_for(asyncio.shield(repair), timeout=2.0)
         try:
             stream = radio._audio_stream
@@ -834,30 +857,113 @@ async def test_audio_retry_teardown_serializes_session_tx_admission(
             assert reader.done()
             assert stream is not None and stream is not old_stream
             assert transport is not None and transport is not old_transport
-            assert session.tx_demand == 1
-            assert session.state is AudioSessionState.RX_TX
-            assert stream.state is AudioState.TRANSMITTING
+            assert session.tx_demand == (1 if ingress == "session" else 0)
+            if ingress == "session":
+                assert session.state is AudioSessionState.RX_TX
+            assert stream.state is (
+                AudioState.RECEIVING
+                if ingress == "full_duplex"
+                else AudioState.TRANSMITTING
+            )
             assert stream._rx_task is not None and not stream._rx_task.done()
             assert stream._rx_callback == session.bus._on_opus_packet
             transport._handle_packet(_make_audio_bytes(b"after-retry-tx", send_seq=1))
             packet = await sub.get(timeout=2.0)
             assert packet is not None and packet.data == b"after-retry-tx"
+            if ingress == "full_duplex":
+                assert stream.get_audio_stats()["tx_packets_sent"] == 0
+                return
             sent: list[bytes] = []
             monkeypatch.setattr(transport, "_raw_send", sent.append)
-            await lease.push(b"tx-after-retry")
-            assert stream.get_audio_stats()["tx_packets_sent"] == 1
+            if lease is not None:
+                await lease.push(b"tx-after-retry")
+            else:
+                await radio.push_tx(b"tx-after-retry")
+            assert stream.get_audio_stats()["tx_packets_sent"] == (
+                1 if ingress == "session" else 2
+            )
             assert len(sent) == 1 and sent[0].endswith(b"tx-after-retry")
         finally:
-            await lease.release()
+            if lease is not None:
+                await lease.release()
+            else:
+                await radio.stop_tx()
     finally:
         resume.set()
         if tx_task is not None:
             tx_task.cancel()
             results = await asyncio.gather(tx_task, return_exceptions=True)
-            if not isinstance(results[0], BaseException):
+            if isinstance(results[0], TxLease):
                 await results[0].release()
+        await radio.stop_tx()
         repair.cancel()
         await asyncio.gather(repair, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(15)
+async def test_audio_retry_waiting_for_direct_tx_admission_preserves_started_tx(
+    demanded_radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = demanded_radio
+    session = radio.audio_session
+    sub = await session.subscribe_rx("held-through-direct-admission")
+    stream = radio._audio_stream
+    transport = radio._audio_transport
+    assert stream is not None and transport is not None
+    reader = stream._rx_task
+    assert reader is not None
+    starting = asyncio.Event()
+    resume = asyncio.Event()
+    start_tx = AudioStream.start_tx
+
+    async def gated_start(candidate: AudioStream) -> None:
+        assert candidate is stream
+        starting.set()
+        await resume.wait()
+        await start_tx(candidate)
+
+    monkeypatch.setattr(AudioStream, "start_tx", gated_start)
+    tx_task = asyncio.create_task(radio.start_tx())
+    repair: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(starting.wait(), timeout=2.0)
+        assert await radio.retry_audio(wait=False)
+        repair = radio._audio_silence_repair_task
+        assert repair is not None
+        assert await await_until(session._lock.locked, timeout=2.0)
+        assert not repair.done()
+        assert radio._audio_stream is stream
+        assert stream.state is AudioState.RECEIVING
+        assert stream._rx_task is reader and not reader.done()
+
+        resume.set()
+        await asyncio.wait_for(tx_task, timeout=2.0)
+        await asyncio.wait_for(asyncio.shield(repair), timeout=2.0)
+        assert radio._audio_silence_repair_attempts == 0
+        assert radio._audio_stream is stream
+        assert radio._audio_transport is transport
+        assert stream.state is AudioState.TRANSMITTING
+        assert stream._rx_task is reader and not reader.done()
+        transport._handle_packet(
+            _make_audio_bytes(b"after-direct-admission", send_seq=1)
+        )
+        packet = await sub.get(timeout=2.0)
+        assert packet is not None and packet.data == b"after-direct-admission"
+        sent: list[bytes] = []
+        monkeypatch.setattr(transport, "_raw_send", sent.append)
+        await radio.push_tx(b"direct-tx-preserved")
+        assert stream.get_audio_stats()["tx_packets_sent"] == 1
+        assert len(sent) == 1 and sent[0].endswith(b"direct-tx-preserved")
+    finally:
+        resume.set()
+        tx_task.cancel()
+        await asyncio.gather(tx_task, return_exceptions=True)
+        if repair is not None:
+            repair.cancel()
+            await asyncio.gather(repair, return_exceptions=True)
+        await radio.stop_tx()
 
 
 @pytest.mark.asyncio

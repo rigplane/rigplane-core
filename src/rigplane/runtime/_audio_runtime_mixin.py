@@ -42,6 +42,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
     _audio_transport: IcomTransport | None
     _audio_ensure_lock: asyncio.Lock
+    _audio_tx_admission_lock: asyncio.Lock
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -167,6 +168,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
         """
+        async with self._audio_tx_admission_lock:
+            await self._start_tx_stream_locked()
+
+    async def _start_tx_stream_locked(self) -> None:
         self._check_connected()
         previous_stream = self._audio_stream
         await self._ensure_audio_transport(reestablish=False)
@@ -177,8 +182,6 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             and session is not None
             and session.rx_demand > 0
         ):
-            # Reuse reestablish's RX reattachment before TX starts. A session
-            # acquire may already hold its lock, so do not re-enter it here.
             await session._rearm_rx()
         await self._audio_stream.start_tx()
 
@@ -562,10 +565,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
         """
-        await self.start_audio_rx_opus(rx_callback, jitter_depth=jitter_depth)
-        if tx_enabled:
-            assert self._audio_stream is not None
-            await self._audio_stream.start_tx()
+        async with self._audio_tx_admission_lock:
+            await self.start_audio_rx_opus(rx_callback, jitter_depth=jitter_depth)
+            if tx_enabled:
+                await self._start_tx_stream_locked()
 
     async def stop_audio_opus(self) -> None:
         """Stop all Opus audio streams (RX and TX)."""

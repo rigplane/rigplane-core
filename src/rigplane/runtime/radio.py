@@ -534,6 +534,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
         # whole rebuild runs under it; no teardown ever takes it.
         self._audio_ensure_lock = asyncio.Lock()
+        self._audio_tx_admission_lock = asyncio.Lock()
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
@@ -1740,27 +1741,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ):
                     return
                 try:
-                    # Match acquire_tx's session lock before retiring its stream.
                     async with self._audio_session._lock:
-                        if not self._silence_repair_preconditions_ok(
-                            civ_epoch,
-                            owner_stop_epoch,
-                        ):
-                            return
-                        await self._teardown_audio_transport()
-                        self._audio_silence_repair_teardown_completed = time.monotonic()
-                    if not self._silence_repair_preconditions_ok(
-                        civ_epoch,
-                        owner_stop_epoch,
-                    ):
-                        return
-                    await self._ensure_audio_transport(reestablish=False)
-                    if not self._silence_repair_preconditions_ok(
-                        civ_epoch,
-                        owner_stop_epoch,
-                    ):
-                        return
-                    await self._audio_session.reestablish()
+                        async with self._audio_tx_admission_lock:
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                return
+                            await self._teardown_audio_transport()
+                            self._audio_silence_repair_teardown_completed = (
+                                time.monotonic()
+                            )
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                return
+                            await self._ensure_audio_transport(reestablish=False)
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                return
+                            await self._audio_session._reestablish_locked()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
