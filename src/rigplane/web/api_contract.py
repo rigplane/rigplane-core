@@ -115,6 +115,7 @@ class AudioReceiveFailureRecord(TypedDict):
     stage: str
     code: str
     reason: str
+    message: NotRequired[str]
     holder: NotRequired[str]
     candidates: NotRequired[list[AudioDeviceCandidateRecord]]
 

@@ -416,6 +416,7 @@ export interface AudioReceiveFailurePublic {
   stage: string;
   code: string;
   reason: string;
+  message?: string | null;
   holder?: string | null;
   candidates?: AudioDeviceCandidatePublic[];
 }

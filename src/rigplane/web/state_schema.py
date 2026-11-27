@@ -426,6 +426,7 @@ class AudioReceiveFailurePublic(_Strict):
     stage: str
     code: str
     reason: str
+    message: str | None = None
     holder: str | None = None
     candidates: list[AudioDeviceCandidatePublic] = Field(default_factory=list)
 

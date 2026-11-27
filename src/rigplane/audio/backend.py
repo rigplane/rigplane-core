@@ -490,6 +490,19 @@ _DEPENDENCY_HINT = (
 )
 
 
+class AudioLibraryMissingError(OSError):
+    """The native PortAudio library could not be loaded."""
+
+    MESSAGE = (
+        "Audio library missing: PortAudio could not be loaded. "
+        "On Debian or Raspberry Pi OS, install it with: "
+        "sudo apt install libportaudio2. Then restart RigPlane or retry RX audio."
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
 def _ensure_portaudio_deps() -> tuple[Any, Any]:
     """Return ``(sounddevice, numpy)`` or raise :class:`ImportError`."""
     try:
@@ -2200,13 +2213,18 @@ class PortAudioBackend:
     def _ensure_deps(self) -> tuple[Any, Any]:
         if self._sd is not None and self._np is not None:
             return self._sd, self._np
-        if self._dependency_loader is not None:
-            try:
+        try:
+            if self._dependency_loader is not None:
                 self._sd, self._np = self._dependency_loader()
-            except ImportError as exc:
-                raise ImportError(_DEPENDENCY_HINT) from exc
-        else:
-            self._sd, self._np = _ensure_portaudio_deps()
+            else:
+                self._sd, self._np = _ensure_portaudio_deps()
+        except ImportError as exc:
+            raise ImportError(_DEPENDENCY_HINT) from exc
+        except OSError as exc:
+            # sounddevice raises this exact loader error before device access.
+            if str(exc) == "PortAudio library not found":
+                raise AudioLibraryMissingError() from exc
+            raise
         return self._sd, self._np
 
     def list_devices(self) -> list[AudioDeviceInfo]:

@@ -680,6 +680,30 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     expect(notify).toHaveBeenCalledTimes(2);
   });
 
+  it('missing PortAudio explains installation once and stops automatic RX retries', async () => {
+    const { audioManager, audio, notify, socket } = await rig('localhost');
+    const frame = {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: Audio library missing',
+      reason: 'audio_library_missing',
+    };
+    serverText(socket, frame);
+    serverText(socket, frame);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('sudo apt install libportaudio2'),
+      'rxAudioStartFailed',
+      { reason: expect.stringContaining('sudo apt install libportaudio2') },
+    );
+    expect(audioManager.rxEnabled).toBe(false);
+    expect(audio.getAudioState().rxError).toBe(true);
+    const sent = socket.sent.length;
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(socket.sent).toHaveLength(sent);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['unknown', 'other'],
     ['missing', undefined],
@@ -764,6 +788,23 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
     flushSync();
 
     expect(renderedErrorToasts()).toEqual([NEUTRAL_TOAST_TEXT]);
+  });
+
+  it('renders the missing-library installation guidance through the production notifier', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+    runtimeBoundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: Audio library missing',
+      reason: 'audio_library_missing',
+    });
+    flushSync();
+    expect(renderedErrorToasts()).toEqual([
+      expect.stringContaining('sudo apt install libportaudio2'),
+    ]);
   });
 
   it.each([
