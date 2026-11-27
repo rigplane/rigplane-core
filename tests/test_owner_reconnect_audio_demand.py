@@ -19,7 +19,10 @@ success.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from rigplane.audio import AudioPacket, AudioState
 from rigplane.audio.session import AudioSession, AudioSessionState, RxSubscription
@@ -111,6 +114,22 @@ def _owner_connect_radio(recovery_cb: MagicMock) -> IcomRadio:
     return radio
 
 
+@pytest.fixture
+async def owner_connect_radio() -> AsyncIterator[Callable[[MagicMock], IcomRadio]]:
+    radios: list[IcomRadio] = []
+
+    def create(recovery_cb: MagicMock) -> IcomRadio:
+        radio = _owner_connect_radio(recovery_cb)
+        radios.append(radio)
+        return radio
+
+    try:
+        yield create
+    finally:
+        for radio in radios:
+            await radio.disconnect()
+
+
 async def _assert_rx_reestablished_once(
     radio: IcomRadio,
     session: AudioSession,
@@ -125,16 +144,21 @@ async def _assert_rx_reestablished_once(
     assert fresh.start_rx_count == 1  # re-established exactly once
     assert fresh.state is AudioState.RECEIVING
     assert fresh.last_start_rx_callback == session.bus._on_opus_packet
+    transport = radio._audio_transport
+    assert isinstance(transport, MagicMock)
+    transport.discard_pending_audio.assert_called_once_with()
     assert session.state is AudioSessionState.RX_ONLY
     assert session.bus.subscriber_count == 1  # no leaked/duplicated demand
     fresh.emit_rx(_PACKET)  # real fan-out through the rebuilt leg
     assert await sub.get(timeout=1.0) == _PACKET
 
 
-async def test_owner_connect_reestablishes_held_rx_demand() -> None:
+async def test_owner_connect_reestablishes_held_rx_demand(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """Owner disconnect + connect must re-arm the still-held RX demand."""
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
     first = radio._audio_stream
@@ -158,9 +182,9 @@ async def test_owner_connect_reestablishes_held_rx_demand() -> None:
         await radio.disconnect()
 
 
-async def test_positive_control_manual_recover_restores_rx_after_owner_connect() -> (
-    None
-):
+async def test_positive_control_manual_recover_restores_rx_after_owner_connect(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """The fixture observes success: the reconnect loop's own recovery works.
 
     Running by hand what ``radio_reconnect.reconnect_loop`` runs after its
@@ -170,7 +194,7 @@ async def test_positive_control_manual_recover_restores_rx_after_owner_connect()
     call the only recovery now that ``connect()`` recovers on its own.
     """
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
     radio._auto_recover_audio = False
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -196,12 +220,14 @@ def _run_resident_reconnect(radio: IcomRadio) -> "asyncio.Task[None]":
     return radio._reconnect_task
 
 
-async def test_hard_reconnect_loop_recovers_held_demand_once() -> None:
+async def test_hard_reconnect_loop_recovers_held_demand_once(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """A resident hard-reconnect round over the real ``connect()`` recovers
     the held demand exactly once — ``connect()`` itself must leave the
     recovery to the loop (the not-the-reconnect-task guard)."""
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
 
@@ -216,11 +242,13 @@ async def test_hard_reconnect_loop_recovers_held_demand_once() -> None:
         await radio.disconnect()
 
 
-async def test_owner_connect_without_held_demand_runs_no_recovery() -> None:
+async def test_owner_connect_without_held_demand_runs_no_recovery(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """No session demand held across the owner disconnect → connect ends
     with no recovery events and no audio leg."""
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
 
     await radio.disconnect()
     await radio.connect()
@@ -231,10 +259,12 @@ async def test_owner_connect_without_held_demand_runs_no_recovery() -> None:
     await radio.disconnect()
 
 
-async def test_owner_connect_with_auto_recover_disabled_runs_no_recovery() -> None:
+async def test_owner_connect_with_auto_recover_disabled_runs_no_recovery(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """``auto_recover_audio=False`` → the owner connect recovers nothing."""
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
     radio._auto_recover_audio = False
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
@@ -249,12 +279,14 @@ async def test_owner_connect_with_auto_recover_disabled_runs_no_recovery() -> No
     await radio.disconnect()
 
 
-async def test_owner_stop_during_connect_runs_no_recovery() -> None:
+async def test_owner_stop_during_connect_runs_no_recovery(
+    owner_connect_radio: Callable[[MagicMock], IcomRadio],
+) -> None:
     """Owner ``disconnect()`` landing while ``connect()`` is inside
     ``_fetch_initial_state`` leaves no recovery behind: the owner-connect
     tail must not run against the radio the owner just tore down."""
     recovery_cb = MagicMock()
-    radio = _owner_connect_radio(recovery_cb)
+    radio = owner_connect_radio(recovery_cb)
     session = radio.audio_session
     sub = await session.subscribe_rx("web")
 

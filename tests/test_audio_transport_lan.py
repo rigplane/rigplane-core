@@ -11,13 +11,16 @@ no MagicMock dataclasses. All radio I/O is faked; no hardware needed.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
 
 from _audio_stream_fake import FakeAudioStream
 
+from rigplane.audio import AudioPacket, AudioState
 from rigplane.core.radio_protocol import AudioTransport
+from rigplane.core.transport import IcomTransport
 from rigplane.core.types import AudioCodec
 from rigplane.radio import IcomRadio
 from rigplane_testkit.leaked_radio_guard import fake_connected
@@ -67,6 +70,33 @@ class TestAudioTransportConformance:
 
 @pytest.mark.asyncio
 class TestRxDelegation:
+    @pytest.mark.parametrize("state", list(AudioState))
+    async def test_start_rx_discards_pending_audio_only_before_idle_reader(
+        self, state: AudioState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        radio, stream = _make_radio()
+        stream.state = state
+        transport = MagicMock(spec=IcomTransport)
+        radio._audio_transport = transport
+        events: list[str] = []
+        transport.discard_pending_audio.side_effect = lambda: events.append("discard")
+        original_start_rx = stream.start_rx
+
+        async def start_rx(
+            callback: Callable[[AudioPacket | None], None], *, jitter_depth: int
+        ) -> None:
+            assert transport._discard_data_packets is False
+            events.append("start")
+            await original_start_rx(callback, jitter_depth=jitter_depth)
+
+        monkeypatch.setattr(stream, "start_rx", start_rx)
+        await radio.start_rx(lambda packet: None)
+
+        assert events == (
+            ["discard", "start"] if state is AudioState.IDLE else ["start"]
+        )
+        assert stream.start_rx_count == 1
+
     async def test_start_rx_effects(self) -> None:
         radio, stream = _make_radio()
         cb = lambda pkt: None  # noqa: E731

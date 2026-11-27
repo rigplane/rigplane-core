@@ -282,6 +282,11 @@ class IcomTransport:
             return 0.0
         return q.qsize() / maxsize
 
+    def discard_pending_audio(self) -> None:
+        """Discard packets currently queued on this audio transport."""
+        while not self._packet_queue.empty():
+            self._packet_queue.get_nowait()
+
     def _default_raw_send(self, data: bytes) -> None:
         """Send raw bytes via UDP transport."""
         if self._udp_transport is not None:
