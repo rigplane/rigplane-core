@@ -107,6 +107,7 @@ from ..core.radio_protocol import (
     RelativeVfoFrequencyWritable,
     RelativeVfoReadbackCapable,
 )
+from ..core.radio_transport import RadioTransport, control_transport_of
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_target import (
@@ -3589,13 +3590,9 @@ class RadioPoller:
         )
 
     def _transport_open_for_acquisition(self) -> bool:
-        """Whether acquisition may put requests on the wire this pass.
-
-        Prefer the backend-neutral control transport fact: ``connected`` can
-        also require a healthy or identified radio. Older providers without a
-        boolean control fact retain their existing connected-based behavior.
-        The backend remains the sole owner of reconnect attempts.
-        """
+        """Apply the closed-control-transport pause only to serial backends."""
+        if control_transport_of(self._radio) is not RadioTransport.SERIAL:
+            return True
         control = getattr(self._radio, "control_connected", None)
         if isinstance(control, bool):
             return control
@@ -3604,7 +3601,7 @@ class RadioPoller:
     def _dispatchable_acquisition_requests(
         self, pending: Sequence[AcquisitionRequest]
     ) -> Sequence[AcquisitionRequest]:
-        """Seat dispatch filter: nothing goes on a closed transport."""
+        """Filter acquisition while a serial control transport is closed."""
         if not self._transport_open_for_acquisition():
             return []
         return pending

@@ -1,4 +1,4 @@
-"""MOR-4821: avoid polling a closed transport and align Icom link states.
+"""MOR-4821: avoid polling a closed serial transport and align Icom link states.
 
 Regression: with a saved serial radio whose port is absent (COM3 missing),
 Core issued ~10 failed state requests/s while reporting "disconnected,
@@ -7,8 +7,8 @@ attempt 0, no retry scheduled" next to a health verdict of "reconnecting".
 * Rate: ``RadioPoller._run`` sends fire-and-forget acquisition queries that
   never raise, so the existing exception-driven backoff never engaged and
   every pass re-sent at the full 0.1 s serial cadence. While the transport
-  reports closed the poller sends nothing and waits for queue notifications
-  or a transport recheck. The serial watchdog owns reconnect timing.
+  is serial and reports closed the poller sends nothing and waits for queue
+  notifications or a transport recheck. The serial watchdog owns reconnect timing.
 * Statuses: the connection block fell back to the ``connected`` boolean
   ("disconnected, attempt 0, no retry") on paths that never emit a
   reconnect-status callback (all serial backends), while health reads the
@@ -59,6 +59,7 @@ def _absent_serial_radio() -> Any:
     ``is False``/``is not False`` duck-typed reads behave as on the radio.
     """
     radio = _make_radio(model="IC-7300")
+    radio.backend_id = "icom_serial"
     radio.connected = False
     radio.radio_ready = False
     radio.conn_state = RadioConnectionState.RECONNECTING
@@ -118,6 +119,57 @@ class _SerialPropertiesRadio:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.delegate, name)
+
+
+@pytest.mark.parametrize("model", ["G7250", "IC-7300", "IC-7610", "IC-9700"])
+async def test_lan_acquires_without_an_open_control_session(model: str) -> None:
+    radio = CoreRadio("192.0.2.1", model=model)
+    assert radio.control_connected is False
+    poller, send_query = _poller_with_counted_wire(radio)
+
+    await poller._send_query()  # noqa: SLF001
+
+    send_query.assert_awaited_once()
+
+
+@pytest.mark.parametrize("backend_id", [None, "rigctld"])
+async def test_nonserial_provider_acquires_without_connection_facts(
+    backend_id: str | None,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    radio.backend_id = backend_id
+    radio.control_connected = False
+    radio.connected = False
+    poller, send_query = _poller_with_counted_wire(radio)
+
+    await poller._send_query()  # noqa: SLF001
+
+    send_query.assert_awaited_once()
+
+
+@pytest.mark.timeout(30)
+async def test_lan_poll_loop_keeps_acquiring_without_serial_transport(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = _make_radio(model="IC-7300")
+    radio.backend_id = "rigplane"
+    radio.control_connected = False
+    radio.connected = False
+    radio.radio_ready = False
+    poller, send_query = _poller_with_counted_wire(radio)
+    probe = AsyncMock(wraps=poller._send_query)  # noqa: SLF001
+    monkeypatch.setattr(poller, "_send_query", probe)
+    monkeypatch.setattr(poller, "_fetch_nb_controls", AsyncMock())
+    monkeypatch.setattr(poller, "_fetch_mod_inputs", AsyncMock())
+    task = asyncio.create_task(poller._run())  # noqa: SLF001
+    try:
+        await virtual_clock.elapse(0.3)
+        send_query.assert_awaited_once()
+        assert probe.await_count >= 3
+    finally:
+        task.cancel()
+        await task
 
 
 @pytest.mark.timeout(30)
