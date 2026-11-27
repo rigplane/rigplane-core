@@ -249,6 +249,21 @@ async def test_no_plan_behaves_as_before(server, client):
     assert _is_freq_reply(reply)
 
 
+async def test_unsolicited_frequency_uses_transceive_opcode(client: _UdpClient) -> None:
+    sim = MockIcomRadio(unsolicited_civ=True)
+    await sim.start()
+    try:
+        client.send(_openclose(seq=1), sim.civ_port)
+        async with asyncio.timeout(5.0):
+            while True:
+                frame = (await client.recv(timeout=5.0))[0x15:]
+                if len(frame) == 11:  # five frequency bytes after the CI-V header
+                    break
+        assert frame[:5] == bytes.fromhex("FEFE009800")
+    finally:
+        await sim.stop()
+
+
 async def test_echo_precedes_every_reply_by_default(server, client):
     """The LAN CI-V echo: the request's CI-V frame comes back first, the
     reply second (recorded IC-7610 behaviour; the conformance suite replays

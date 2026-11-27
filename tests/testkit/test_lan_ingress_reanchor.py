@@ -17,6 +17,7 @@ import contextlib
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, parse_frequency_response
 from rigplane.core.transport import REORDER_WINDOW
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -91,17 +92,22 @@ async def test_stale_high_first_packet_reanchors_and_civ_answers(
         with fast_connect():
             await asyncio.wait_for(radio.connect(), 10.0)
             await _wait_connected(radio)
-            # MOR-4447: prove the DIRECTED reply is what answers, not a
-            # cached or unsolicited value: stall the unsolicited stream
-            # (and its drift), move the radio to a marker frequency
-            # nothing has reported yet, and disable the cache fallback —
-            # only the requested read can return the marker. The 10 s
-            # stall is far below the 60 s CI-V data watchdog.
+            transport = radio._civ_transport  # noqa: SLF001
+            assert transport is not None
+            await await_until(
+                lambda: transport.rx_order_stats.reanchored >= 1,
+                timeout=_READY_DEADLINE_S,
+                description="CI-V ingress re-anchors onto the live stream",
+            )
+            # Freeze drift before setting this simulator's marker. Read the
+            # directed CI-V response itself so the cache cannot answer.
             sim.stall_for(10.0)
             sim.set_frequency(_MARKER_HZ)
-            freq = await asyncio.wait_for(radio.get_freq(bypass_cache=True), 5.0)
-        assert freq == _MARKER_HZ
-        stats = radio._civ_transport.rx_order_stats  # noqa: SLF001
+            response = await asyncio.wait_for(radio.send_civ(0x03), 5.0)
+        assert response is not None
+        assert response.to_addr == CONTROLLER_ADDR
+        assert parse_frequency_response(response) == _MARKER_HZ
+        stats = transport.rx_order_stats
         assert stats.reanchored == 1
         # The run up to the window still counts as duplicates — bounded, not
         # the thousands the field log showed.

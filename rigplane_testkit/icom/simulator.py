@@ -219,6 +219,7 @@ _CONTROLLER_ADDR = 0xE0
 # CI-V command codes
 _CIV_PREAMBLE = b"\xfe\xfe"
 _CIV_TERM = b"\xfd"
+_CMD_FREQ_TRANSCEIVE = 0x00
 _CMD_FREQ_GET = 0x03
 _CMD_FREQ_SET = 0x05
 _CMD_MODE_GET = 0x04
@@ -2631,7 +2632,7 @@ class MockIcomRadio(AudioPortMixin):
                 civ = self._civ_frame(
                     to=0x00,
                     frm=self._radio_addr,
-                    cmd=_CMD_FREQ_GET,
+                    cmd=_CMD_FREQ_TRANSCEIVE,
                     data=bcd_encode(self._frequency),
                 )
                 pkt = self._wrap_civ(civ, self._civ_owner_id)

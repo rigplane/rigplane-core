@@ -6,8 +6,7 @@
 # One path per line, relative to tests/, sorted. The test fails
 # on an offender missing here, and on a line here that no
 # longer offends -- delete that line, never keep it. Regenerate,
-# do not edit: uv run python tests/test_meta_assertions.py
-# --regenerate
+# do not edit: uv run python scripts/regen_assertion_free_ledger.py
 contracts/test_audio_transport_conformance.py
 integration/test_audio_integration.py
 integration/test_media_scope_integration.py
