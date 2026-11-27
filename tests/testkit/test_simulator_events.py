@@ -74,6 +74,7 @@ async def _states_until(
     end = virtual_clock() + deadline_s
 
     def sample() -> bool:
+        virtual_clock.advance(min(0.02, max(0.0, end - virtual_clock())))
         state = radio.conn_state
         if not seen or seen[-1] is not state:
             seen.append(state)
@@ -82,7 +83,7 @@ async def _states_until(
     await await_until(
         sample,
         timeout=deadline_s,
-        interval=0.02,
+        interval=0.001,
         description="the expected connection states",
     )
     return seen
@@ -261,10 +262,8 @@ async def test_user_disconnect_during_reconnect_ends_loop(
             failure_handler = _FailureHandler(level=logging.WARNING)
             radio_reconnect.logger.addHandler(failure_handler)
             try:
-                await await_until(
-                    attempt_failed.is_set,
-                    timeout=40.0,
-                    description="the failed reconnect attempt",
+                await _states_until(
+                    radio, virtual_clock, 40.0, lambda _: attempt_failed.is_set()
                 )
             finally:
                 radio_reconnect.logger.removeHandler(failure_handler)
@@ -319,10 +318,8 @@ async def _assert_user_disconnect_ends_loop(
             try:
                 with patch.object(target, inject_at, spy):
                     server.keepalive_silence(at=0.1, for_seconds=3.0)
-                    await await_until(
-                        lambda: user_task is not None,
-                        timeout=15.0,
-                        description=f"disconnect injection at {inject_at}",
+                    await _states_until(
+                        radio, virtual_clock, 15.0, lambda _: user_task is not None
                     )
                     assert user_task is not None, (
                         f"disconnect never injected at the loop's {inject_at}",
@@ -438,10 +435,8 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
                     ),
                 ):
                     server.keepalive_silence(at=0.1, for_seconds=3.0)
-                    await await_until(
-                        lambda: bool(failed_in),
-                        timeout=15.0,
-                        description="the injected reconnect failure",
+                    await _states_until(
+                        radio, virtual_clock, 15.0, lambda _: bool(failed_in)
                     )
                     assert failed_in, ("no failure injected in the loop", statuses)
                     loop_task = failed_in[0]
@@ -527,12 +522,13 @@ async def test_reboot_busy_window_longer_than_reconnect_rounds_recovers(
             # announces itself — the first attempt's release has already
             # run by then, so the handle is only non-None if that release
             # preserved it.
-            await await_until(
-                lambda: any(
+            await _states_until(
+                radio,
+                virtual_clock,
+                20.0,
+                lambda _: any(
                     s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
                 ),
-                timeout=20.0,
-                description="the second reconnect attempt",
             )
             assert any(
                 s["state"] == "reconnecting" and s["attempt"] >= 2 for s in statuses
