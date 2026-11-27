@@ -1694,6 +1694,43 @@ class TestDiscoverSerialRadios:
         assert results[0].profile_id == ""
 
     @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_fingerprint_does_not_hide_foreign_model_id(
+        self,
+    ) -> None:
+        """MOR-4801: a radio answering at 0xA4 behind the X6200 CH342
+        fingerprint (e.g. an X6100 with custom firmware) whose own 0x1D
+        0x19 answer matches no profile must be named "Unknown Xiegu",
+        not mislabeled X6200. Before the fix the fingerprint match
+        suppressed the model-ID probe entirely."""
+        # First read → CI-V transceiver-ID probe response (addr 0xA4);
+        # second read → the Xiegu model-ID reply to 0x1D 0x19.
+        reader = _FakeReader([_IC705_RESPONSE, _XIEGU_UNKNOWN_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/cu.usbmodem58910181093",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2 SER=5891018109 LOCATION=0-1.2.4",
+            vid=0x1A86,
+            pid=0x55D2,
+            manufacturer=None,
+            product="USB Dual_Serial",
+            serial_number="5891018109",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0xA4
+        assert results[0].model == "Unknown Xiegu (model id 5100)"
+        assert results[0].profile_id == ""
+
+    @pytest.mark.asyncio
     async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:
         reader = _FakeReader([_IC7610_RESPONSE])
         writer = _FakeWriter()

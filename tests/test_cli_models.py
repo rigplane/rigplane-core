@@ -124,9 +124,9 @@ def test_models_json_expected_shipped_profiles(capsys) -> None:
 
     x6100 = by_model["X6100"]
     assert x6100["transports"] == ["USB CI-V"]
-    assert x6100["backends"] == []
+    assert x6100["backends"] == ["serial"]
     assert "default_backend" not in x6100
-    assert x6100["profile_only"] is True
+    assert x6100["profile_only"] is False
 
     ic705 = by_model["IC-705"]
     assert "LAN" in ic705["transports"]

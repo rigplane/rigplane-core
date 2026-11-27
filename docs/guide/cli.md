@@ -758,7 +758,7 @@ IC-7300MK2  Icom IC-7300MK2  LAN, USB CI-V  lan, serial                   icom_i
 IC-7610     Icom IC-7610     LAN, USB CI-V  lan, serial                   icom_ic7610
 IC-9700     Icom IC-9700     LAN, USB CI-V  lan, serial                   icom_ic9700
 TX-500      Lab599 TX-500    USB CAT        profile only, no backend yet  lab599_tx500
-X6100       Xiegu X6100      USB CI-V       profile only, no backend yet  xiegu_x6100
+X6100       Xiegu X6100      USB CI-V       serial                        xiegu_x6100
 X6200       Xiegu X6200      USB CI-V       serial                        xiegu_x6200
 FTX-1       Yaesu FTX-1      USB CAT        yaesu-cat                     yaesu_ftx1
 Matching is case-insensitive; the profile id (last column) also works.

@@ -26,16 +26,13 @@
 #      the shared-firmware premise the remaining X6200 inferences (and
 #      MOR-634's capability drops below) rely on.
 #
-# Reachability: unlike X6200 (routed through Ic705SerialRadio),
-# ``backends/factory.py`` has NO branch for X6100 at all -- it is not in
-# ``_YAESU_MODELS``, does not start with "FT", and is not one of the four
-# supported serial models, so ``create_radio`` hits the explicit
-# "Unsupported serial model" refusal. The only path to this radio today is
-# the rigctld client (see [tx_policy] below), which never builds a CI-V
-# frame. So every byte in [commands] below -- old and new -- is data
-# nothing in production reads, except through the residual, non-standard
-# path of constructing a CI-V radio object directly against this profile's
-# civ_addr 0x70 (plan evidence doc, §C5).
+# Reachability (MOR-4801): like X6200 (and G7250), this profile routes
+# through XieguSerialRadio on the shared Xiegu CI-V session
+# (``backends/factory.py`` ``_SERIAL_MODEL_CLASSES``) at its own civ_addr
+# 0x70 -- ``create_radio`` with ``--model X6100`` builds that backend with
+# this profile, so the explicit user choice is honoured instead of falling
+# back to the X6200 profile. The rigctld client path (see [tx_policy]
+# below), which never builds a CI-V frame, keeps working unchanged.
 
 [radio]
 id = "xiegu_x6100"
@@ -620,14 +617,13 @@ get_tx_band_edge     = { absent = "Radioddity Extended manual for Xiegu X6100 v1
 
 [tx_policy]
 # Deliberately empty (MOR-1947) — a declared decision, not an oversight.
-# X6100 has no serial backend: backends/factory.py refuses the model, so
-# the only path to this radio is the rigctld client, whose transmit-state
-# read is permanently unverified — it answers from upstream Hamlib's cache
-# or another rigplane's retained state, never from a fresh radio read.
-# The CI-V PTT command declared above is therefore unreachable from here,
-# and mapping a receiving byte would claim a freshness this path cannot
-# deliver. No backend on this radio's path reads this map today, so the
+# On the rigctld-client path the transmit-state read is permanently
+# unverified — it answers from upstream Hamlib's cache or another
+# rigplane's retained state, never from a fresh radio read — and mapping
+# a receiving byte would claim a freshness that path cannot deliver. The
 # empty table records a ruling rather than producing a behaviour: it
-# asserts no receiving value instead of inventing one.
+# asserts no receiving value instead of inventing one. (MOR-4801: this
+# profile now also routes over serial CI-V; the emptiness decision is
+# unchanged — it is about freshness evidence, not reachability.)
 refused_during_tx = []
 tx_state_map = { }
