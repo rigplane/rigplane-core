@@ -1280,8 +1280,6 @@
     gap: 12px;
     padding: 4px 8px;
     background: rgba(0, 0, 0, 0.65);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
     z-index: 60;
     pointer-events: auto;
   }

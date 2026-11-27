@@ -1,15 +1,39 @@
-/**
- * MOR-1233: live (uncached) prefers-reduced-motion check. Shared by the
- * ballistics loop below and by rAF-driven peak-hold consumers (e.g.
- * LinearSMeter) so both respect the same signal without duplicating the
- * matchMedia guard.
- */
+import { browserRenderTiming } from '../canvas/scope-render-scheduler';
+
+let motionState: { reduced: boolean } | null = null;
+let motionQuery: MediaQueryList | null = null;
+let queryFactory: typeof window.matchMedia | null = null;
+let detachMotionQuery: (() => void) | null = null;
+const motionSubscribers = new Set<(reduced: boolean) => void>();
+
+function ensureMotionQuery(): void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  if (motionQuery && queryFactory === window.matchMedia) return;
+  detachMotionQuery?.();
+  queryFactory = window.matchMedia;
+  const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+  motionQuery = query;
+  const state = $state({ reduced: query.matches });
+  motionState = state;
+  const handler = () => {
+    state.reduced = query.matches;
+    for (const callback of [...motionSubscribers]) callback(state.reduced);
+  };
+  if (typeof query.addEventListener === 'function') {
+    query.addEventListener('change', handler);
+    detachMotionQuery = () => query.removeEventListener('change', handler);
+  } else if (typeof query.addListener === 'function') {
+    query.addListener(handler);
+    detachMotionQuery = () => query.removeListener?.(handler);
+  } else {
+    detachMotionQuery = null;
+  }
+}
+
 export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
+  ensureMotionQuery();
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? (motionState?.reduced ?? false) : false;
 }
 
 /**
@@ -23,17 +47,17 @@ export function onReducedMotionChange(callback: (reduced: boolean) => void): () 
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return () => {};
   }
-  const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const handler = () => callback(mql.matches);
-  if (typeof mql.addEventListener === 'function') {
-    mql.addEventListener('change', handler);
-    return () => mql.removeEventListener('change', handler);
-  }
-  if (typeof mql.addListener === 'function') {
-    mql.addListener(handler);
-    return () => mql.removeListener?.(handler);
-  }
-  return () => {};
+  ensureMotionQuery();
+  const subscriber = (reduced: boolean) => callback(reduced);
+  motionSubscribers.add(subscriber);
+  return () => {
+    motionSubscribers.delete(subscriber);
+    if (motionSubscribers.size !== 0) return;
+    detachMotionQuery?.();
+    detachMotionQuery = null;
+    motionQuery = null;
+    queryFactory = null;
+  };
 }
 
 /**
@@ -90,17 +114,17 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
       return;
     }
 
-    frameId = requestAnimationFrame(tick);
+    frameId = browserRenderTiming.requestFrame(tick);
   }
 
   function loop() {
     lastTime = performance.now();
-    frameId = requestAnimationFrame(tick);
+    frameId = browserRenderTiming.requestFrame(tick);
   }
 
   function start() {
     if (frameId) {
-      cancelAnimationFrame(frameId);
+      browserRenderTiming.cancelFrame(frameId);
       frameId = 0;
     }
     started = true;
@@ -115,7 +139,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
     unsubscribe = onReducedMotionChange((reduced) => {
       if (reduced) {
         if (frameId) {
-          cancelAnimationFrame(frameId);
+          browserRenderTiming.cancelFrame(frameId);
           frameId = 0;
         }
         current = target;
@@ -128,7 +152,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   function stop() {
     started = false;
     if (frameId) {
-      cancelAnimationFrame(frameId);
+      browserRenderTiming.cancelFrame(frameId);
       frameId = 0;
     }
     unsubscribe?.();

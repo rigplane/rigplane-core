@@ -15,9 +15,68 @@ export interface ScopeRenderTiming {
   cancelFrame(id: number): void;
 }
 
+type BrowserFrame = { callback: (now: number) => void; nativeId: number | null };
+const browserFrames = new Map<number, BrowserFrame>();
+let nextBrowserFrameId = 0;
+let visibilityDocument: Document | null = null;
+
+function documentHidden(): boolean {
+  return typeof document !== 'undefined'
+    && (document.hidden || document.visibilityState === 'hidden');
+}
+
+function releaseVisibilityIfIdle(): void {
+  if (browserFrames.size !== 0) return;
+  visibilityDocument?.removeEventListener('visibilitychange', onBrowserVisibility);
+  visibilityDocument = null;
+}
+
+function scheduleBrowserFrame(id: number, frame: BrowserFrame): void {
+  if (frame.nativeId !== null || documentHidden()) return;
+  const nativeId = requestAnimationFrame((now) => {
+    if (browserFrames.get(id) !== frame || frame.nativeId !== nativeId) return;
+    frame.nativeId = null;
+    if (documentHidden()) return;
+    browserFrames.delete(id);
+    try {
+      frame.callback(now);
+    } finally {
+      releaseVisibilityIfIdle();
+    }
+  });
+  frame.nativeId = nativeId;
+}
+
+function onBrowserVisibility(): void {
+  for (const [id, frame] of browserFrames) {
+    if (documentHidden()) {
+      if (frame.nativeId !== null) cancelAnimationFrame(frame.nativeId);
+      frame.nativeId = null;
+    } else {
+      scheduleBrowserFrame(id, frame);
+    }
+  }
+}
+
+/** Shared by scope redraws and meter animations; hidden work keeps its logical handle. */
 export const browserRenderTiming: ScopeRenderTiming = {
-  requestFrame: (cb) => requestAnimationFrame(cb),
-  cancelFrame: (id) => cancelAnimationFrame(id),
+  requestFrame(callback) {
+    const id = ++nextBrowserFrameId;
+    const frame: BrowserFrame = { callback, nativeId: null };
+    browserFrames.set(id, frame);
+    if (!visibilityDocument && typeof document !== 'undefined') {
+      visibilityDocument = document;
+      visibilityDocument.addEventListener('visibilitychange', onBrowserVisibility);
+    }
+    scheduleBrowserFrame(id, frame);
+    return id;
+  },
+  cancelFrame(id) {
+    const frame = browserFrames.get(id);
+    if (frame?.nativeId != null) cancelAnimationFrame(frame.nativeId);
+    browserFrames.delete(id);
+    releaseVisibilityIfIdle();
+  },
 };
 
 export interface ScopeRenderSchedulerOptions {
@@ -41,7 +100,7 @@ export class ScopeRenderScheduler {
     private readonly options: ScopeRenderSchedulerOptions = {},
   ) {}
 
-  /** True while an animation frame carrying a paint is scheduled. */
+  /** True while a draw is pending, including during a hidden-document pause. */
   get pending(): boolean {
     return this.rafId !== 0;
   }

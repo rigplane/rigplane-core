@@ -116,9 +116,7 @@ describe('createSignalMeterMotion', () => {
     binding.start();
     binding.start();
     expect(harness!.activeFrames).toBe(2);
-    // Smoother + peak ticker subscribe; the MOR-2509 afterglow envelope
-    // adds its own listener without scheduling a frame at rest.
-    expect(harness!.listenerCount).toBe(3);
+    expect(harness!.listenerCount).toBe(1);
 
     binding.stop();
     binding.stop();

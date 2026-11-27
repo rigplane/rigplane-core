@@ -1,3 +1,6 @@
+import { browserRenderTiming, ScopeRenderScheduler } from '$lib/canvas/scope-render-scheduler';
+import { createSmoother, onReducedMotionChange, prefersReducedMotion } from '$lib/utils/smoothing.svelte';
+import mobileLayout from '../../layout/MobileRadioLayout.svelte?raw';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
@@ -395,9 +398,7 @@ describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cy
     try {
       const { component } = mountReactive({ value: 20 });
       flushSync();
-      // Ballistics smoother + peak-hold + the MOR-2509 afterglow envelope
-      // each register their own listener.
-      expect(listenerCount()).toBe(3);
+      expect(listenerCount()).toBe(1);
 
       unmount(component);
       components = components.filter((c) => c !== component);
@@ -406,4 +407,202 @@ describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cy
       restore();
     }
   });
+});
+
+const panoramaSources = import.meta.glob('../../../components/spectrum/**/*.svelte', {
+  eager: true, query: '?raw', import: 'default',
+}) as Record<string, string>;
+
+function frameClock(initiallyHidden = false) {
+  let hidden = initiallyHidden;
+  let nextId = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+  vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => hidden ? 'hidden' : 'visible');
+  const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.set(++nextId, callback);
+    return nextId;
+  });
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id); });
+  return {
+    frames, request,
+    visibility(value: boolean) {
+      hidden = value;
+      document.dispatchEvent(new Event('visibilitychange'));
+    },
+    flush(now = 16) {
+      const pending = [...frames.entries()];
+      for (const [id, callback] of pending) {
+        if (!frames.delete(id)) continue;
+        callback(now);
+      }
+      flushSync();
+    },
+  };
+}
+
+function motionQuery() {
+  let matches = false;
+  const listeners = new Set<() => void>();
+  const read = vi.fn(() => matches);
+  const query = {
+    get matches() { return read(); },
+    addEventListener: (_: string, callback: () => void) => { listeners.add(callback); },
+    removeEventListener: (_: string, callback: () => void) => { listeners.delete(callback); },
+  } as unknown as MediaQueryList;
+  const matchMedia = vi.fn().mockReturnValue(query);
+  vi.stubGlobal('matchMedia', matchMedia);
+  return {
+    read, matchMedia, listeners,
+    change(value: boolean) {
+      matches = value;
+      for (const callback of [...listeners]) callback();
+      flushSync();
+    },
+  };
+}
+
+afterEach(() => { vi.unstubAllGlobals(); });
+
+describe('MOR-2551 shared rendering clock', () => {
+  it('cancels an in-flight draw while hidden and resumes with only the latest intake state', () => {
+    const clock = frameClock();
+    let latest = 1;
+    const painted: number[] = [];
+    const scheduler = new ScopeRenderScheduler(() => { painted.push(latest); });
+    try {
+      scheduler.wake();
+      expect(clock.frames.size).toBe(1);
+      clock.visibility(true);
+      expect(clock.frames.size).toBe(0);
+      const requests = clock.request.mock.calls.length;
+      for (latest = 2; latest < 20; latest += 1) scheduler.wake();
+      latest = 20;
+      expect(clock.request).toHaveBeenCalledTimes(requests);
+      expect(painted).toEqual([]);
+      clock.visibility(false);
+      expect(clock.frames.size).toBe(1);
+      clock.flush();
+      expect(painted).toEqual([20]);
+      expect(clock.frames.size).toBe(0);
+    } finally { scheduler.dispose(); }
+  });
+
+  it('retains a hidden-start wake and removes cancelled/disposed work before resuming', () => {
+    const clock = frameClock(true);
+    const paint = vi.fn();
+    const scheduler = new ScopeRenderScheduler(paint);
+    const disposed = new ScopeRenderScheduler(paint);
+    const cancelled = browserRenderTiming.requestFrame(paint);
+    try {
+      scheduler.wake();
+      disposed.wake();
+      expect(clock.request).not.toHaveBeenCalled();
+      browserRenderTiming.cancelFrame(cancelled);
+      disposed.dispose();
+      clock.visibility(false);
+      clock.flush();
+      expect(paint).toHaveBeenCalledTimes(1);
+      expect(clock.frames.size).toBe(0);
+    } finally {
+      browserRenderTiming.cancelFrame(cancelled);
+      scheduler.dispose();
+      disposed.dispose();
+    }
+  });
+
+  it('pauses the mounted meter loops, including afterglow, and cleans up while hidden', () => {
+    const clock = frameClock();
+    motionQuery();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    const { state, component } = mountReactive({ value: 20 });
+    expect(clock.frames.size).toBe(2);
+    clock.flush(100);
+    state.value = -30;
+    flushSync();
+    expect(clock.frames.size).toBe(3);
+    clock.visibility(true);
+    expect(clock.frames.size).toBe(0);
+    const requests = clock.request.mock.calls.length;
+    state.value = -10;
+    flushSync();
+    expect(clock.request).toHaveBeenCalledTimes(requests);
+    clock.visibility(false);
+    expect(clock.frames.size).toBeGreaterThan(0);
+    clock.flush(1000);
+    clock.visibility(true);
+    unmount(component);
+    components = components.filter((mounted) => mounted !== component);
+    clock.visibility(false);
+    expect(clock.frames.size).toBe(0);
+  });
+
+  it('pauses a self-rescheduling animation and uses the target updated while hidden', () => {
+    const clock = frameClock();
+    const query = motionQuery();
+    const smoother = createSmoother();
+    vi.spyOn(performance, 'now').mockReturnValue(0);
+    try {
+      smoother.update(1);
+      smoother.start();
+      clock.flush(16);
+      const before = smoother.value;
+      expect(before).toBeGreaterThan(0);
+      clock.visibility(true);
+      expect(clock.frames.size).toBe(0);
+      smoother.update(100);
+      expect(smoother.value).toBe(before);
+      const requests = clock.request.mock.calls.length;
+      clock.flush(500);
+      expect(clock.request).toHaveBeenCalledTimes(requests);
+      clock.visibility(false);
+      clock.flush(1000);
+      expect(smoother.value).toBeGreaterThan(1);
+      query.change(true);
+      expect(smoother.value).toBe(100);
+      expect(clock.frames.size).toBe(0);
+    } finally { smoother.stop(); }
+  });
+});
+
+it('reads reduced motion once for shared consumers and reacts to a query change', () => {
+  const query = motionQuery();
+  const first = vi.fn();
+  const second = vi.fn();
+  const stopFirst = onReducedMotionChange(first);
+  const stopSecond = onReducedMotionChange(second);
+  const observed: boolean[] = [];
+  const stopReactive = $effect.root(() => {
+    $effect(() => { observed.push(prefersReducedMotion()); });
+  });
+  flushSync();
+  try {
+    expect(observed).toEqual([false]);
+    for (let frame = 0; frame < 100; frame += 1) expect(prefersReducedMotion()).toBe(false);
+    expect(query.matchMedia).toHaveBeenCalledTimes(1);
+    expect(query.read).toHaveBeenCalledTimes(1);
+    expect(query.listeners.size).toBe(1);
+    query.change(true);
+    expect(observed).toEqual([false, true]);
+    for (let frame = 0; frame < 100; frame += 1) expect(prefersReducedMotion()).toBe(true);
+    expect(query.matchMedia).toHaveBeenCalledTimes(1);
+    expect(query.read).toHaveBeenCalledTimes(2);
+    expect(first).toHaveBeenCalledWith(true);
+    expect(second).toHaveBeenCalledWith(true);
+    stopFirst();
+    query.change(false);
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenLastCalledWith(false);
+  } finally { stopReactive(); stopFirst(); stopSecond(); }
+  expect(query.listeners.size).toBe(0);
+});
+
+it('keeps panorama layers and its landscape overlay free of backdrop filters and blur', () => {
+  expect(Object.keys(panoramaSources).length).toBeGreaterThan(0);
+  for (const [path, source] of Object.entries(panoramaSources)) {
+    expect(source, path).not.toMatch(/(?:-webkit-)?backdrop-filter\s*:|filter\s*:[^;}]*\bblur\s*\(/);
+  }
+  const overlay = mobileLayout.match(/\.m-ls-overlay\s*\{([^}]+)\}/)?.[1];
+  expect(overlay).toBeDefined();
+  expect(overlay).not.toMatch(/(?:-webkit-)?backdrop-filter\s*:|filter\s*:[^;}]*\bblur\s*\(/);
 });
