@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,7 @@ from rigplane.backends.yaesu_cat import transport as cat_transport
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core import civ
+from rigplane.commands import parse_civ_frame
 from rigplane.core.exceptions import (
     CommandError,
     ConnectionError as RadioConnectionError,
@@ -157,6 +159,19 @@ async def _finish(clock: VirtualClock, operation: Any) -> Any:
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def _route_serial_response(radio: Any, response: bytes | None) -> None:
+    record_response = getattr(response, "record_response", None)
+    if record_response is None:
+        return
+    try:
+        frame = parse_civ_frame(response)
+    except ValueError:
+        return
+    await radio._civ_runtime._route_civ_frame(
+        frame, generation=radio._civ_epoch, record_response=record_response
+    )
 
 
 async def _api_json(server: WebServer, path: str = "/api/v1/info") -> dict[str, Any]:
@@ -309,6 +324,10 @@ async def test_serial_loss_reaches_public_state_and_recovers(
         b"\xfe\xfe\x94\xe0\x03\xfd",
         b"\xfe\xfe\xe1\x94\x03\x00\x40\x07\x14\x00\xfd",
         b"\xfe\xfe\xe0\xe1\x03\x00\x40\x07\x14\x00\xfd",
+        b"\xfe\xfe\xe0\x95\x03\x00\x40\x07\x14\x00\xfd",
+        b"\xfe\xfe\xe0\x94\x1c\x00\xfd",
+        b"\xfe\xfe\xe0\x94\xfb\x00\xfd",
+        b"\xfe\xfe\xe0\x94\xfa\x00\xfd",
         b"\xfe\xfe\xe0\x94\x03\x00\x40",
     ],
     ids=[
@@ -318,6 +337,10 @@ async def test_serial_loss_reaches_public_state_and_recovers(
         "echo",
         "other-destination",
         "controller-source",
+        "other-radio-source",
+        "empty-ptt",
+        "malformed-ack",
+        "malformed-nak",
         "partial",
     ],
 )
@@ -329,6 +352,12 @@ async def test_icom_recovery_requires_a_parsed_radio_frame(
     link = SerialCivLink(
         device="COM3", open_serial_connection=cable.open, require_optional_deps=False
     )
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
     await link.connect()
     try:
         writer = cable.writer
@@ -339,7 +368,8 @@ async def test_icom_recovery_requires_a_parsed_radio_frame(
         assert link.connected is False
         cable.reader.feed_data(noise)
         try:
-            await _finish(serial_clock, link.receive(timeout=0.3))
+            noise_response = await _finish(serial_clock, link.receive(timeout=0.3))
+            await _route_serial_response(radio, noise_response)
         except serial_civ_link.SerialFrameTimeoutError:
             pass
         assert link.connected is False
@@ -347,7 +377,9 @@ async def test_icom_recovery_requires_a_parsed_radio_frame(
 
         valid = b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd"
         cable.reader.feed_data(valid)
-        assert await _finish(serial_clock, link.receive(timeout=0.3)) == valid
+        response = await _finish(serial_clock, link.receive(timeout=0.3))
+        assert response == valid
+        await _route_serial_response(radio, response)
         assert link.connected is True
         assert link.healthy is True
         assert cable.opens == 1
@@ -705,3 +737,264 @@ async def test_serial_key_is_refused_until_response_clears_failure(
             await _finish(serial_clock, radio.disconnect())
         else:
             await link.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "personality,malformed,recovery_reply",
+    [
+        ("icom", b"\xfe\xfe\xe0\x94\x1c\x00\xfd", b"\xfe\xfe\xe0\x94\x1c\x00\x00\xfd"),
+        (
+            "icom",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x09\xfd",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x01\xfd",
+        ),
+        (
+            "icom",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x00\x00\xfd",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x00\xfd",
+        ),
+        (
+            "icom",
+            b"\xfe\xfe\xe0\x94\x03\xff\xff\xff\xff\xff\xfd",
+            b"\xfe\xfe\xe0\x94\x1c\x00\x00\xfd",
+        ),
+        ("yaesu", b"TX9;", b"TX0;"),
+        ("yaesu", b"TX9;", b"TX1;"),
+        ("yaesu", b"TX9;", b"TX2;"),
+        ("yaesu-default-policy", b"TX9;", b"TX0;"),
+        ("yaesu-default-policy", b"TX9;", b"TX1;"),
+        ("yaesu-default-policy", b"TX9;", b"TX2;"),
+    ],
+    ids=[
+        "icom-empty-ptt",
+        "icom-unknown-ptt",
+        "icom-long-ptt",
+        "icom-invalid-frequency",
+        "yaesu-profile-recover-rx",
+        "yaesu-profile-recover-cat-tx",
+        "yaesu-profile-recover-other-tx",
+        "yaesu-default-recover-rx",
+        "yaesu-default-recover-cat-tx",
+        "yaesu-default-recover-other-tx",
+    ],
+)
+async def test_malformed_serial_reply_cannot_reauthorize_key(
+    personality: str,
+    malformed: bytes,
+    recovery_reply: bytes,
+    serial_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cable = _Cable("icom" if personality == "icom" else "yaesu")
+    routed = asyncio.Event()
+    if personality == "icom":
+        link = SerialCivLink(
+            device="COM3",
+            open_serial_connection=cable.open,
+            require_optional_deps=False,
+        )
+        radio = Ic7300SerialRadio(
+            device="COM3",
+            civ_link=link,
+            audio_driver=_FakeUsbAudioDriver(),
+            _enumerate_serial_ports_fn=lambda: [],
+        )
+        await _finish(serial_clock, radio.connect())
+        await radio._stop_civ_data_watchdog()
+        await _finish(serial_clock, radio.get_freq())
+        route = radio._civ_runtime._route_civ_frame
+
+        async def observe_route(frame: Any, **kwargs: Any) -> None:
+            await route(frame, **kwargs)
+            routed.set()
+
+        monkeypatch.setattr(radio._civ_runtime, "_route_civ_frame", observe_route)
+        failure_payload = b"\xfe\xfe\x94\xe0\x03\xfd"
+        failure_write = link.send_written
+        release = bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))
+    else:
+        monkeypatch.setattr(cat_transport, "open_serial_port", cable.open)
+        radio = YaesuCatRadio(
+            device="COM3", profile="ftx1", audio_driver=FakeAudioDriver()
+        )
+        if personality == "yaesu-default-policy":
+            radio._profile_cache = replace(
+                radio.profile,
+                tx_policy=replace(radio.profile.tx_policy, tx_state_map={}),
+            )
+        link = radio._transport
+        await link.connect()
+        failure_payload = "FA;"
+        failure_write = link._raw_write
+        release = b"TX0;"
+
+    try:
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        cable.respond = False
+        with pytest.raises((OSError, cat_transport.CatTransportError)):
+            await _finish(serial_clock, failure_write(failure_payload))
+        assert radio.control_connected is False
+        assert radio.radio_ready is False
+        stamp = radio.last_valid_frame_monotonic
+        if personality == "icom":
+            routed.clear()
+            cable.reader.feed_data(malformed)
+            await _finish(serial_clock, routed.wait())
+        else:
+            cable.respond = True
+            cable.reply_overrides[b"TX;"] = malformed
+            assert await _finish(serial_clock, radio.get_ptt()) is True
+            cable.respond = False
+        assert radio.control_connected is False
+        assert radio.radio_ready is False
+        assert radio.last_valid_frame_monotonic == stamp
+        before_key = list(writer.writes)
+        with pytest.raises((CommandError, RadioConnectionError)):
+            await _finish(serial_clock, radio.set_ptt(True))
+        for action in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            assert (
+                await _finish(
+                    serial_clock,
+                    radio.actuate(
+                        EffectToken(1, 1, "malformed-serial-reply"),
+                        action,
+                        is_current=lambda: True,
+                    ),
+                )
+                is ActuationResult.REJECTED
+            )
+        assert writer.writes == before_key
+        await _finish(serial_clock, radio.set_ptt(False))
+        assert writer.writes[len(before_key) :] == [release]
+        assert radio.control_connected is False
+        assert radio.radio_ready is False
+
+        await serial_clock.elapse(0.1)
+        if personality == "icom":
+            routed.clear()
+            cable.reader.feed_data(recovery_reply)
+            await _finish(serial_clock, routed.wait())
+        else:
+            cable.respond = True
+            cable.reply_overrides[b"TX;"] = recovery_reply
+            assert await _finish(serial_clock, radio.get_ptt()) is (
+                recovery_reply != b"TX0;"
+            )
+        assert radio.control_connected is True
+        assert radio.radio_ready is True
+        assert radio.last_valid_frame_monotonic != stamp
+        cable.respond = False
+        await _finish(serial_clock, radio.set_ptt(True))
+        assert writer.writes[-1] == (
+            bytes(radio._commands.ptt_on(to_addr=radio._radio_addr))
+            if personality == "icom"
+            else b"TX1;"
+        )
+        assert cable.opens == 1
+        assert cable.writer is writer
+        assert writer.closed is False
+    finally:
+        if personality == "icom":
+            await _finish(serial_clock, radio.disconnect())
+        else:
+            await link.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"\xfe\xfe\xe0\x94\xfb\xfd",
+        b"\xfe\xfe\xe0\x94\xfa\xfd",
+        b"\xfe\xfe\xe0\x94\x19\x00\x94\xfd",
+        b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd",
+        b"\xfe\xfe\xe0\x94\x1c\x00\x00\xfd",
+        b"\xfe\xfe\xe0\x94\x1c\x00\x01\xfd",
+    ],
+    ids=["ack", "nak", "identity", "frequency", "ptt-rx", "ptt-tx"],
+)
+async def test_icom_qualified_replies_recover_without_reopen(
+    response: bytes, serial_clock: VirtualClock
+) -> None:
+    cable = _Cable("icom")
+    cable.respond = False
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=cable.open, require_optional_deps=False
+    )
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    await link.connect()
+    try:
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        with pytest.raises(OSError, match="transient"):
+            await _finish(serial_clock, link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd"))
+        assert link.connected is False
+        assert link.healthy is False
+        cable.reader.feed_data(response)
+        received = await _finish(serial_clock, link.receive(timeout=0.3))
+        assert received == response
+        await _route_serial_response(radio, received)
+        assert link.connected is True
+        assert link.healthy is True
+        assert cable.opens == 1
+        assert cable.writer is writer
+        assert writer.closed is False
+    finally:
+        await link.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reopen", [False, True], ids=["later-error", "new-session"])
+async def test_icom_deferred_response_cannot_clear_a_later_failure(
+    reopen: bool, serial_clock: VirtualClock
+) -> None:
+    cable = _Cable("icom")
+    cable.respond = False
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=cable.open, require_optional_deps=False
+    )
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    await link.connect()
+    try:
+        response = b"\xfe\xfe\xe0\x94\x1c\x00\x00\xfd"
+        cable.reader.feed_data(response + response)
+        held = await _finish(serial_clock, link.receive(timeout=0.3))
+        if reopen:
+            await link.disconnect()
+            await link.connect()
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        with pytest.raises(OSError, match="transient"):
+            await _finish(serial_clock, link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd"))
+        assert link.connected is False
+        await _route_serial_response(radio, held)
+        assert link.connected is False
+        assert link.healthy is False
+        if not reopen:
+            queued = await _finish(serial_clock, link.receive(timeout=0.3))
+            await _route_serial_response(radio, queued)
+            assert link.connected is False
+            assert link.healthy is False
+        cable.reader.feed_data(response)
+        fresh = await _finish(serial_clock, link.receive(timeout=0.3))
+        await _route_serial_response(radio, fresh)
+        assert link.connected is True
+        assert link.healthy is True
+        assert cable.opens == (2 if reopen else 1)
+    finally:
+        await link.disconnect()

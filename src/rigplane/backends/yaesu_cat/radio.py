@@ -1551,6 +1551,8 @@ class YaesuCatRadio:
                 RepeaterShiftDirection(int(result["shift"]))
             elif cmd_name == "get_tuner":
                 _decode_atu_response(result)
+            elif cmd_name == "get_ptt":
+                self._interpret_ptt_token(str(result["state"]), require_known=True)
         except (TypeError, ValueError):
             semantic_valid = False
         connection_current = (
@@ -2310,7 +2312,7 @@ class YaesuCatRadio:
             state = await self.read_ptt_token(is_current=is_current, tier=tier)
         return self._interpret_ptt_token(state)
 
-    def _interpret_ptt_token(self, state: str) -> bool:
+    def _interpret_ptt_token(self, state: str, *, require_known: bool = False) -> bool:
         """Map a raw ``TX;`` token to a transmitting boolean (positive-RX rule).
 
         The one place this predicate is written: shared by :meth:`read_ptt`
@@ -2323,12 +2325,17 @@ class YaesuCatRadio:
         concern, BLOCKED-2).
         """
         policy = self.profile.tx_policy
-        if not policy.tx_state_map:
-            if state not in ("0", "1", "2"):
-                self._warn_ptt_unrecognised(state)
-            return state != "0"
-        if state not in policy.tx_state_map:
+        known = (
+            state in policy.tx_state_map
+            if policy.tx_state_map
+            else state in ("0", "1", "2")
+        )
+        if not known:
             self._warn_ptt_unrecognised(state)
+            if require_known:
+                raise ValueError(f"Unrecognised CAT PTT state: {state!r}")
+        if not policy.tx_state_map:
+            return state != "0"
         return not policy.is_receiving(state)
 
     async def get_ptt(self) -> bool:

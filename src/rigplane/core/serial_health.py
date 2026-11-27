@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .exceptions import CommandError
+
+
+class SerialResponse(bytes):
+    """Serial bytes carrying deferred, session-bound recovery credit."""
+
+    record_response: Callable[[], None]
+
+    def __new__(
+        cls, data: bytes, record_response: Callable[[], None]
+    ) -> SerialResponse:
+        response = super().__new__(cls, data)
+        response.record_response = record_response
+        return response
 
 
 def require_keying_control(control_connected: bool) -> None:
@@ -20,12 +35,15 @@ class SerialLinkHealth:
 
     def __init__(self) -> None:
         self.io_failed = False
+        self.generation = 0
 
     def record_failure(self) -> None:
+        self.generation += 1
         self.io_failed = True
 
     def record_response(self) -> None:
         self.io_failed = False
 
     def record_open(self) -> None:
+        self.generation += 1
         self.io_failed = False

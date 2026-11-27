@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
-from ....core.serial_health import require_keying_control
+from ....core.serial_health import SerialResponse, require_keying_control
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -230,7 +230,10 @@ class SerialCivTransport:
         self._udp_error_count = 0
         self.rx_packet_count += 1
         self.ping_seq = (self.ping_seq + 1) & 0xFFFF
-        return _wrap_civ_frame(bytes(frame), seq=self.ping_seq)
+        packet = _wrap_civ_frame(bytes(frame), seq=self.ping_seq)
+        if isinstance(frame, SerialResponse):
+            return SerialResponse(packet, frame.record_response)
+        return packet
 
     async def disconnect(self) -> None:
         await self._civ_link.disconnect()

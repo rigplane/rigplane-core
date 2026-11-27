@@ -13,6 +13,8 @@ from rigplane.backends.icom7610.drivers.serial_civ_link import (
     SerialFrameOverflowError,
     SerialFrameTimeoutError,
 )
+from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.commands import parse_civ_frame
 from rigplane.exceptions import CommandError
 
 _ON = b"\x98\xe0\x1c\x00\x01"
@@ -629,12 +631,21 @@ async def test_writer_serialization_and_backpressure() -> None:
 @pytest.mark.asyncio
 async def test_receive_recoverable_io_error_returns_next_valid_frame() -> None:
     link, reader, _ = await _make_link()
+    radio = Icom7610SerialRadio(device="COM3", civ_link=link)
     try:
         reader.push_error(OSError("temporary serial read failure"))
         response = b"\xfe\xfe\xe0\x98\x03\x00\x40\x07\x14\x00\xfd"
         reader.push(response)
         # Timeout must exceed backoff (0.5s in _read_once) to allow recovery
-        assert await link.receive(timeout=1.0) == response
+        received = await link.receive(timeout=1.0)
+        assert received == response
+        record_response = getattr(received, "record_response", None)
+        if record_response is not None:
+            await radio._civ_runtime._route_civ_frame(
+                parse_civ_frame(received),
+                generation=radio._civ_epoch,
+                record_response=record_response,
+            )
         assert link.connected is True
         assert link.healthy is True
     finally:
