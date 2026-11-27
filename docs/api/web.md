@@ -305,6 +305,53 @@ radio has audio); it does not show whether the routes are enabled.
 importable) and `enabled` (`WebConfig.webrtc_enabled`) fields are the two
 conditions the `/api/v1/transport/webrtc/*` routes check.
 
+#### Optional session-ended observation
+
+An offer may include `correlation_id`: an opaque string of at most 128 ASCII
+characters from `[A-Za-z0-9._:-]` (the empty string is allowed). Core echoes it
+unchanged in the terminal event and never interprets it. An invalid value is
+rejected at the HTTP offer edge with HTTP 400 and the existing typed
+`WebRtcRequestError` code `sdp_error`. A missing or null ID produces no event;
+`WebRtcOffer.to_json()` omits a null ID, preserving the old offer shape. The
+offer response keeps its existing fields.
+
+On `/api/v1/ws`, subscribe with `{"type":"subscribe","streams":["events"]}`.
+After completed peer teardown, a correlated offer emits one event:
+
+```json
+{"type":"event","name":"webrtc_session_ended","data":{"correlation_id":"peer_7:a.b-c","ended_at":1795737600,"reason":"close_requested","ever_connected":true,"path":"unknown"}}
+```
+
+`ended_at` is Unix seconds as an integer, sampled after teardown. `ever_connected`
+records whether the peer ever entered `connected`, even if it later disconnected.
+`path` currently always reports `unknown`; Core does not inspect private ICE
+fields or infer a selected path from SDP or TURN configuration. The public
+`WebRtcPath` vocabulary reserves `direct` and `relay` alongside `unknown`.
+
+The initiating reason survives later peer-close callbacks. These reason strings
+are stable public API; receivers retain unknown future values as strings:
+
+| Reason | Meaning |
+|--------|---------|
+| `peer_failed` | The peer connection entered `failed`. |
+| `peer_closed` | The peer connection entered `closed`. |
+| `negotiation_failed` | SDP negotiation failed. |
+| `close_requested` | A caller requested this session's close. |
+| `all_sessions_closed` | A caller requested `close_all`, including server shutdown. |
+
+Delivery is best-effort: the event may be dropped when the events queue is full,
+is never retried, and never blocks teardown. There is no additional queue, replay,
+or reliable-delivery guarantee. Closing all sessions emits one event per
+correlated session whose teardown completes; a failed teardown emits none.
+
+The shared producer/consumer definitions are
+`src/rigplane/web/transport/webrtc_contract.py: WebRtcSessionEnded`,
+`WebRtcSessionEndReason`, and `WebRtcOffer`, re-exported from `rigplane`.
+Production and delivery are implemented by
+`src/rigplane/web/transport/webrtc_session.py: _Session._settle_gather_and_close`
+and `src/rigplane/web/server.py: WebServer.broadcast_event`; regressions are in
+`tests/test_webrtc_session_ended.py` and `tests/test_webrtc_public_contracts.py`.
+
 ### Structured Command Surface
 
 `/api/v1/ws`, `POST /api/v1/commands`, and
