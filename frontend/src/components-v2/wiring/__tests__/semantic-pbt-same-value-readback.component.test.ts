@@ -2,7 +2,7 @@
  * MOR-1692 residual — a newer fresh readback that repeats the confirmed PBT
  * value must not leave the range input at a stale drag position.
  *
- * Mounts the default face (`SemanticRadioSurfaces`, single composition) on
+ * Mounts the FILTER zone through `SemanticRadioSurfaces` on
  * the captured IC-7300 capabilities fixture, with the per-mode twin-PBT step
  * that fixture predates composed in the same way SpectrumPanel's tests do.
  * The drag uses the real `input` event the neighbouring FilterSurface tests
@@ -15,6 +15,7 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { measuredPbtHzToRaw, measuredPbtRawToHz } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES } from '$lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
+import { SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 
 const WIDTH_HZ = 2400;
 const STEP_HZ = 50;
@@ -109,12 +110,19 @@ function liveState(marker: number, pbtInner = CONFIRMED_RAW, pbtOuter = CONFIRME
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
+const filterPlan: SurfacePlan = new Map([['filter', ['filter']]]);
 
 function render(): void {
   target = document.createElement('div');
   document.body.append(target);
-  component = mount(SemanticRadioSurfaces, { target });
+  component = mount(SemanticRadioSurfaces, {
+    target, props: { regions: true },
+    context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => filterPlan]]),
+  });
   flushSync();
+  expect(target.querySelector('[data-testid="vfo-surface"]')).toBeNull();
+  expect([...target.querySelectorAll('[data-zone-id]')].map((zone) => zone.getAttribute('data-zone-id')))
+    .toEqual(['filter']);
 }
 
 const inputOf = (field: 'pbtInner' | 'pbtOuter'): HTMLInputElement =>

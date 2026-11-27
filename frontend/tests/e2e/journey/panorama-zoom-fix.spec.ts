@@ -6,7 +6,7 @@ import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
-import { awaitRenderPipeline, openPanorama } from './panorama-ready';
+import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, observePanorama, openPanorama, reloadPanorama } from './panorama-ready';
 import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // ── MOR-4392 ──
@@ -36,22 +36,22 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
       await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
       const more = page.getByRole('button', { name: 'More scope controls' }).first();
-      await more.click();
-      for (let i = 0; i < 3; i++) await page.getByTestId('scope-zoom-in').first().click();
-      for (let i = 0; i < 2; i++) await page.getByTestId('scope-zoom-out').first().click();
+      await clickPanorama(page, more);
+      for (let i = 0; i < 3; i++) await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
+      for (let i = 0; i < 2; i++) await clickPanorama(page, page.getByTestId('scope-zoom-out').first());
       await page.keyboard.press('Escape');
       if (withFix) {
         // The FIX gesture writes scope mode 1 (owner rule); returning to CTR
         // writes mode 0. Neither may be followed by a flip the user did not
         // ask for.
-        await page.getByRole('radio', { name: 'FIX' }).first().click();
+        await clickPanorama(page, page.getByRole('radio', { name: 'FIX' }).first());
         await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
           (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
-        await page.getByRole('radio', { name: 'CTR' }).first().click();
+        await clickPanorama(page, page.getByRole('radio', { name: 'CTR' }).first());
         await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
           (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
-        await more.click();
-        await page.getByTestId('scope-zoom-in').first().click();
+        await clickPanorama(page, more);
+        await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
         await page.keyboard.press('Escape');
       }
       // The owner's dead button: nothing may cover it and the click must open.
@@ -61,7 +61,7 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
         return hit === button || button.contains(hit);
       });
       expect(unobstructed).toBe(true);
-      await more.click();
+      await clickPanorama(page, more);
       await expect(page.locator('[data-testid="scope-more-panel"]')).toBeVisible();
       expectPanoramaClean(watch);
     } finally {
@@ -86,8 +86,8 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // mode change — the server-side grant semantics are MOR-4385's); the
     // frontend rule under test is that marker, axis and passband are all
     // computed against the DISPLAYED window.
-    await page.getByRole('button', { name: 'More scope controls' }).first().click();
-    await page.getByTestId('scope-zoom-in').first().click();
+    await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
+    await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await page.keyboard.press('Escape');
     // The CENTER zoom's one radio write is the span preset (0x15), and it
     // is issued only after the subscription update reaches the server —
@@ -101,7 +101,7 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x15).length).toBeGreaterThan(0);
     const writesBeforeFix = (await scopeWriteReceipts(evidence)).length;
-    await page.getByRole('radio', { name: 'FIX' }).first().click();
+    await clickPanorama(page, page.getByRole('radio', { name: 'FIX' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
     // Only frames the server pumped AFTER this write was observed are known
@@ -147,8 +147,8 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // requested width ([14.225, 14.275] — run 44770631929 timed out here).
     // The panel now keys the radio-owned window on the observed readback;
     // this poll asserts the crop actually narrows the displayed window.
-    await page.getByRole('button', { name: 'More scope controls' }).first().click();
-    await page.getByTestId('scope-zoom-in').first().click();
+    await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
+    await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await page.keyboard.press('Escape');
     await expect.poll(windowOf).not.toEqual([start, end]);
     const [cropStart, cropEnd] = await windowOf();
@@ -170,7 +170,7 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // crop pin survives while the VFO is inside it (MOR-4387 pin
     // semantics), so the marker returns with the passband tuple's recapture
     // rather than instantly.
-    await page.getByRole('radio', { name: 'CTR' }).first().click();
+    await clickPanorama(page, page.getByRole('radio', { name: 'CTR' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
     await expect(page.locator('.waterfall-content .tune-line')).toBeVisible({ timeout: 15_000 });
@@ -195,7 +195,7 @@ test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap 
     await expect(spanUp).toBeEnabled();
     await expect(spanStepper).not.toHaveAttribute('title', /./);
     // Enter FIX: SPAN disables by design (MOR-4392) and now SAYS why.
-    await page.getByRole('radio', { name: 'FIX' }).first().click();
+    await clickPanorama(page, page.getByRole('radio', { name: 'FIX' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
     await expect(spanUp).toBeDisabled();
@@ -204,7 +204,7 @@ test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap 
     await expect(ctr).toBeVisible();
     // The one-tap return writes scope mode 0 through the ordinary mode
     // command path — and SPAN works again.
-    await ctr.click();
+    await clickPanorama(page, ctr);
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
     await expect(spanUp).toBeEnabled();
@@ -226,8 +226,8 @@ test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write
     await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     // S-C lives in the More panel's mode choice.
-    await page.getByRole('button', { name: 'More scope controls' }).first().click();
-    await page.getByRole('radio', { name: 'S-C' }).first().click();
+    await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
+    await clickPanorama(page, page.getByRole('radio', { name: 'S-C' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
     // The press must meet the OBSERVED mode: wait for the radio read-back.
@@ -236,7 +236,7 @@ test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write
     const spanDown = page.getByRole('button', { name: 'Decrease scope span', exact: true }).first();
     await expect(spanDown).toBeEnabled();
     const before = await scopeWriteReceipts(evidence);
-    await spanDown.click();
+    await clickPanorama(page, spanDown);
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).length - before.length,
       { timeout: 15_000 }).toBeGreaterThan(0);
     const fresh = (await scopeWriteReceipts(evidence)).slice(before.length);
@@ -259,8 +259,8 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
     main?: { freqHz?: number; mode?: string; filterWidth?: number };
   };
   const stepTo250k = async () => {
-    await page.getByRole('button', { name: 'Increase scope span', exact: true }).first().click();
-    await page.getByRole('button', { name: 'Increase scope span', exact: true }).first().click();
+    await clickPanorama(page, page.getByRole('button', { name: 'Increase scope span', exact: true }).first());
+    await clickPanorama(page, page.getByRole('button', { name: 'Increase scope span', exact: true }).first());
     await expect(page.getByTestId('scope-span-value').first()).toHaveText('±250k');
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_000_000, 14_500_000]);
   };
@@ -281,34 +281,38 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
     expect(Math.abs(band!.x + band!.width - (line!.x + line!.width / 2))).toBeLessThanOrEqual(2);
   };
   try {
+    await installSampler(page);
     await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     // The harness models CI-V 1A 03 (DSP filter width) locally, so the
     // width is observed and the control is enabled.
     await expect.poll(async () => (await radioState()).main?.filterWidth).toBe(2400);
-    await page.locator('[data-testid="standard-mode-LSB"]').getByRole('radio').click();
+    await clickPanorama(page, page.locator('[data-testid="standard-mode-LSB"]').getByRole('radio'));
     await page.locator('[data-testid="filter-width"] input[type=range]').fill('3000');
     await expect.poll(radioState).toMatchObject({ main: { mode: 'LSB', filterWidth: 3000 } });
     await stepTo250k();
+    await expectPassbandProbeReady(page, 0);
     await expectPassband(3000);
     // CTR → FIX → CTR: the passband keeps the same geometry afterwards.
     // (The FIX/CTR clicks are user gestures; their 0x14 writes are correct.)
-    await page.getByRole('radio', { name: 'FIX' }).first().click();
+    await clickPanorama(page, page.getByRole('radio', { name: 'FIX' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
-    await page.getByRole('radio', { name: 'CTR' }).first().click();
+    await clickPanorama(page, page.getByRole('radio', { name: 'CTR' }).first());
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_000_000, 14_500_000]);
+    await expectPassbandProbeReady(page, 0);
     await expectPassband(3000);
     // A reload keeps the radio-side state; stepping back to ±250k must draw
     // the same overlay (the owner's loss survived a reload on build 1).
     const mark = frames.length;
-    await page.reload();
-    await awaitRenderPipeline(page);
+    await reloadPanorama(page);
+    await expectPassbandProbeReady(page, 0);
     await expect.poll(() => frames.length - mark, { timeout: 30_000 }).toBeGreaterThan(10);
     await expect.poll(radioState).toMatchObject({ main: { mode: 'LSB', filterWidth: 3000 } });
     await stepTo250k();
+    await expectPassbandProbeReady(page, 0);
     await expectPassband(3000);
     expectPanoramaClean(watch);
   } finally {
@@ -324,6 +328,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
     const frames = watchScopeFrames(page);
+    const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main: { freqHz: number } };
     const commands: string[] = [];
     const subscriptions: ScopeSubscription[] = [];
     page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
@@ -336,7 +341,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await installSampler(page);
       await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
-      await page.getByRole('radio', { name: 'FIX', exact: true }).first().click();
+      await clickPanorama(page, page.getByRole('radio', { name: 'FIX', exact: true }).first());
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
       await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
       await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
@@ -345,8 +350,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
       const fromT = await page.evaluate(() => performance.now());
-      await page.getByTestId('scope-more').first().click();
-      for (let i = 0; i < 3; i++) await page.getByTestId('scope-zoom-in').first().click();
+      await clickPanorama(page, page.getByTestId('scope-more').first());
+      for (let i = 0; i < 3; i++) await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
       await page.keyboard.press('Escape');
       const surface = page.locator('.waterfall-content');
       const check = async () => {
@@ -360,17 +365,24 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         expect(end - start).toBeLessThan(20_000);
       };
       await check();
+      const beforeArrowsHz = (await radioState()).main.freqHz;
       for (let i = 0; i < 12; i++) {
-        await page.keyboard.press('ArrowRight'); await page.waitForTimeout(100);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
+      await expect.poll(async () => (await radioState()).main.freqHz).toBe(beforeArrowsHz + 12_000);
+      await expectPanoramaFrequency(page, beforeArrowsHz + 12_000);
+      await expectPassbandProbeReady(page, 1);
       await check();
+      await awaitRenderPipeline(page);
       const box = (await surface.boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.7);
       await page.mouse.wheel(0, -120);
       await expect.poll(async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).main.freqHz).toBeGreaterThan(14_262_000);
       await check();
       await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.7);
+      await expectPassbandProbeReady(page, 1);
       await check();
+      await awaitRenderPipeline(page);
       const beforeDrag = commands.filter(name => name === 'set_freq').length;
       await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.7);
       await page.mouse.down();
@@ -378,7 +390,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await page.mouse.up();
       await expect.poll(() => commands.filter(name => name === 'set_freq').length).toBeGreaterThan(beforeDrag);
       await check();
-      await page.waitForTimeout(1000);
+      await expectPassbandProbeReady(page, 1);
+      await observePanorama(page, 1000);
       const toT = await page.evaluate(() => performance.now());
       const samples = await page.evaluate(() => window.passbandSamples);
       const gaps = passbandGaps(samples, fromT, toT);
@@ -417,10 +430,10 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     await installSampler(page);
     await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await settlePassband(page, port);
-    await page.getByTestId('scope-more').first().click();
-    await page.getByTestId('scope-zoom-in').first().click();
+    await clickPanorama(page, page.getByTestId('scope-more').first());
+    await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
-    await page.getByTestId('scope-zoom-band').first().click();
+    await clickPanorama(page, page.getByTestId('scope-zoom-band').first());
     const preset = subscriptions.at(-1)!.view;
     expect('startHz' in preset).toBe(true);
     if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');
@@ -430,11 +443,12 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     const writesBefore = (await scopeWriteReceipts(evidence)).length;
     const requestsBefore = subscriptions.length;
     const fromT = await page.evaluate(() => performance.now());
-    await page.getByTestId('scope-zoom-in').first().click();
+    await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)?.gates)).toMatchObject({
       viewStartHz: 14_162_500, viewEndHz: 14_337_500,
     });
-    await page.waitForTimeout(1500);
+    await expectPassbandProbeReady(page, 1);
+    await observePanorama(page, 1500);
     expect(subscriptions.length).toBe(requestsBefore);
     expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
     await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
