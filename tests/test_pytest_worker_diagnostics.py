@@ -12,6 +12,7 @@ import runpy
 import subprocess
 import sys
 import time
+from types import ModuleType, SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
@@ -91,6 +92,11 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics" in run
     )
     assert "PYTHONPATH: ${{ github.workspace }}/.github/scripts" in run
+    assert "--junitxml=pytest-junit.xml" in run
+    assert "2>&1 | tee pytest-output.txt" in run
+    assert 'echo "Pytest exit code: $rc" | tee -a pytest-output.txt' in run
+    assert run.index("set +e") < run.index("uv run pytest")
+    assert 'exit "$rc"' in run
     finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
         0
     ]
@@ -98,6 +104,7 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "pytest_worker_diagnostics.py --finalize" in finalize
         and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
     )
+    assert "pytest-output.txt pytest-junit.xml" in finalize
     # MOR-4718: the finalize step still runs on every core run so the files
     # exist when a failed shard uploads them.
     assert "if: always() && needs.classify.outputs.core == 'true'" in finalize
@@ -115,6 +122,8 @@ def test_quick_worker_diagnostics_wiring() -> None:
     assert "        if: failure() && needs.classify.outputs.core == 'true'" in lines
     assert "          retention-days: 1" in lines
     assert "always()" not in upload
+    assert "            pytest-output.txt" in lines
+    assert "            pytest-junit.xml" in lines
     for leaf in (
         "events-*.jsonl",
         "phases-*.jsonl",
@@ -125,6 +134,159 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "bounds.json",
     ):
         assert f"${{{{ runner.temp }}}}/pytest-worker-diagnostics/{leaf}" in upload
+
+
+@pytest.fixture
+def worker_diagnostics() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("worker_diag_retention", HELPER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "filename", ["events-123.jsonl", "phases-123.jsonl", "controller-node-exit.jsonl"]
+)
+def test_append_log_keeps_recent_complete_records_after_repeated_overflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    filename: str,
+) -> None:
+    module = worker_diagnostics
+    monkeypatch.setattr(module, "MAX_APPEND_BYTES", 4096)
+    path = tmp_path / filename
+    lines = [
+        json.dumps(
+            {"event": "END", "sequence": i, "context": "é" * 30}, ensure_ascii=False
+        )
+        + "\n"
+        for i in range(200)
+    ]
+    compactions = 0
+    for line in lines:
+        previous_size = path.stat().st_size if path.exists() else 0
+        module._append_bounded(path, line)
+        assert path.stat().st_size <= module.MAX_APPEND_BYTES
+        compactions += path.stat().st_size < previous_size
+    assert compactions >= 3
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    marker = {"event": "TRUNCATED_APPEND_LOG", "retained": "head+tail"}
+    assert rows.count(marker) == 1
+    marker_index = rows.index(marker)
+    head = rows[:marker_index]
+    assert head[:3] == [json.loads(line) for line in lines[:3]]
+    assert [row["sequence"] for row in head] == list(range(len(head)))
+    head_bytes = b"".join(path.read_bytes().splitlines(keepends=True)[:marker_index])
+    assert len(head_bytes) <= min(16 * 1024, module.MAX_APPEND_BYTES // 8)
+    retained = rows[marker_index + 1 :]
+    assert 20 < len(retained) < len(lines)
+    assert [row["sequence"] for row in retained] == list(
+        range(200 - len(retained), 200)
+    )
+    assert path.read_bytes().endswith(lines[-1].encode())
+    before_finalize = path.read_bytes()
+    module.finalize_directory(tmp_path)
+    assert path.stat().st_size <= module.MAX_APPEND_BYTES
+    assert path.read_bytes() == before_finalize
+    assert path.read_bytes().endswith(lines[-1].encode())
+
+
+def test_append_log_below_limit_is_unchanged(
+    tmp_path: Path, worker_diagnostics: ModuleType
+) -> None:
+    path = tmp_path / "events-123.jsonl"
+    lines = ['{"event":"START","sequence":1}\n', '{"event":"END","sequence":1}\n']
+    for line in lines:
+        worker_diagnostics._append_bounded(path, line)
+    assert path.read_text() == "".join(lines)
+
+
+def test_failed_compaction_preserves_previous_journal_and_allows_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+) -> None:
+    module = worker_diagnostics
+    monkeypatch.setattr(module, "MAX_APPEND_BYTES", 4096)
+    path = tmp_path / "events-123.jsonl"
+    original = json.dumps({"event": "START", "context": "x" * 3900}) + "\n"
+    module._append_bounded(path, original)
+    latest = json.dumps({"event": "END", "context": "y" * 200}) + "\n"
+
+    def fail_replace(self: Path, target: Path) -> None:
+        raise OSError("synthetic replacement failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="synthetic replacement failure"):
+            module._append_bounded(path, latest)
+    assert path.read_text() == original
+    assert list(tmp_path.iterdir()) == [path]
+    module._append_bounded(path, latest)
+    assert path.read_text().endswith(latest)
+
+
+@pytest.mark.parametrize(
+    ("code", "error", "event", "kind"),
+    [
+        (0, None, "NODE_COMPLETED", "NORMAL_COMPLETION"),
+        (1, None, "NODE_CRASHED", "CRASH"),
+        (-9, None, "NODE_CRASHED", "CRASH"),
+        (None, None, "NODE_DISCONNECTED", "UNKNOWN"),
+        (None, RuntimeError("synthetic"), "NODE_CRASHED", "CRASH"),
+        (0, RuntimeError("synthetic"), "NODE_CRASHED", "CRASH"),
+    ],
+)
+def test_worker_disconnect_names_only_observed_exit_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    code: int | None,
+    error: Exception | None,
+    event: str,
+    kind: str,
+) -> None:
+    monkeypatch.setenv("RIGPLANE_WORKER_DIAG_DIR", str(tmp_path))
+    node = SimpleNamespace(
+        gateway=SimpleNamespace(
+            id="gw0",
+            _io=SimpleNamespace(popen=SimpleNamespace(pid=123, returncode=code)),
+        )
+    )
+    worker_diagnostics.pytest_testnodedown(node, error)
+    row = json.loads((tmp_path / "controller-node-exit.jsonl").read_text())
+    assert row["event"] == event
+    assert row["exitKind"] == kind
+    assert row["availableReturncode"] == code
+    assert row["signal"] == (-code if code is not None and code < 0 else None)
+    assert row["errorType"] == (type(error).__name__ if error is not None else None)
+
+
+@pytest.mark.parametrize(
+    ("code", "kind"),
+    [(0, "NORMAL_COMPLETION"), (1, "CRASH"), (-6, "CRASH"), (None, "UNKNOWN")],
+)
+def test_reaped_worker_exit_records_actual_kind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    code: int | None,
+    kind: str,
+) -> None:
+    monkeypatch.setenv("RIGPLANE_WORKER_DIAG_DIR", str(tmp_path))
+    worker_diagnostics._record_reaped_exit(
+        SimpleNamespace(id="gw0"),
+        SimpleNamespace(popen=SimpleNamespace(pid=123)),
+        code,
+        "ORIGINAL_WAIT_RETURNED" if code is not None else "ORIGINAL_WAIT_RAISED",
+    )
+    row = json.loads((tmp_path / "controller-reaped-exit.jsonl").read_text())
+    assert row["exitKind"] == kind
+    assert row["returncode"] == code
+    assert row["signal"] == (-code if code is not None and code < 0 else None)
 
 
 # The synthetic child took ~1.4 s in a green quick run on main (2026-10-22,
@@ -489,6 +651,11 @@ def test_03_fatal():
     ]
     assert sorted(row["returncode"] for row in exits) == [-6, 0, 1]
     assert next(row for row in exits if row["returncode"] == -6)["signal"] == 6
+    assert {row["returncode"]: row["exitKind"] for row in exits} == {
+        -6: "CRASH",
+        0: "NORMAL_COMPLETION",
+        1: "CRASH",
+    }
     timeout = next(diagnostic.glob("timeout-*.log")).read_text()
     assert "PYTEST_TIMEOUT_CALLBACK" in timeout and "test_02_timeout" in timeout
     fatal = [p.read_text() for p in diagnostic.glob("fatal-*.log")]
@@ -515,6 +682,60 @@ def test_diagnostic_artifact_bounds(tmp_path: Path) -> None:
     assert log.stat().st_size <= module.MAX_FILE_BYTES
     assert b"TRUNCATED" in log.read_bytes()
     assert (tmp_path / "bounds.json").is_file()
+
+
+@pytest.mark.parametrize("diagnostics_present", [False, True])
+def test_oversized_pytest_reports_share_upload_budget_and_keep_tails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    diagnostics_present: bool,
+) -> None:
+    module = worker_diagnostics
+    directory = tmp_path / "diagnostics"
+    if diagnostics_present:
+        directory.mkdir()
+        for index in range(17):
+            (directory / f"fatal-gw0-{index}.log").write_bytes(
+                b"x" * module.MAX_FILE_BYTES
+            )
+    tails = {
+        "pytest-output.txt": b"FAILED tests/test_synthetic.py::test_failure\nPytest exit code: 1\n",
+        "pytest-junit.xml": b"tests/test_synthetic.py::test_failure</failure></testcase></testsuite></testsuites>\n",
+    }
+    for name, tail in tails.items():
+        (tmp_path / name).write_bytes(b"x" * module.MAX_FILE_BYTES + tail)
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("leave unrelated files alone\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(HELPER), "--finalize-strict", str(directory), *tails],
+    )
+
+    runpy.run_path(str(HELPER), run_name="__main__")
+
+    for name, tail in tails.items():
+        report = (tmp_path / name).read_bytes()
+        assert len(report) <= module.MAX_FILE_BYTES
+        assert report.startswith(b"\n[TRUNCATED diagnostic evidence]\n")
+        assert report.endswith(tail)
+    bounds_path = directory / "bounds.json"
+    bounds = json.loads(bounds_path.read_text())
+    records = {record["file"]: record for record in bounds["files"]}
+    for name in tails:
+        assert records[name]["truncated"] is True
+        assert records[name]["bytes"] == (tmp_path / name).stat().st_size
+    upload_files = [*directory.iterdir(), *(tmp_path / name for name in tails)]
+    assert all(path.stat().st_size <= module.MAX_FILE_BYTES for path in upload_files)
+    assert sum(path.stat().st_size for path in upload_files) <= module.MAX_TOTAL_BYTES
+    assert bounds["bytes"] == sum(
+        path.stat().st_size for path in upload_files if path != bounds_path
+    )
+    if diagnostics_present:
+        assert bounds["droppedFiles"] > 0
+    assert unrelated.read_text() == "leave unrelated files alone\n"
 
 
 async def test_snapshot_omits_values_and_task_names(tmp_path: Path) -> None:

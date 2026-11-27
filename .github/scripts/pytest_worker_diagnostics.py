@@ -3,7 +3,7 @@
 Opt in with RIGPLANE_WORKER_DIAG_DIR and -p pytest_worker_diagnostics.
 Snapshots contain filenames/functions/line numbers, never locals or source text.
 Parameters, task names, environment values and exception text are not retained.
-Latest 120/240-second snapshots replace older ones; append logs stop at 1 MiB.
+Latest 120/240-second snapshots replace older ones; append logs retain head and tail.
 Raw fatal/timeout files are capped after reap and again before artifact upload.
 --finalize limits the upload to 32 MiB, 2 MiB/file and 256 known files, recording
 truncation in bounds.json. Incomplete/truncated evidence is not a PASS verdict.
@@ -450,13 +450,27 @@ def _configure_durable_exit_impl(config):
 _DURABLE_ORIGINAL = pytest.StashKey()
 
 
+def _exit_kind(code: int | None, error: object | None = None) -> str:
+    if error is not None or (code is not None and code != 0):
+        return "CRASH"
+    if code == 0:
+        return "NORMAL_COMPLETION"
+    return "UNKNOWN"
+
+
 def _testnodedown_impl(node, error):
     directory = Path(os.environ["RIGPLANE_WORKER_DIAG_DIR"])
     io = getattr(node.gateway, "_io", None)
     popen = getattr(io, "popen", None)
     code = getattr(popen, "returncode", None)
+    kind = _exit_kind(code, error)
     record = {
-        "event": "NODE_DOWN",
+        "event": {
+            "NORMAL_COMPLETION": "NODE_COMPLETED",
+            "CRASH": "NODE_CRASHED",
+            "UNKNOWN": "NODE_DISCONNECTED",
+        }[kind],
+        "exitKind": kind,
         "gateway": getattr(node.gateway, "id", None),
         "errorType": type(error).__name__ if error is not None else None,
         "controllerChildPid": getattr(popen, "pid", None),
@@ -511,6 +525,7 @@ def _record_reaped_exit(gateway, io, code, outcome):
             "pid": getattr(popen, "pid", None),
             "returncode": code,
             "signal": -code if isinstance(code, int) and code < 0 else None,
+            "exitKind": _exit_kind(code),
             "waitOutcome": outcome,
             "evidence": "REAPED_AVAILABLE" if code is not None else "UNKNOWN",
             "monotonic": time.monotonic(),
@@ -555,6 +570,7 @@ def pytest_testnodedown(node, error):
 
 
 MAX_APPEND_BYTES = 1024 * 1024
+_APPEND_LOCK = threading.Lock()
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_FILES = 256
@@ -571,22 +587,52 @@ def _append_bounded(path, line):
     encoded = line.encode("utf-8", errors="replace")
     if len(encoded) > 8192:
         return
-    marker = b'{"event":"TRUNCATED_APPEND_LOG"}\n'
-    size = path.stat().st_size if path.exists() else 0
-    if size > MAX_APPEND_BYTES - len(marker):
-        return
-    if size + len(encoded) > MAX_APPEND_BYTES - len(marker):
-        encoded = marker
-    with path.open("ab") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
+    marker = b'{"event":"TRUNCATED_APPEND_LOG","retained":"head+tail"}\n'
+    # Execnet reaper callbacks can share a controller journal. Serialize
+    # appends with compaction so a concurrent append is not replaced away.
+    with _APPEND_LOCK:
+        size = path.stat().st_size if path.exists() else 0
+        if size + len(encoded) <= MAX_APPEND_BYTES:
+            with path.open("ab") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            return
+        # Reserve space for more appends rather than rewriting on every event.
+        reserve = min(64 * 1024, MAX_APPEND_BYTES // 4)
+        with path.open("rb") as stream:
+            head = stream.read(min(16 * 1024, MAX_APPEND_BYTES // 8))
+            head = head.split(marker, 1)[0]
+            head = head[: head.rfind(b"\n") + 1]
+            budget = MAX_APPEND_BYTES - reserve - len(head) - len(marker) - len(encoded)
+            start = max(len(head), size - budget)
+            stream.seek(start)
+            if start > len(head):
+                # Drop the partial oldest record, including UTF-8 bytes.
+                stream.readline()
+            tail = stream.read()
+        temporary = path.with_name(f".{path.name}.tmp")
+        try:
+            with temporary.open("wb") as stream:
+                stream.write(head + marker + tail + encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
-def _truncate(path, limit):
+def _truncate(path, limit, *, tail=False):
     marker = b"\n[TRUNCATED diagnostic evidence]\n"
     if path.stat().st_size > limit:
         with path.open("r+b") as stream:
+            if tail:
+                stream.seek(path.stat().st_size - max(0, limit - len(marker)))
+                retained = stream.read()
+                stream.seek(0)
+                stream.write(marker[:limit] + retained)
+                stream.truncate()
+                return True
             stream.truncate(limit)
             stream.seek(max(0, limit - len(marker)))
             stream.write(marker[:limit])
@@ -602,28 +648,44 @@ def _cap_worker_raw_files(directory, pid):
                     _truncate(path, MAX_FILE_BYTES)
 
 
-def finalize_directory(directory):
+def finalize_directory(directory, reports=()):
     """Bound known upload files; do not copy or inspect unrelated files."""
     directory = Path(directory)
+    reports = [Path(path) for path in reports]
+    reports = [path for path in reports if path.is_file() and not path.is_symlink()]
     if not directory.is_dir():
-        return
+        if not reports:
+            return
+        directory.mkdir(parents=True, exist_ok=True)
+    # Keep pytest failure summaries ahead of worker dumps in the shared budget.
+    paths = reports + [
+        path
+        for path in sorted(directory.iterdir())
+        if not path.is_symlink() and path.is_file() and _KNOWN_FILE.fullmatch(path.name)
+    ]
+    limits = {"file": MAX_FILE_BYTES, "total": MAX_TOTAL_BYTES, "count": MAX_FILES}
+    # Reserve a conservative manifest size so bounds.json also fits the upload.
+    metadata = {
+        "files": [
+            {"file": path.name, "bytes": MAX_FILE_BYTES, "truncated": False}
+            for path in paths[:MAX_FILES]
+        ],
+        "bytes": MAX_TOTAL_BYTES,
+        "droppedFiles": len(paths),
+        "limits": limits,
+    }
+    content_limit = MAX_TOTAL_BYTES - len(json.dumps(metadata).encode()) - 1
     records = []
     total = 0
     count = 0
     dropped = 0
-    for path in sorted(directory.iterdir()):
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or not _KNOWN_FILE.fullmatch(path.name)
-        ):
-            continue
-        if count >= MAX_FILES or total >= MAX_TOTAL_BYTES:
+    for path in paths:
+        if count >= MAX_FILES or total >= content_limit:
             path.unlink()
             dropped += 1
             continue
-        limit = min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - total)
-        truncated = _truncate(path, limit)
+        limit = min(MAX_FILE_BYTES, content_limit - total)
+        truncated = _truncate(path, limit, tail=path in reports)
         size = path.stat().st_size
         records.append({"file": path.name, "bytes": size, "truncated": truncated})
         total += size
@@ -634,11 +696,7 @@ def finalize_directory(directory):
                 "files": records,
                 "bytes": total,
                 "droppedFiles": dropped,
-                "limits": {
-                    "file": MAX_FILE_BYTES,
-                    "total": MAX_TOTAL_BYTES,
-                    "count": MAX_FILES,
-                },
+                "limits": limits,
             }
         )
         + "\n"
@@ -646,9 +704,9 @@ def finalize_directory(directory):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] in ("--finalize", "--finalize-strict"):
+    if len(sys.argv) >= 3 and sys.argv[1] in ("--finalize", "--finalize-strict"):
         try:
-            finalize_directory(sys.argv[2])
+            finalize_directory(sys.argv[2], sys.argv[3:])
         except BaseException:
             if sys.argv[1] == "--finalize-strict":
                 raise
