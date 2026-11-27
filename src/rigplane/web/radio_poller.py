@@ -1853,17 +1853,17 @@ class RadioPoller:
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
                     if _closed_pause:
-                        loop = asyncio.get_running_loop()
-                        retry_at = loop.time() + _backoff
-                        while (remaining := retry_at - loop.time()) > 0:
-                            await self._queue.wait(
-                                timeout=min(remaining, self._fast_interval)
-                            )
-                            if (
-                                self._queue.has_commands
-                                or self._transport_open_for_acquisition()
-                            ):
-                                break
+                        # A timer may fire just before its deadline. One outer
+                        # timeout avoids rearming that same near-zero remainder.
+                        try:
+                            async with asyncio.timeout(_backoff):
+                                while (
+                                    not self._queue.has_commands
+                                    and not self._transport_open_for_acquisition()
+                                ):
+                                    await self._queue.wait(timeout=self._fast_interval)
+                        except TimeoutError:
+                            pass
                         if (
                             self._queue.has_commands
                             or self._transport_open_for_acquisition()

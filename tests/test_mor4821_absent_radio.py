@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -117,6 +118,31 @@ class _SerialPropertiesRadio:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.delegate, name)
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("recheck_interval", [0.1, 0.5])
+async def test_closed_transport_probe_deadline_tolerates_early_timer(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    recheck_interval: float,
+) -> None:
+    radio = _absent_serial_radio()
+    poller, send_query = _poller_with_counted_wire(radio)
+    monkeypatch.setattr(poller, "_fast_interval", recheck_interval)
+    probe = AsyncMock(wraps=poller._send_query)  # noqa: SLF001
+    monkeypatch.setattr(poller, "_send_query", probe)
+    started = virtual_clock()
+    task = asyncio.create_task(poller._run())  # noqa: SLF001
+    try:
+        await virtual_clock.elapse(0)
+        # asyncio may fire timers within its resolution before their deadline.
+        await virtual_clock.elapse(0.5 - math.ulp(started))
+        probe.assert_awaited_once()
+        send_query.assert_not_awaited()
+    finally:
+        task.cancel()
+        await task
 
 
 @pytest.mark.timeout(30)
