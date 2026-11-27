@@ -118,6 +118,7 @@ from ..core.tx_target import (
 )
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
+from ..runtime._poller_types import POSITIVE_TX_ADMISSION_REJECTED
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
     scope_fixed_edge_slot,
@@ -510,10 +511,7 @@ def _positive_tx_refused_for_release_debt(
     still unconfirmed is routine, so it logs one line instead of a
     traceback. Anything else keeps today's traceback.
     """
-    if (
-        not isinstance(exc, CommandError)
-        or str(exc) != "positive TX admission was rejected"
-    ):
+    if not isinstance(exc, CommandError) or str(exc) != POSITIVE_TX_ADMISSION_REJECTED:
         return False
     submission = entry.positive_tx_submission
     return (

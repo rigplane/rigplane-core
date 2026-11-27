@@ -554,12 +554,25 @@ async def test_ptt_refusal_reports_release_debt_without_waiting(queued: bool) ->
         await _release(stack.authority)
 
 
-@pytest.mark.parametrize("release_debt", (True, False), ids=("debt", "real_error"))
+@pytest.mark.parametrize(
+    ("release_debt", "shared_rejection"),
+    ((True, False), (True, True), (False, False)),
+    ids=("debt", "shared_admission_rejection", "real_error"),
+)
 async def test_poller_logs_only_release_debt_without_traceback(
     release_debt: bool,
+    shared_rejection: bool,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    if shared_rejection:
+        rejection = "test admission rejection"
+        monkeypatch.setattr(
+            "rigplane.runtime._poller_types.POSITIVE_TX_ADMISSION_REJECTED", rejection
+        )
+        monkeypatch.setattr(
+            "rigplane.web.radio_poller.POSITIVE_TX_ADMISSION_REJECTED", rejection
+        )
     stack = _QueueStack()
     gate: asyncio.Event | None = None
     release: ManagedTxSubmission | None = None
