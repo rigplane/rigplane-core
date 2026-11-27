@@ -408,7 +408,9 @@ class WebRtcSessionManager:
         teardown raised is logged and left out of the returned ids.
         """
         sessions = list(self._sessions.items())
-        for session_id, _ in sessions:
+        for session_id, session in sessions:
+            if session._close_reason is None:
+                session._close_reason = WebRtcSessionEndReason.ALL_SESSIONS_CLOSED
             self._log_close(session_id, WebRtcSessionEndReason.ALL_SESSIONS_CLOSED)
             self._fence_peer(session_id)
         self._sessions.clear()

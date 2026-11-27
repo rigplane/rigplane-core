@@ -337,6 +337,58 @@ async def test_close_all_emits_once_per_correlated_session(peers: list[_Peer]) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("states", [("failed",), ("closed",), ("failed", "closed")])
+async def test_close_all_latches_every_reason_before_awaiting_teardown(
+    peers: list[_Peer],
+    states: tuple[str, ...],
+    virtual_clock: VirtualClock,
+) -> None:
+    server, manager, queue = _setup(ManualClock(1795737600))
+    server._control_event_queues.remove(queue)
+    queue = BoundedQueue(maxsize=10)
+    server._control_event_queues.add(queue)
+    answers = [
+        await manager.negotiate("offer", "offer", correlation_id=correlation)
+        for correlation in ("first", "second")
+    ]
+    sessions = list(manager._sessions.values())
+    peers[0].close_release.clear()
+    close = asyncio.create_task(manager.close_all())
+    try:
+        await virtual_clock.elapse(0)
+        assert peers[0].close_started.is_set()
+        assert not peers[0].teardown_completed
+        assert not peers[1].close_started.is_set()
+        assert manager.active_session_ids == []
+        for state in states:
+            peers[1].emit_state(state)
+        await virtual_clock.elapse(0)
+        assert not peers[1].close_started.is_set()
+        assert queue.empty()
+    finally:
+        peers[0].close_release.set()
+        closed = await close
+        await virtual_clock.elapse(0)
+
+    assert closed == [answer["sessionId"] for answer in answers]
+    assert all(peer.teardown_completed for peer in peers)
+    data = [queue.get_nowait()["data"] for _ in range(2)]
+    assert [fact["correlation_id"] for fact in data] == ["first", "second"]
+    assert [fact["reason"] for fact in data] == [
+        "all_sessions_closed",
+        "all_sessions_closed",
+    ]
+    assert queue.empty()
+    for peer in peers:
+        peer.emit_state("failed")
+        peer.emit_state("closed")
+    await virtual_clock.elapse(0)
+    assert await manager.close_all() == []
+    assert queue.empty()
+    assert all(not session.tasks for session in sessions)
+
+
+@pytest.mark.asyncio
 async def test_full_event_queue_drops_without_blocking_or_retry(
     peers: list[_Peer],
     virtual_clock: VirtualClock,
