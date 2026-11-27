@@ -224,6 +224,14 @@
   // scope is the radio's display: the menu says nothing about an audio-FFT
   // or IQ-FFT stream.
   let scopeHiddenOnRadio = $derived(!audioFft && !sdrSource && runtime.radioHealth?.scopeHidden === true);
+  let scopeStatusOverlay = $derived.by(() => {
+    if (!scopeDemandOn) return 'off';
+    if (scopeConnected) return scopeContentState === 'out-of-range' ? 'out-of-range' : null;
+    if (scopeTxKnown) return 'transmitting';
+    if (scopeHiddenOnRadio) return 'hidden';
+    if (runtime.caps !== null && selectedScopeId === null) return 'no-source';
+    return 'disconnected';
+  });
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let brtLevel = $state(0);
   // MOR-4605: while AUTO is on, the REF keys step this client-side offset
@@ -1926,17 +1934,17 @@
       requestSeq: scopeSubscriptionValue.requestSeq,
       revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
-      {#if !scopeDemandOn}
+      {#if scopeStatusOverlay === 'off'}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
-      {:else if runtime.caps !== null && selectedScopeId === null}
-        <div class="scope-disconnected-overlay" data-testid="scope-no-source-overlay">{t('core.overlay.scopeNoSource')}</div>
-      {:else if scopeTxKnown && !scopeConnected}
+      {:else if scopeStatusOverlay === 'transmitting'}
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
-      {:else if scopeHiddenOnRadio && !scopeConnected}
+      {:else if scopeStatusOverlay === 'hidden'}
         <div class="scope-disconnected-overlay" data-testid="scope-hidden-overlay">{t('core.overlay.scopeHiddenOnRadio')}</div>
-      {:else if !scopeConnected}
+      {:else if scopeStatusOverlay === 'no-source'}
+        <div class="scope-disconnected-overlay" data-testid="scope-no-source-overlay">{t('core.overlay.scopeNoSource')}</div>
+      {:else if scopeStatusOverlay === 'disconnected'}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
-      {:else if scopeContentState === 'out-of-range'}
+      {:else if scopeStatusOverlay === 'out-of-range'}
         <div class="scope-disconnected-overlay scope-out-of-range" data-testid="scope-out-of-range">
           <span>{t('core.overlay.scopeOutOfRange', {
             start: (startFreq / 1e6).toFixed(3), end: (endFreq / 1e6).toFixed(3),

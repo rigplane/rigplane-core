@@ -2544,6 +2544,40 @@ describe('SpectrumPanel component', () => {
   });
 });
 
+describe('SpectrumPanel no-source overlay precedence (MOR-4798)', () => {
+  beforeEach(() => {
+    runtimeHarness.state.currentCaps = Object.freeze({ scope: false });
+  });
+
+  it('clears the no-source note when live frames arrive without a capability update', () => {
+    const target = mountPanel();
+    expect(target.querySelector('[data-testid="scope-no-source-overlay"]')).not.toBeNull();
+
+    emitFrame();
+
+    expect(target.querySelector('[data-testid="scope-no-source-overlay"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+
+  it.each(['transmitting', 'hidden'] as const)('prioritizes %s over no source until live frames return', (state) => {
+    if (state === 'transmitting') txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    else runtimeHarness.state.currentRadioHealth = {
+      serverReachable: true, radioLink: 'connected', readiness: 'ready', likelyCause: 'unknown',
+      sinceMs: 0, lastError: null, scopeHidden: true,
+    };
+    const target = mountPanel();
+    const selector = state === 'transmitting' ? '[data-testid="scope-tx-overlay"]' : '[data-testid="scope-hidden-overlay"]';
+    expect(target.querySelector(selector)).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-no-source-overlay"]')).toBeNull();
+
+    emitFrame();
+
+    expect(target.querySelector(selector)).toBeNull();
+    expect(target.querySelector('[data-testid="scope-no-source-overlay"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+});
+
 describe('SpectrumPanel TX-known overlay (MOR-2859)', () => {
   it('shows the transmitting message instead of the disconnected overlay when TX is known', () => {
     txHarness.emitServerSnapshot({ observedPtt: 'on' });
