@@ -1,0 +1,7 @@
+2026-11-26T03:00:00Z FAILED tests/test_contract.py::test_main - AssertionError: expected ready
+2026-11-26T03:00:01Z ERROR tests/test_setup.py::test_load - RuntimeError: unavailable
+2026-11-26T03:00:02Z   1) [webkit] › native-specs/connect.spec.mjs:12:3 › restores connection
+2026-11-26T03:00:03Z E       AssertionError: expected ready
+2026-11-26T03:00:04Z FAILED tests/test_contract.py::test_main - AssertionError: expected ready
+2026-11-26T03:00:05Z FAILED tests/test_contract.py::test_label[hello world] - assert False
+2026-11-26T03:00:06Z  FAIL  src/lib/contract.test.ts > restores state
