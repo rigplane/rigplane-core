@@ -4908,6 +4908,8 @@ async def test_mor4828_invalid_shift_skips_field_but_publishes_siblings(
     assert "receiver.main.operator_controls.repeater_shift" in {
         str(path) for path in scheduler.refused_paths()
     }
+    shift_path = FieldPath.receiver("main", "operator_controls", "repeater_shift")
+    assert shift_path not in scheduler.unobserved_startup_paths(())
 
     del overrides["OS0;"]
     # The refusal retry window (the 1 s slow-control idle ceiling) is still
@@ -5175,27 +5177,48 @@ async def test_mor4828_invalid_tone_index_skips_field_but_publishes_sibling(
 @asynccontextmanager
 async def _serve_yaesu_with_bad_shift(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    reply_latency_seconds: float = 0.009,
 ) -> AsyncIterator[tuple[WebServer, YaesuCatRadio, list[str], VirtualClock]]:
     """Serve the real FTX-1 backend with a persistently invalid shift reply.
 
     ``OS0;`` always answers ``OS09;`` (parses, semantically invalid) while
-    every other line — including freq/mode — is answered normally. The
-    production startup gate runs on a shared virtual clock (``web_startup``'s
-    own ``time``/``asyncio`` names rebound; every other module keeps real
-    time, so the loop, the poller and the HTTP exchange stay real):
-    ``server.start()`` returning proves the bind happened before the virtual
-    10 s non-critical deadline.
+    every other line — including freq/mode — is answered normally.
+    During the production startup gate, the event loop's timers and the
+    gate's monotonic reads share one virtual clock. The simulator's delayed
+    replies and the poller therefore advance with the gate. Listener bind
+    and HTTP exchanges use the real loop clock again.
     """
     from rigplane.web import web_startup
 
     overrides: dict[str, tuple[str | None, Any]] = {"OS0;": ("OS09;", Ok())}
     radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
-    gate_clock = VirtualClock(start=0.0)
-    gate_clock.scope_to(monkeypatch, web_startup)
-    # Test-only pacing: the gate re-checks every gap while the real poller
-    # advances between its yields, so a finer grain gives the real
-    # acquisition more loop turns per virtual second. No product margin moves.
-    radio._INITIAL_STATE_GAP_SERIAL = 0.005
+    fake._reply_latency = reply_latency_seconds
+    gate_clock: VirtualClock | None = None
+    real_gate = web_startup._await_initial_state_acquisition
+
+    async def clocked_gate(server: WebServer, *, sweep: bool) -> None:
+        nonlocal gate_clock
+        async with VirtualClock.on_running_loop() as gate_clock:
+            with monkeypatch.context() as gate_patch:
+                # Keep asyncio.sleep timer-driven: scope_to() would jump only
+                # the gate's clock, outrunning the simulator's call_at replies.
+                gate_patch.setattr(
+                    web_startup, "time", SimpleNamespace(monotonic=gate_clock)
+                )
+                waiting = asyncio.create_task(real_gate(server, sweep=sweep))
+                try:
+                    deadline = gate_clock.now + 60.0
+                    while not waiting.done() and gate_clock.now < deadline:
+                        await gate_clock.elapse(0.005)
+                    assert waiting.done(), "startup gate exceeded 60 virtual seconds"
+                    await waiting
+                finally:
+                    if not waiting.done():
+                        waiting.cancel()
+                        await asyncio.gather(waiting, return_exceptions=True)
+
+    monkeypatch.setattr(web_startup, "_await_initial_state_acquisition", clocked_gate)
     await radio._transport.connect()
     server = WebServer(
         radio, WebConfig(host="127.0.0.1", port=0, await_initial_state=True)
@@ -5204,20 +5227,22 @@ async def _serve_yaesu_with_bad_shift(
         # A generous stuck-run bound (not a wall-clock assertion): a broken
         # simulator that never answers the critical paths must fail, not hang.
         await asyncio.wait_for(server.start(), timeout=60)
-    except BaseException:
-        await radio._transport.close()
-        raise
-    try:
+        assert gate_clock is not None, "the production startup gate did not run"
         yield server, radio, wire, gate_clock
     finally:
-        await server.stop()
-        await radio._transport.close()
+        try:
+            await server.stop()
+        finally:
+            await radio._transport.close()
 
 
 @pytest.mark.realtime(reason="real HTTP socket and the production Yaesu acquisition")
+@pytest.mark.timeout(60)
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reply_latency_seconds", [0.009, 0.025])
 async def test_mor4828_bad_shift_still_binds_and_serves_critical_paths(
     monkeypatch: pytest.MonkeyPatch,
+    reply_latency_seconds: float,
 ) -> None:
     """MOR-4828 STEP 1: an invalid shift reply at startup must not block the bind.
 
@@ -5231,17 +5256,23 @@ async def test_mor4828_bad_shift_still_binds_and_serves_critical_paths(
     ``_safe_read`` and holding the initial-state gate). Fails before the
     fix: ``start()`` returns only at the virtual 10 s deadline expiry.
     """
-    from rigplane.testing.timing import await_until
-
-    async with _serve_yaesu_with_bad_shift(monkeypatch) as (
+    async with _serve_yaesu_with_bad_shift(
+        monkeypatch, reply_latency_seconds=reply_latency_seconds
+    ) as (
         web,
         radio,
         wire,
         gate_clock,
     ):
-        assert gate_clock.now < 10.0, (
-            f"startup held {gate_clock.now:.1f}s virtual (>= 10s non-critical deadline)"
+        elapsed = gate_clock.now - gate_clock.start
+        assert elapsed < 10.0, (
+            f"startup held {elapsed:.1f}s virtual (>= 10s non-critical deadline)"
         )
+        scheduler = radio._acquisition_scheduler
+        assert scheduler.startup_defect is None
+        shift_path = FieldPath.receiver("main", "operator_controls", "repeater_shift")
+        assert shift_path in scheduler.refused_paths()
+        assert shift_path not in scheduler.unobserved_startup_paths(())
         host, port = _addr(web)
 
         def freq_ready(state: ServerStatePublic) -> bool:
@@ -5251,14 +5282,6 @@ async def test_mor4828_bad_shift_still_binds_and_serves_critical_paths(
             host, port, freq_ready, "freq/mode with bad shift"
         )
         assert "OS0;" in wire, "the invalid shift read never reached the wire"
-        scheduler = radio._acquisition_scheduler
-        assert scheduler.startup_defect is None
-        main_shift = "receiver.main.operator_controls.repeater_shift"
-        await await_until(
-            lambda: main_shift in {str(p) for p in scheduler.refused_paths()},
-            timeout=30.0,
-            description="the invalid shift marked unavailable with a reason",
-        )
         status, _, raw = await _http_get(host, port, "/api/v1/state")
         assert status == 200, f"GET /api/v1/state: HTTP {status}"
         state = ServerStatePublic.model_validate_json(raw)
