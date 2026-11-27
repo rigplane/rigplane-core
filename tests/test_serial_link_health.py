@@ -952,6 +952,73 @@ async def test_icom_qualified_replies_recover_without_reopen(
 
 
 @pytest.mark.asyncio
+async def test_icom_read_completed_before_write_failure_cannot_clear_it(
+    serial_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cable = _Cable("icom")
+    cable.respond = False
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=cable.open, require_optional_deps=False
+    )
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    read_completed = asyncio.Event()
+    release_read = asyncio.Event()
+    trace: list[str] = []
+    read_once = link._read_once
+
+    async def hold_completed_read() -> bytes | None:
+        chunk = await read_once()
+        trace.append("read_completed")
+        read_completed.set()
+        await release_read.wait()
+        return chunk
+
+    monkeypatch.setattr(link, "_read_once", hold_completed_read)
+    await link.connect()
+    reading = asyncio.create_task(link.receive(timeout=1.0))
+    try:
+        response = b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd"
+        cable.reader.feed_data(response)
+        await _finish(serial_clock, read_completed.wait())
+        assert reading.done() is False
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        with pytest.raises(OSError, match="transient"):
+            await _finish(serial_clock, link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd"))
+        trace.append("write_failed")
+        assert link.connected is False
+        assert link.healthy is False
+
+        release_read.set()
+        held = await reading
+        assert held == response
+        await _route_serial_response(radio, held)
+        trace.append("routed")
+        assert trace == ["read_completed", "write_failed", "routed"]
+        assert link.connected is False
+        assert link.healthy is False
+
+        cable.reader.feed_data(response)
+        fresh = await _finish(serial_clock, link.receive(timeout=0.3))
+        await _route_serial_response(radio, fresh)
+        assert link.connected is True
+        assert link.healthy is True
+        assert cable.opens == 1
+        assert cable.writer is writer
+        assert writer.closed is False
+    finally:
+        reading.cancel()
+        await asyncio.gather(reading, return_exceptions=True)
+        await link.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reopen", [False, True], ids=["later-error", "new-session"])
 async def test_icom_deferred_response_cannot_clear_a_later_failure(
     reopen: bool, serial_clock: VirtualClock

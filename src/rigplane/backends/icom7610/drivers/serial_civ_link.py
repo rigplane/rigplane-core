@@ -203,7 +203,7 @@ class SerialCivLink:
         self._max_write_queue = max_write_queue
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
         self._receive_generation = 0
-        self._read_task: asyncio.Task[bytes | None] | None = None
+        self._read_task: asyncio.Task[SerialResponse | None] | None = None
         self._write_queue: asyncio.Queue[bytes | _WriteRequest | None] = asyncio.Queue(
             maxsize=max_write_queue
         )
@@ -520,7 +520,7 @@ class SerialCivLink:
             if chunk is None:
                 return None
             for parsed in self._codec.feed(chunk):
-                self._frames.put_nowait(self._response_with_credit(parsed))
+                self._frames.put_nowait(SerialResponse(parsed, chunk.record_response))
 
     def _response_with_credit(self, frame: bytes) -> SerialResponse:
         receive_generation = self._receive_generation
@@ -537,7 +537,7 @@ class SerialCivLink:
 
         return SerialResponse(frame, record_response)
 
-    async def _read_once(self) -> bytes | None:
+    async def _read_once(self) -> SerialResponse | None:
         reader = self._reader
         if reader is None:
             self._connected = False
@@ -547,15 +547,15 @@ class SerialCivLink:
             chunk = await reader.read(self._read_chunk_size)
         except (OSError, asyncio.IncompleteReadError) as exc:
             if self._reader is not reader:
-                return b""
+                return self._response_with_credit(b"")
             logger.warning("Recoverable serial read error: %s", exc)
             self._healthy = False
             self._link_health.record_failure()
             await asyncio.sleep(0.5)  # backoff to prevent log/CPU flood
-            return b""
+            return self._response_with_credit(b"")
         except Exception as exc:
             if self._reader is not reader:
-                return b""
+                return self._response_with_credit(b"")
             self._link_health.record_failure()
             # Catch pyserial SerialException ("device reports readiness...")
             # which is not a subclass of OSError.
@@ -563,7 +563,7 @@ class SerialCivLink:
                 logger.warning("Recoverable serial read error: %s", exc)
                 self._healthy = False
                 await asyncio.sleep(0.5)
-                return b""
+                return self._response_with_credit(b"")
             raise
         except Exception:
             logger.exception("Unrecoverable serial read error.")
@@ -572,7 +572,7 @@ class SerialCivLink:
             return None
 
         if self._reader is not reader:
-            return b""
+            return self._response_with_credit(b"")
         if chunk == b"":
             # EOF / stream closed by peer.
             self._connected = False
@@ -580,7 +580,7 @@ class SerialCivLink:
             self._link_health.record_failure()
             return None
 
-        return bytes(chunk)
+        return self._response_with_credit(bytes(chunk))
 
     async def _writer_loop(
         self,
