@@ -24,10 +24,12 @@ from ...audio.session import RxSubscription
 from ...audio._usb_pairing import AudioCandidate
 from ...audio.usb_driver import (
     AudioAlreadyStartedError,
+    AudioStartFailureReason,
     audio_start_failure_details,
     audio_start_failure_holder,
     audio_start_failure_reason,
 )
+from ...core.radio_protocol import serial_identity_hold
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
@@ -1459,17 +1461,40 @@ class AudioBroadcaster:
             self._subscription = None
             if source is not None:
                 reason, candidates = audio_start_failure_details(exc)
+                holder = audio_start_failure_holder(exc)
+                if reason == "other" and serial_identity_hold(radio) is not None:
+                    # MOR-4858: connection-state precedence. The
+                    # connect-time identity hold owns the radio (a
+                    # powered-off rig whose serial port is open but whose
+                    # identity read never answered), so an unclassified
+                    # failure is reported as the known not-connected
+                    # state rather than an unknown audio problem. That
+                    # also covers an unrelated unclassified failure that
+                    # lands during the hold: the hold is the only
+                    # connection evidence Core has. Classified reasons
+                    # keep their own (more specific) category.
+                    reason = "radio_not_connected"
                 self._rx_start_failure = (
                     radio,
                     source,
                     reason,
                     candidates,
-                    audio_start_failure_holder(exc),
+                    holder,
                 )
                 self._notify_rx_start_status_change()
-            await self._notify_relay_start_failure(exc)
+                await self._notify_relay_start_failure(
+                    exc, reason=reason, holder=holder
+                )
+            else:
+                await self._notify_relay_start_failure(exc)
 
-    async def _notify_relay_start_failure(self, exc: Exception) -> None:
+    async def _notify_relay_start_failure(
+        self,
+        exc: Exception,
+        *,
+        reason: AudioStartFailureReason | None = None,
+        holder: str | None = None,
+    ) -> None:
         """Surface a relay/RX start failure to connected WS clients (MOR-582).
 
         Without this the browser was told nothing and waited on dead air
@@ -1486,8 +1511,15 @@ class AudioBroadcaster:
         """
         if not self._client_ws:
             return
-        reason = audio_start_failure_reason(exc)
-        holder = audio_start_failure_holder(exc)
+        # MOR-4858: the caller passes the admission's effective category so
+        # the frame and the retained ``audioReceive`` fact agree (the
+        # radio-not-connected override is known only where the radio is).
+        # Without an override the frame classifies the exception itself,
+        # exactly as before.
+        if reason is None:
+            reason = audio_start_failure_reason(exc)
+        if holder is None:
+            holder = audio_start_failure_holder(exc)
         payload = encode_json(
             {
                 "type": "error",
