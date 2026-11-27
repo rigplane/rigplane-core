@@ -53,11 +53,18 @@ class HeldSessionRadio(MockIcomRadio):
         super()._handle_ctrl(data, addr, ptype, sender_id, seq, proto)
 
 
+@pytest.fixture
+def packet_clock() -> VirtualClock:
+    # Keep UDP receive timeouts on the real loop; only _control_phase's
+    # packet-spacing sleeps use this clock via scope_to below.
+    return VirtualClock()
+
+
 @pytest.fixture(params=[("IC-705", 0xA4), ("IC-7610", 0x98)])
 async def lan(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
-    virtual_clock: VirtualClock,
+    packet_clock: VirtualClock,
 ) -> AsyncIterator[tuple[IcomRadio, HeldSessionRadio]]:
     model, address = request.param
     sim = HeldSessionRadio(address)
@@ -72,7 +79,7 @@ async def lan(
     )
     # Advance only the mechanism's packet-spacing sleeps. Socket delivery is
     # awaited as a real event; recurring control tasks are outside this test.
-    virtual_clock.scope_to(monkeypatch, _control_phase)
+    packet_clock.scope_to(monkeypatch, _control_phase)
     monkeypatch.setattr(
         radio._control_phase, "_resolve_local_bind_host", lambda: "127.0.0.1"
     )
@@ -101,7 +108,7 @@ async def _connect(radio: IcomRadio) -> None:
 @pytest.mark.parametrize("teardown", ["disconnect", "release"])
 async def test_reconnect_releases_old_token_before_first_discovery(
     lan: tuple[IcomRadio, HeldSessionRadio],
-    virtual_clock: VirtualClock,
+    packet_clock: VirtualClock,
     teardown: str,
 ) -> None:
     radio, sim = lan
@@ -123,7 +130,7 @@ async def test_reconnect_releases_old_token_before_first_discovery(
         ctrl._raw_send, civ._raw_send = ctrl_send, civ_send
     assert sim.session_held
     discoveries = sim.discovery_count
-    started = virtual_clock.now
+    started = packet_clock.now
     sim.drop_removes = 1
 
     await _connect(radio)
@@ -131,7 +138,7 @@ async def test_reconnect_releases_old_token_before_first_discovery(
     assert sim.discovery_count == discoveries + 1
     assert sim.login_count == 2
     assert sim.last_release_reason == "token_remove"
-    assert virtual_clock.now - started < 2.0  # not the 86-second hold expiry
+    assert packet_clock.now - started < 2.0  # not the 86-second hold expiry
     assert len(sim.removes) == 3
     assert radio._control_phase._previous_session is None
     for packet in sim.removes:
