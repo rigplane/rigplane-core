@@ -147,6 +147,16 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if self._audio_stream is not None:
             await self._audio_stream.stop_tx()
         self._pcm_tx_fmt = None
+        from rigplane.audio.session import AudioSessionState
+
+        session = getattr(self, "_audio_session", None)
+        if session is not None and session.state is AudioSessionState.RECOVERING:
+            last = session.bus.last_rx_frame_monotonic
+            if (
+                last is None
+                or session._monotonic() - last >= session._rx_liveness_timeout
+            ):
+                self._schedule_audio_silence_repair()
 
     async def _start_tx_stream(self) -> None:
         """Raw TX stream start (the legacy ``start_audio_tx_opus`` body).

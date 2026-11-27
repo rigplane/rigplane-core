@@ -1562,6 +1562,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return
         if reason != "rx_silent":
             return
+        self._schedule_audio_silence_repair()
+
+    def _schedule_audio_silence_repair(self) -> None:
+        """Admit automatic repair against the existing episode and demand."""
         if self.backend_id != "rigplane":
             return
         task = self._audio_silence_repair_task
