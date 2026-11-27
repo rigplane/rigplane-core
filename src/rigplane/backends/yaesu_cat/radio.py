@@ -80,7 +80,6 @@ if TYPE_CHECKING:
     from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
-    from ...runtime.managed_tx_composition import ManagedTxCompositionPort
     from ...types import BandStackRegister, MemoryChannel
     from .poller import YaesuCatPoller
 
@@ -453,11 +452,9 @@ class YaesuCatRadio:
             return
         composition = getattr(self, "_managed_tx_composition", None)
         async with track_transport_open(composition):
-            await self._connect_serial(composition)
+            await self._connect_serial()
 
-    async def _connect_serial(
-        self, composition: ManagedTxCompositionPort | None
-    ) -> None:
+    async def _connect_serial(self) -> None:
         self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
@@ -483,8 +480,6 @@ class YaesuCatRadio:
                 if generation == self._identity_generation:
                     self.last_error = diagnostic
                 raise RadioConnectionError(diagnostic) from cause
-            if composition is not None:
-                composition.note_transport_opened()
             if generation != self._identity_generation:
                 await self._transport.close()
                 return

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import errno
 import json
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -39,6 +38,9 @@ from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
 from test_managed_tx_production_composition import LegacyRadio, RecordingActuator
 from test_yaesu_cat_transport import FakeStreamWriter
+
+
+OWNER_TOKEN = "1" * 64
 
 
 class _Writer:
@@ -193,7 +195,7 @@ def _observe(server: WebServer, value: ObservedPtt) -> None:
 @pytest.mark.parametrize(
     ("scenario", "detach", "expected_disposition", "expected_result"),
     [
-        ("never_attached", True, "not_applicable", "accepted"),
+        ("never_attached", True, None, "pending"),
         ("never_attached", False, None, "pending"),
         ("remote_force_off", False, None, "pending"),
         ("remote_detach", True, None, "pending"),
@@ -223,7 +225,9 @@ async def test_detach_force_off_uses_attachment_history(
         actuator, config_path=tmp_path / "managed-tx.json"
     )
     install_managed_tx_composition(radio, composition)
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, station_owner_token=OWNER_TOKEN)
+    )
     attach_managed_tx_composition(server, composition)
     authority = composition.authority
     await composition.bind_state_store(server.command_state_store)
@@ -242,6 +246,8 @@ async def test_detach_force_off_uses_attachment_history(
     reader, headers = _reader({"operation": "force_off"})
     if detach:
         headers["x-rigplane-release-for-detach"] = "1"
+    if not scenario.startswith("remote_"):
+        headers["x-rigplane-station-owner"] = OWNER_TOKEN
     if scenario == "remote_controller_detach":
         headers["x-rigplane-controller"] = "0" * 64
     remote_peer = scenario in {"remote_force_off", "remote_detach"}
@@ -281,18 +287,19 @@ async def test_detach_force_off_uses_attachment_history(
 @pytest.mark.parametrize(
     "backend", [Ic705SerialRadio, YaesuCatRadio], ids=["icom", "yaesu"]
 )
-@pytest.mark.parametrize("during_retry", [False, True], ids=["idle", "open-in-flight"])
+@pytest.mark.parametrize("retry_state", ["idle", "open-in-flight", "cancelled"])
 @virtual_clock
 async def test_detach_force_off_during_first_serial_open(
-    clock, tmp_path, monkeypatch, backend, during_retry
+    clock, tmp_path, monkeypatch, backend, retry_state
 ) -> None:
     port_present = False
     port_opened = asyncio.Event()
     finish_open = asyncio.Event()
+    real_open = serial_open._open_with_idle_lines
 
-    async def open_port(**_kwargs):
+    async def open_port(**kwargs):
         if not port_present:
-            raise FileNotFoundError(errno.ENOENT, "missing test port")
+            return await real_open(**kwargs)
         wire = FakeStreamWriter()
         # The fake port is open, but the backend is still awaiting its reader/writer.
         port_opened.set()
@@ -300,12 +307,14 @@ async def test_detach_force_off_during_first_serial_open(
         return asyncio.StreamReader(), wire
 
     monkeypatch.setattr(serial_open, "_open_with_idle_lines", open_port)
-    radio = backend(device="test-serial-port")
+    radio = backend(device=str(tmp_path / "missing-test-port"))
     composition = ManagedTxComposition(
         RecordingActuator(), config_path=tmp_path / "managed-tx.json"
     )
     install_managed_tx_composition(radio, composition)
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, station_owner_token=OWNER_TOKEN)
+    )
     attach_managed_tx_composition(server, composition)
     await composition.bind_state_store(server.command_state_store)
     reopen = (
@@ -319,12 +328,19 @@ async def test_detach_force_off_during_first_serial_open(
         assert radio.serial_open_error.startswith("serial_not_found")
         port_present = True
 
-        if during_retry:
+        if retry_state != "idle":
             retry = asyncio.create_task(reopen())
             await clock.elapse(0)
             assert port_opened.is_set()
             assert not retry.done()
             assert radio.control_connected is False
+            if retry_state == "cancelled":
+                retry.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await retry
+                port_present = False
+                with pytest.raises(RadioConnectionError):
+                    await reopen()
 
         assert (
             project_observed_ptt(server.command_state_store.snapshot())
@@ -332,6 +348,7 @@ async def test_detach_force_off_during_first_serial_open(
         )
         reader, headers = _reader({"operation": "force_off"})
         headers["x-rigplane-release-for-detach"] = "1"
+        headers["x-rigplane-station-owner"] = OWNER_TOKEN
         writer = _Writer()
         await server._handle_http(
             writer,  # type: ignore[arg-type]
@@ -343,14 +360,15 @@ async def test_detach_force_off_during_first_serial_open(
         assert writer.status == 202
         projection = await composition.authority.snapshot()
         assert projection.provider_generation is None
-        assert projection.state.release_required is during_retry
-        if during_retry:
+        assert projection.state.release_required is (retry_state != "idle")
+        if retry_state != "idle":
             assert writer.payload["result"] == "pending"
             assert "releaseDisposition" not in writer.payload
-            finish_open.set()
-            await clock.elapse(0)
-            assert radio.control_connected is True
-            assert (await composition.authority.snapshot()).state.release_required
+            if retry_state == "open-in-flight":
+                finish_open.set()
+                await clock.elapse(0)
+                assert radio.control_connected is True
+                assert (await composition.authority.snapshot()).state.release_required
         else:
             assert writer.payload["result"] == "accepted"
             assert writer.payload["releaseDisposition"] == "not_applicable"

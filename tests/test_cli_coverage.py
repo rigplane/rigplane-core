@@ -1404,6 +1404,8 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
         monkeypatch.delenv("RIGPLANE_AUTH_TOKEN", raising=False)
     else:
         monkeypatch.setenv("RIGPLANE_AUTH_TOKEN", environment)
+    owner_token = "1" * 64
+    monkeypatch.setenv("RIGPLANE_STATION_OWNER_TOKEN", owner_token)
     args = _build_parser().parse_args(command)
     args.web_rigctld = False
     captured = {}
@@ -1422,6 +1424,8 @@ async def test_web_launch_without_application_auth(command, environment, monkeyp
     cfg = captured["config"]
     managed = command != ["web"]
     assert cfg.auth_token == ""
+    assert cfg.station_owner_token == (owner_token if managed else "")
+    assert owner_token not in repr(cfg)
     assert cfg.host == ("127.0.0.1" if managed else "0.0.0.0")
     assert cfg.emit_startup_event is managed
     # Both CLI routes that serve the web UI ("web" and "station") arm the

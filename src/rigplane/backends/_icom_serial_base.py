@@ -555,8 +555,6 @@ class _IcomSerialRadioBase(CoreRadio):
                 self.last_error = f"Failed to connect serial session: {diagnostic}"
                 self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
-        if self._managed_tx_composition is not None:
-            self._managed_tx_composition.note_transport_opened()
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None
@@ -763,8 +761,6 @@ class _IcomSerialRadioBase(CoreRadio):
                 self.last_error = f"Failed to reconnect serial session: {diagnostic}"
                 self.serial_open_error = diagnostic
             raise ConnectionError(message) from exc
-        if self._managed_tx_composition is not None:
-            self._managed_tx_composition.note_transport_opened()
         if self._civ_epoch != attempt_epoch:
             return
         self.last_error = None

@@ -4844,6 +4844,9 @@ async def _cmd_web(
     managed_runtime = getattr(args, "managed_runtime", False)
     if managed_runtime:
         config_kwargs["emit_startup_event"] = True
+        config_kwargs["station_owner_token"] = os.environ.get(
+            "RIGPLANE_STATION_OWNER_TOKEN", ""
+        )
 
     tls_cert = getattr(args, "tls_cert", "")
     tls_key = getattr(args, "tls_key", "")
@@ -4921,7 +4924,11 @@ async def _cmd_web(
     if isinstance(_radio_model, str) and _radio_model:
         config_kwargs["radio_model"] = _radio_model
     config_kwargs["await_initial_state"] = True
-    config = WebConfig(**config_kwargs)
+    try:
+        config = WebConfig(**config_kwargs)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     _print_serial_identity_no_response(radio)
     _print_serial_baud_notice(radio)
     server = WebServer(radio, config)

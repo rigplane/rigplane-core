@@ -24,7 +24,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.testing.timing import virtual_clock
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
-from test_managed_tx_http_route import _reader, _Writer
+from test_managed_tx_http_route import OWNER_TOKEN, _reader, _Writer
 from test_managed_tx_production_composition import RecordingActuator
 
 if os.name != "posix":
@@ -45,8 +45,10 @@ class _TerminalIO:
         self.configurations = []
         self.line_writes = []
         self.readers = set()
-        self.available = True
+        self.open_error = None
+        self.open_attempts = 0
         self.fail_configuration = None
+        self.set_attributes_error = None
         self.close_failure = None
         self.close_observed = {}
         self.error = serialposix.termios.error(errno.EIO, "injected terminal failure")
@@ -69,8 +71,9 @@ class _TerminalIO:
     def open(self, path, flags):
         assert path == self.port
         assert flags == os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK
-        if not self.available:
-            raise FileNotFoundError(errno.ENOENT, "missing test port")
+        self.open_attempts += 1
+        if self.open_error is not None:
+            raise self.open_error
         # Observe the real caller without replacing Serial construction/open.
         caller = sys._getframe(1)
         assert caller.f_code is serialposix.Serial.open.__code__
@@ -116,6 +119,8 @@ class _TerminalIO:
     def tcsetattr(self, fd, when, attributes):
         assert fd in self.owned
         assert when == serialposix.termios.TCSANOW
+        if self.set_attributes_error is not None:
+            raise self.set_attributes_error
         self.attributes = attributes[:6] + [attributes[6][:]]
 
     def tcflush(self, fd, queue):
@@ -247,17 +252,39 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
 @pytest.mark.parametrize(
     "backend", [Ic705SerialRadio, YaesuCatRadio], ids=["icom", "yaesu"]
 )
+@pytest.mark.parametrize(
+    "retry_outcome",
+    [
+        "absent",
+        "permission_denied",
+        "initial_config",
+        "initial_config_enoent",
+        "wrap",
+        "busy",
+        "timeout",
+        "unknown",
+        "proxy",
+    ],
+)
 @virtual_clock
-async def test_detach_after_first_serial_wrap_failure_keeps_release_debt(
-    clock, terminal, tmp_path, backend
+async def test_detach_uses_every_serial_open_outcome(
+    clock, terminal, tmp_path, backend, retry_outcome
 ):
-    terminal.available = False
+    terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
     radio = backend(device=terminal.port)
     composition = ManagedTxComposition(
         RecordingActuator(), config_path=tmp_path / "managed-tx.json"
     )
     install_managed_tx_composition(radio, composition)
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server = WebServer(
+        radio,
+        WebConfig(
+            host="127.0.0.1",
+            port=0,
+            station_owner_token=OWNER_TOKEN,
+            trusted_origins=("https://station.example",),
+        ),
+    )
     attach_managed_tx_composition(server, composition)
     await composition.bind_state_store(server.command_state_store)
     try:
@@ -266,17 +293,48 @@ async def test_detach_after_first_serial_wrap_failure_keeps_release_debt(
         radio.start_reconnect_recovery()
         assert not terminal.opened
 
-        terminal.available = True
-        # Fail the termios reconfiguration inside real SerialTransport setup.
-        terminal.fail_configuration = 2
-        if isinstance(radio, Ic705SerialRadio):
-            with pytest.raises(RadioConnectionError, match="Could not configure port"):
-                await radio.soft_reconnect()
-        else:
-            with pytest.raises(CatTransportError, match="Could not configure port"):
-                await radio.connect()
-        assert [config[0] for config in terminal.configurations] == [False, True]
-        assert terminal.opened and not terminal.owned
+        if retry_outcome == "busy":
+            terminal.open_error = OSError(errno.EBUSY, "busy test port")
+        elif retry_outcome == "timeout":
+            terminal.open_error = TimeoutError(
+                errno.ETIMEDOUT, "timed out opening test port"
+            )
+        elif retry_outcome == "unknown":
+            terminal.open_error = RuntimeError("unknown test error")
+        elif retry_outcome == "permission_denied":
+            terminal.open_error = PermissionError(errno.EACCES, "refused test port")
+        elif retry_outcome not in {"absent", "proxy"}:
+            terminal.open_error = None
+            if retry_outcome == "initial_config_enoent":
+                terminal.set_attributes_error = FileNotFoundError(
+                    errno.ENOENT, "port vanished during configuration"
+                )
+            else:
+                terminal.fail_configuration = 2 if retry_outcome == "wrap" else 1
+
+        reopen = (
+            radio.soft_reconnect
+            if isinstance(radio, Ic705SerialRadio)
+            else radio.connect
+        )
+        with pytest.raises((RadioConnectionError, CatTransportError)):
+            await reopen()
+        assert terminal.open_attempts == 2
+        expected_configurations = {
+            "initial_config": [False],
+            "initial_config_enoent": [False],
+            "wrap": [False, True],
+        }
+        assert [config[0] for config in terminal.configurations] == (
+            expected_configurations.get(retry_outcome, [])
+        )
+        assert not terminal.owned
+
+        # A subsequent proven failure cannot erase uncertainty from a prior open.
+        terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
+        with pytest.raises(RadioConnectionError):
+            await reopen()
+        assert terminal.open_attempts == 3
         assert radio.conn_state.value == "reconnecting"
         assert radio.serial_open_error is not None
         assert radio.control_connected is False
@@ -288,6 +346,12 @@ async def test_detach_after_first_serial_wrap_failure_keeps_release_debt(
 
         reader, headers = _reader({"operation": "force_off"})
         headers["x-rigplane-release-for-detach"] = "1"
+        if retry_outcome == "proxy":
+            headers["host"] = "127.0.0.1:8080"
+            headers["origin"] = "https://station.example"
+            headers["x-forwarded-for"] = "192.0.2.1"
+        else:
+            headers["x-rigplane-station-owner"] = OWNER_TOKEN
         writer = _Writer()
         await server._handle_http(
             writer,  # type: ignore[arg-type]
@@ -297,11 +361,34 @@ async def test_detach_after_first_serial_wrap_failure_keeps_release_debt(
             reader=reader,
         )
         assert writer.status == 202
-        assert writer.payload["result"] == "pending"
-        assert "releaseDisposition" not in writer.payload
         projection = await composition.authority.snapshot()
         assert projection.provider_generation is None
-        assert projection.state.release_required
+        if retry_outcome in {"absent", "permission_denied"}:
+            assert writer.payload["result"] == "accepted"
+            assert writer.payload["releaseDisposition"] == "not_applicable"
+            assert not projection.state.release_required
+        else:
+            assert writer.payload["result"] == "pending"
+            assert "releaseDisposition" not in writer.payload
+            assert projection.state.release_required
+        if retry_outcome == "proxy":
+            # An uncredentialed proxy request leaves serial recovery admitted.
+            with pytest.raises(RadioConnectionError):
+                await reopen()
+            assert terminal.open_attempts == 4
+
+            reader, headers = _reader({"operation": "force_off"})
+            writer = _Writer("192.0.2.1")
+            server._controller.mode = "remote"
+            await server._handle_http(
+                writer,  # type: ignore[arg-type]
+                "POST",
+                "/api/v1/managed-transmit/command",
+                headers=headers,
+                reader=reader,
+            )
+            assert writer.status == 202
+            assert writer.payload["result"] == "pending"
     finally:
         await radio.disconnect()
         termination = asyncio.Event()

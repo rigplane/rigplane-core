@@ -25,6 +25,7 @@ import ctypes
 import ctypes.util
 import functools
 import gzip as _gzip
+import hmac
 import ipaddress
 import binascii
 import hashlib
@@ -1111,6 +1112,7 @@ class WebConfig:
     # Band plan data directory (also holds the persisted ``_config.toml``);
     # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
     band_plans_dir: pathlib.Path | None = None
+    station_owner_token: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if self.sdr_config is not None:
@@ -1125,6 +1127,11 @@ class WebConfig:
             raise ValueError(
                 "Application authentication was removed; auth_token must be empty."
             )
+        if self.station_owner_token and not (
+            len(self.station_owner_token) == 64
+            and all(char in "0123456789abcdef" for char in self.station_owner_token)
+        ):
+            raise ValueError("station owner token must be 64 lowercase hex digits")
         validate_trusted_origins(self.trusted_origins)
         if self.max_controller_sessions_per_ip < 1:
             raise ValueError("max_controller_sessions_per_ip must be >= 1")
@@ -4166,7 +4173,11 @@ class WebServer:
                 name = key.decode("ascii", errors="replace").strip().lower()
                 text = value.decode("ascii", errors="replace").strip()
                 if (
-                    name in ("x-rigplane-controller", "sec-websocket-protocol")
+                    name in (
+                        "x-rigplane-controller",
+                        "x-rigplane-station-owner",
+                        "sec-websocket-protocol",
+                    )
                     and name in headers
                 ):
                     text = headers[name] + "," + text
@@ -5919,10 +5930,21 @@ class WebServer:
         )
 
     def _claim_managed_tx_detach_before_open(
-        self, authority: ManagedTxAuthority, writer: asyncio.StreamWriter
+        self,
+        authority: ManagedTxAuthority,
+        writer: asyncio.StreamWriter,
+        owner_token: str,
     ) -> bool:
         from .web_startup import _serial_port_unopened  # noqa: TID251
 
+        expected = self._config.station_owner_token
+        if (
+            not expected
+            or len(owner_token) != len(expected)
+            or not owner_token.isascii()
+            or not hmac.compare_digest(owner_token, expected)
+        ):
+            return False
         if writer.get_extra_info("rigplane_api_channel") is True:
             return False
         peer = writer.get_extra_info("peername")
@@ -6032,7 +6054,10 @@ class WebServer:
                 ):
                     submission = await authority.submit_force_off(
                         binding_never_attached=functools.partial(
-                            self._claim_managed_tx_detach_before_open, authority, writer
+                            self._claim_managed_tx_detach_before_open,
+                            authority,
+                            writer,
+                            (headers or {}).get("x-rigplane-station-owner", ""),
                         )
                     )
                 else:

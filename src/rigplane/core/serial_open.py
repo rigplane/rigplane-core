@@ -31,10 +31,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# A tracked attempt shares this evidence with its opener task (asyncio.wait_for).
-serial_port_opened: ContextVar[asyncio.Event | None] = ContextVar(
-    "serial_port_opened", default=None
+# The Icom opener runs in a child task under asyncio.wait_for.
+record_serial_open_refusal: ContextVar[Callable[[OSError], None] | None] = ContextVar(
+    "record_serial_open_refusal", default=None
 )
+
+_ABSENT_PORT_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ENXIO}
+_REFUSED_OPEN_ERRNOS = _ABSENT_PORT_ERRNOS | {errno.EACCES, errno.EPERM}
 
 _WINDOWS_OPEN_CODES = {
     5: "serial_busy",
@@ -80,10 +83,7 @@ def serial_open_diagnostic(error: BaseException) -> str:
             code = "serial_permission_denied"
         elif number in {errno.EBUSY, errno.EAGAIN}:
             code = "serial_busy"
-        elif isinstance(current, FileNotFoundError) or number in {
-            errno.ENOENT,
-            errno.ENODEV,
-        }:
+        elif isinstance(current, FileNotFoundError) or number in _ABSENT_PORT_ERRNOS:
             code = "serial_not_found"
         else:
             if number == errno.ETIMEDOUT:
@@ -98,6 +98,27 @@ def serial_open_diagnostic(error: BaseException) -> str:
         name = errno.errorcode.get(number) if isinstance(number, int) else None
         return f"{code}: {name}" if name else code
     return timeout or "serial_unknown"
+
+
+def _is_os_open_refusal(error: OSError, url: str) -> bool:
+    # pyserial uses this prefix only around os.open/CreateFile. Errno alone
+    # cannot distinguish a failed OS open from a failed ioctl on an open port.
+    prefix = f"could not open port {url}: "
+    if error.errno is not None:
+        cause = error.__context__
+        return (
+            error.errno in _REFUSED_OPEN_ERRNOS
+            and isinstance(cause, OSError)
+            and cause.errno == error.errno
+            and isinstance(error.strerror, str)
+            and error.strerror.startswith(prefix)
+        )
+    message = str(error)
+    # Windows also reports access denied for ports held exclusively.
+    return message == f"{prefix}No such file or directory" or (
+        message.startswith(f"could not open port {url!r}: ")
+        and _windows_open_code(error) == "serial_not_found"
+    )
 
 
 async def open_serial_port(
@@ -183,10 +204,18 @@ def _configure_serial_idle_lines(url: str, *, baudrate: int, **kwargs: Any) -> A
     instance = serial.serial_for_url(url, baudrate=baudrate, do_not_open=True, **kwargs)
     instance.dtr = False
     instance.rts = False
-    instance.open()
-    opened = serial_port_opened.get()
-    if opened is not None:
-        opened.set()
+    try:
+        instance.open()
+    except serial.SerialException as error:
+        record_refusal = record_serial_open_refusal.get()
+        if (
+            record_refusal is not None
+            and type(instance) is serial.Serial
+            and type(error) is serial.SerialException
+            and _is_os_open_refusal(error, url)
+        ):
+            record_refusal(error)
+        raise
     return instance
 
 

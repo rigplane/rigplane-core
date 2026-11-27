@@ -26,8 +26,9 @@ diagnostic/experimental.
 
 ## Application authentication removal
 
-Core HTTP and WebSocket clients that can reach the listener need no application
-credential. Bearer headers and query tokens no longer authenticate requests.
+Core HTTP and WebSocket clients that can reach the listener need no general
+application credential. Bearer headers and query tokens no longer authenticate
+requests.
 This changes the previous token-protected route semantics without changing the
 `/api/v1` route names. See `src/rigplane/web/web_routing.py: dispatch_http_request`
 and `src/rigplane/web/server.py: WebServer._handle_websocket`.
@@ -138,13 +139,16 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
-An owner preparing to stop its station can submit `force_off` over loopback HTTP
-with `X-Rigplane-Release-For-Detach: 1` and no controller key. The HTTP 202
-receipt can include `releaseDisposition: "not_applicable"` when Core has
-evidence that the serial port never opened for that binding, no open is in
-progress, and there is no release debt. Core then prevents retries from
-opening the port for that binding. Remote clients can still submit ordinary
-`force_off`.
+The managed-runtime supervisor can authorize detach by providing a fresh
+256-bit secret as 64 lowercase hex digits in `RIGPLANE_STATION_OWNER_TOKEN`
+at launch. To request detach, send `force_off` directly over loopback HTTP
+with `X-Rigplane-Release-For-Detach: 1`, the matching
+`X-Rigplane-Station-Owner` credential, and no controller key. The HTTP 202
+receipt can include `releaseDisposition: "not_applicable"` when at least one
+serial open was attempted, every attempt proves the OS refused to open the
+device, no open is in progress, and no release debt exists. Core then
+prevents further opens for that binding. Ordinary `force_off` remains
+available without a station-owner credential.
 For an absent or unrecognized disposition, use the existing managed-transmit
 status and observed PTT to confirm release.
 

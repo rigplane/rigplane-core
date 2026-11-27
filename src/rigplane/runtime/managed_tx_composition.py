@@ -12,7 +12,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 from rigplane.core.exceptions import ConnectionError
 from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
-from rigplane.core.serial_open import serial_port_opened
+from rigplane.core.serial_open import record_serial_open_refusal
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
@@ -79,8 +79,6 @@ class ManagedTxCompositionPort(Protocol):
     async def bind_state_store(self, store: StateStore) -> None: ...
 
     def transport_open_attempt(self) -> AbstractAsyncContextManager[None]: ...
-
-    def note_transport_opened(self) -> None: ...
 
     async def transport_ready(self, identity: object) -> None: ...
 
@@ -169,7 +167,7 @@ class ManagedTxComposition:
         self._unsubscribe: Callable[[], None] | None = None
         self._observation_generation: int | None = None
         self._live_transport_identity: object | None = None
-        self._transport_may_have_opened = False
+        self._transport_may_have_opened: bool | None = None
         self._transport_opens_in_flight = 0
         self._detach_claimed_before_open = False
         self._stale_transport_identities: list[object] = []
@@ -239,27 +237,38 @@ class ManagedTxComposition:
     async def transport_open_attempt(self) -> AsyncIterator[None]:
         if self._detach_claimed_before_open:
             raise ConnectionError("Serial port open refused for a detaching binding")
-        opened = asyncio.Event()
-        token = serial_port_opened.set(opened)
+        task = asyncio.current_task()
+        refusal: OSError | None = None
+
+        def record_refusal(error: OSError) -> None:
+            nonlocal refusal
+            refusal = error
+
+        token = record_serial_open_refusal.set(record_refusal)
         self._transport_opens_in_flight += 1
         try:
             yield
-        except asyncio.CancelledError:
-            # Cancellation can arrive after the port opened but before handoff.
-            self._transport_may_have_opened = True
+        except BaseException as error:
+            # Both backends preserve the original error as their explicit cause.
+            if (
+                isinstance(error, Exception)
+                and (task is None or not task.cancelling())
+                and refusal is not None
+                and (error is refusal or error.__cause__ is refusal)
+            ):
+                if self._transport_may_have_opened is None:
+                    self._transport_may_have_opened = False
+            else:
+                self._transport_may_have_opened = True
             raise
+        else:
+            self._transport_may_have_opened = True
         finally:
-            serial_port_opened.reset(token)
-            if opened.is_set():
-                self.note_transport_opened()
+            record_serial_open_refusal.reset(token)
             self._transport_opens_in_flight -= 1
 
-    def note_transport_opened(self) -> None:
-        # The serial open edge precedes identity checks and provider publication.
-        self._transport_may_have_opened = True
-
     async def transport_ready(self, identity: object) -> None:
-        self.note_transport_opened()
+        self._transport_may_have_opened = True
         async with self._transition_lock:
             if self._shutdown_task is not None:
                 return
@@ -276,10 +285,10 @@ class ManagedTxComposition:
             await self._ensure_current_locked()
 
     def claim_detach_before_transport_open(self, store: StateStore) -> bool:
-        """Close open admission if this binding has no actual or pending open."""
+        """Close admission once every attempt has a proven OS open refusal."""
         if (
             self._state_store is not store
-            or self._transport_may_have_opened
+            or self._transport_may_have_opened is not False
             or self._transport_opens_in_flight
         ):
             return False
