@@ -100,6 +100,11 @@ class SerialLinkHealth:
         self.no_reply = False
         self.reset_poll_evidence()
 
+    def end_session(self) -> None:
+        self.generation += 1
+        self.record_response()
+        self.no_reply_note = ""
+
     def record_open(self) -> None:
         """Reset I/O failure; no-reply recovery still needs a radio response."""
         self.generation += 1

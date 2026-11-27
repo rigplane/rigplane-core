@@ -441,7 +441,7 @@ class YaesuCatRadio:
         """
         if (
             self._connection_identity is not None
-            and self._transport.connected
+            and self._transport.io_available
             and self._identity_permits_commands()
         ):
             return
@@ -502,7 +502,7 @@ class YaesuCatRadio:
         if generation != self._identity_generation:
             return
         if answered is None:
-            if not self._transport.connected:
+            if not self._identity_stream_available():
                 # No live port exists to hold — the open did not survive
                 # the probe. This connect must not report success.
                 self._connection_identity = None
@@ -538,6 +538,9 @@ class YaesuCatRadio:
         self._waiting_for_serial_port = False
         self.last_error = None
         self._transport.last_valid_frame_monotonic = None
+        health = getattr(self._transport, "_link_health", None)
+        if health is not None:
+            health.end_session()
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
@@ -651,11 +654,17 @@ class YaesuCatRadio:
         task = self._identity_reread_task
         return task is not None and not task.done()
 
+    def _identity_stream_available(self) -> bool:
+        health = getattr(self._transport, "_link_health", None)
+        return self._transport.io_available and not (
+            health is not None and health.io_failed
+        )
+
     def _identity_hold_owns_open_link(self) -> bool:
         """Whether the identity phase owns the live open port."""
         return (
             self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         )
 
@@ -699,7 +708,7 @@ class YaesuCatRadio:
                 start=start,
                 retune=transport.set_baudrate,
                 heard_at=heard_at,
-                usable=lambda: not retired() and transport.connected,
+                usable=lambda: not retired() and self._identity_stream_available(),
             )
             if found is not None and answered is not None:
                 logger.info(
@@ -2107,7 +2116,7 @@ class YaesuCatRadio:
         if (
             identity is not None
             and self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         ):
             if on and identity.status is RadioIdentityStatus.NO_RESPONSE:
@@ -3628,11 +3637,14 @@ class YaesuCatRadio:
             msg_type: Message type character.
             mem: CW message text to send.
         """
+        if mem and mem != "0":
+            require_keying_control(self.control_connected)
         if not mem or self._local_tx_work is None:
             await self._write("send_cw", type=msg_type, mem=mem)
             return
 
         async def write(is_current: Callable[[], bool]) -> None:
+            require_keying_control(self.control_connected)
             await self._write("send_cw", type=msg_type, mem=mem, is_current=is_current)
 
         await self._local_tx_work.run(write)
@@ -4097,12 +4109,16 @@ class YaesuCatRadio:
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
         """Write native AC state to the explicitly selected source and type."""
+        if state == 3:
+            require_keying_control(self.control_connected)
         params = {"src": str(src), "type": str(typ), "state": str(state)}
         if state == 0 or self._local_tx_work is None:
             await self._write("set_tuner", **params)
             return
 
         async def write(is_current: Callable[[], bool]) -> None:
+            if state == 3:
+                require_keying_control(self.control_connected)
             await self._write("set_tuner", is_current=is_current, **params)
 
         await self._local_tx_work.run(write)
@@ -4364,11 +4380,16 @@ class YaesuCatRadio:
         if type(value) is not int or value not in (0, 1, 2):
             raise ValueError("Tuner value must be 0, 1, or 2")
 
+        if value == 2:
+            require_keying_control(self.control_connected)
+
         async def write(fence_current: Callable[[], bool]) -> None:
             try:
                 src, typ, _, route_current = await self._read_atu_route()
             except (ValueError, KeyError) as exc:
                 raise CommandError(f"Cannot acquire ATU route: {exc}") from exc
+            if value == 2:
+                require_keying_control(self.control_connected)
             await self._write(
                 "set_tuner",
                 src=src,
@@ -4410,6 +4431,7 @@ class YaesuCatRadio:
         )
 
         admit_cw_text(self.profile, text)
+        require_keying_control(self.control_connected)
         spec = self.profile.cw_text
         if spec.memory_channel is None or not 1 <= spec.memory_channel <= 5:
             # KM P1 is one digit, keyer memory 1-5 (printed p.17).
@@ -4440,6 +4462,7 @@ class YaesuCatRadio:
             # it before it can write KM or KY.
             async with self._cw_text_lock:
                 try:
+                    require_keying_control(self.control_connected)
                     await self._write(
                         "write_keyer_memory",
                         chan=channel,
@@ -4449,6 +4472,7 @@ class YaesuCatRadio:
                     # A stale fence makes this write raise "no longer
                     # current", the same as a stale chunk: KY never plays
                     # after a force-off.
+                    require_keying_control(self.control_connected)
                     await self._write(
                         "send_cw", type=msg_type, mem=channel, is_current=current
                     )

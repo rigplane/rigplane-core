@@ -502,7 +502,11 @@ class _IcomSerialRadioBase(CoreRadio):
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        if self.connected:
+        if self.connected or (
+            self._conn_state == RadioConnectionState.CONNECTED
+            and self._serial_identity_answered_for_current_link()
+            and self._serial_io_available()
+        ):
             return
         if self._identity_phase_owns_open_link():
             # MOR-3071: the identity read (or its re-read) already owns
@@ -645,6 +649,7 @@ class _IcomSerialRadioBase(CoreRadio):
         if self._conn_state != RadioConnectionState.CONNECTED:
             self._advance_civ_generation("serial-disconnect")
         self.serial_open_error = None
+        self._serial_link_health.end_session()
         # MOR-3436: move the owner-stop counter on EVERY teardown branch.
         # The two early returns below never reach ``CoreRadio.disconnect``
         # (which increments it itself), and the connect/soft_reconnect
@@ -871,21 +876,18 @@ class _IcomSerialRadioBase(CoreRadio):
             RadioIdentityStatus.IDENTITY_MISMATCH,
         )
 
-    def _identity_phase_owns_open_link(self) -> bool:
-        """Whether the identity read (or its re-read) owns the open link.
+    def _serial_io_available(self) -> bool:
+        link = self._serial_civ_link
+        if link is None:
+            return self._serial_session.ready
+        return bool(getattr(link, "io_available", self._serial_session.ready))
 
-        True while the identity status is ``checking``/``no_response``,
-        the session is still *ready* — ``SerialCivLink`` keeps
-        ``connected`` after a recoverable error while ``healthy`` drops,
-        so ``connected`` alone cannot tell a live link from a dead one
-        (MOR-3071 round 2) — and a task is actually driving the hold:
-        its gate awaiting an answer, or its re-read task alive. A status
-        left behind by a crashed gate or an abandoned hold owns nothing
-        and must not block recovery (MOR-3071 round 4).
-        """
+    def _identity_phase_owns_open_link(self) -> bool:
+        """Whether an active identity phase owns the open stream."""
         return (
             self._identity_hold_status_active()
-            and self._serial_session.ready
+            and self._serial_io_available()
+            and not self._serial_link_health.io_failed
             and self._serial_identity_hold_has_owner()
         )
 
@@ -921,22 +923,11 @@ class _IcomSerialRadioBase(CoreRadio):
         return epoch is not None and epoch == self._civ_epoch
 
     def _power_on_allowed_in_no_response(self) -> bool:
-        """Whether POWER ON may pass while the connect is held (MOR-3071).
-
-        The narrowest allowance past ``_check_connected``: POWER ON only,
-        only while the identity is ``no_response`` and the hold actually
-        owns a READY open link (MOR-3078: the same readiness the hold
-        predicate requires — a session whose ``connected`` lingers while
-        ``ready`` dropped owns nothing, and POWER ON must not go out on
-        it) — MOR-2841's promise that Power ON from the UI stays
-        available for a switched-off radio. Everything else stays
-        refused.
-        """
+        """Allow POWER ON while a no-response identity hold owns the stream."""
         identity = self._connection_identity
         return (
             identity is not None
             and identity.status is RadioIdentityStatus.NO_RESPONSE
-            and self._serial_session.connected
             and self._identity_phase_owns_open_link()
         )
 
@@ -1153,7 +1144,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 start=start,
                 retune=self._retune_serial_link,
                 heard_at=heard_at,
-                usable=lambda: not retired() and link.connected and link.healthy,
+                usable=lambda: not retired() and self._serial_io_available(),
             )
             return None if retired() else payload
         finally:
