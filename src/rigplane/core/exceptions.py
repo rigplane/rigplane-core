@@ -7,6 +7,7 @@ __all__ = [
     "StaleBeforeWireError",
     "AuthenticationError",
     "CommandError",
+    "CatReplyValidationError",
     "BackgroundSendDropped",
     "CommandRejectedError",
     "ModeReadbackError",
@@ -64,6 +65,27 @@ class AuthenticationError(RigplaneError):
 
 class CommandError(RigplaneError):
     """Raised when a CI-V command fails or returns an error."""
+
+
+class CatReplyValidationError(CommandError):
+    """A CAT reply that parsed but is semantically invalid.
+
+    The radio answered with a well-formed frame whose content cannot be
+    true: an enum code outside the manual's domain, a receiver digit that
+    does not match the addressed receiver, a tone index outside the
+    profile's resolved catalog. The wire works and the radio works — this
+    one answer is unusable, so the field is marked unavailable with a
+    reason while its siblings keep publishing.
+
+    A subclass of :class:`CommandError`, so every existing ``except
+    CommandError`` handler still catches it unchanged; only readers of the
+    field-level observation contract distinguish it. It is deliberately
+    NOT raised for transport or connection failures (those are
+    ``ConnectionError``/``CatTransportError`` and must still propagate to
+    the poller's reconnect path) nor for programming/config errors
+    (missing profile spec, out-of-range write argument), which stay plain
+    ``CommandError`` and stay loud.
+    """
 
 
 class BackgroundSendDropped(CommandError):
