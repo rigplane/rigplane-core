@@ -39,9 +39,73 @@ function findEpisode(current, history) {
   return firstRed ? {firstRed: firstRedPush || firstRed, green} : null;
 }
 
-function introducingMerge(sha, pulls = []) {
-  const matches = pulls.filter(pr => pr?.merged_at && pr.merge_commit_sha === sha && pr.base?.ref === 'main');
+function introducingMerge(sha, pulls) {
+  const matches = (pulls || []).filter(pr => pr?.merged_at && pr.merge_commit_sha === sha && pr.base?.ref === 'main');
   return matches.length === 1 ? matches[0] : null;
+}
+
+async function attribution(github, repo, first, green, hasRedPush) {
+  const range = `${green?.head_sha || 'unknown baseline'}...${first.head_sha}`;
+  const details = [`SHA range: ${range}.`];
+  const merges = new Map();
+  const cache = new Map();
+  let lookupError;
+  async function pullsAt(sha) {
+    if (!cache.has(sha)) cache.set(sha, await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+      ...repo, commit_sha: sha, per_page: 100,
+    }));
+    return cache.get(sha).filter(pr => pr?.merged_at && pr.merge_commit_sha === sha && pr.base?.ref === 'main');
+  }
+  // A range can contain a queue batch, or no merge at all (direct push/revert).
+  // Attribution uncertainty must not suppress the incident and its failure evidence.
+  try {
+    const commits = [];
+    if (green && green.head_sha !== first.head_sha) {
+      for await (const response of github.paginate.iterator(github.rest.repos.compareCommitsWithBasehead, {
+        ...repo, basehead: range, per_page: 100,
+      })) commits.push(...response.data.commits);
+    }
+    for (const sha of new Set([...commits.map(commit => commit.sha), first.head_sha])) {
+      for (const pr of await pullsAt(sha)) merges.set(pr.number, pr);
+    }
+    // A queue batch can associate several PRs with the pushed SHA while each
+    // PR retains a different merge SHA. Keep candidates inside this episode's
+    // time window; an old associated PR on a revert is not a new batch.
+    const associated = (cache.get(first.head_sha) || []).filter(pr => pr?.base?.ref === 'main'
+      && green && Date.parse(pr.merged_at) > Date.parse(green.updated_at)
+      && Date.parse(pr.merged_at) <= Date.parse(first.updated_at));
+    if (associated.length > 1) for (const pr of associated) merges.set(pr.number, pr);
+  } catch (error) { lookupError = `Attribution lookup unavailable (HTTP ${error.status || 'unknown'}).`; }
+  const candidates = [...merges.values()].sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at) || a.number - b.number);
+  const pr = !lookupError && hasRedPush && candidates.length === 1 ? introducingMerge(first.head_sha, candidates) : null;
+  if (!lookupError && hasRedPush && candidates.length > 1) details.push(`Introducing merge batch: PRs ${candidates.map(item => `#${item.number}`).join(', ')}.`);
+  else if (pr) details.push(`First red merge: #${pr.number} (${first.head_sha}); GitHub author: ${pr.user?.login ? `@${pr.user.login}` : 'unknown'}.`);
+  else details.push('Introducing merge unknown; diagnose the SHA range.');
+  if (!hasRedPush) details.push('No red push run found in the available episode history; the range ends at the first observed red SHA.');
+  let lastMerge = candidates.at(-1);
+  let owner;
+  try {
+    // Direct pushes and reverts have no matching PR: walk ancestors to the most
+    // recent merge instead of assigning the reverted PR's author or the pusher.
+    if (!lastMerge) {
+      for await (const response of github.paginate.iterator(github.rest.repos.listCommits, {
+        ...repo, sha: first.head_sha, per_page: 100,
+      })) {
+        for (const commit of response.data) {
+          const pulls = (await pullsAt(commit.sha)).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at) || a.number - b.number);
+          if (pulls.length) { lastMerge = pulls.at(-1); break; }
+        }
+        if (lastMerge) break;
+      }
+    }
+    if (lastMerge) {
+      const response = await github.rest.pulls.get({...repo, pull_number: lastMerge.number});
+      owner = response.data.merged_by?.login;
+    }
+  } catch (error) { lookupError = `Attribution lookup unavailable (HTTP ${error.status || 'unknown'}).`; }
+  details.push(owner ? `Owner: @${owner} (last merger).` : 'Owner unknown: no last-merger evidence available.');
+  if (lookupError) details.push(lookupError);
+  return {details, author: pr?.user?.login, owner};
 }
 
 async function publish(issues, input, dryRun = false) {
@@ -94,13 +158,29 @@ function githubIssuesClient(github, repo) {
   };
 }
 
-async function run({github, context, core, env = process.env}) {
+async function run({github, context, core, env = process.env, workflowPaths = PATHS, jobNamesByWorkflow = {}}) {
   const repo = context.repo;
   const current = context.payload.workflow_run || (await github.rest.actions.getWorkflowRun({...repo, run_id: Number(env.MAIN_RED_RUN_ID)})).data;
-  if (!eligible(current) || !PATHS.has(current.path?.split('@')[0]) || current.head_repository?.full_name !== `${repo.owner}/${repo.repo}`) {
+  if (!eligible(current) || !workflowPaths.has(current.path?.split('@')[0]) || current.head_repository?.full_name !== `${repo.owner}/${repo.repo}`) {
     core.info('Not an observed completed main workflow'); return;
   }
-  if (!RED.has(current.conclusion) && current.conclusion !== 'success') return;
+  const jobsCache = new Map();
+  async function jobs(run) {
+    if (!jobsCache.has(run.id)) jobsCache.set(run.id, await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+      ...repo, run_id: run.id, attempt_number: run.run_attempt || 1, per_page: 100,
+    }));
+    const name = jobNamesByWorkflow[run.path?.split('@')[0]];
+    return jobsCache.get(run.id).filter(job => !name || job.name === name);
+  }
+  async function observe(run) {
+    if ((!RED.has(run.conclusion) && run.conclusion !== 'success') || !jobNamesByWorkflow[run.path?.split('@')[0]]) return run;
+    const selected = await jobs(run);
+    const conclusion = selected.some(job => RED.has(job.conclusion)) ? 'failure'
+      : selected.length && selected.every(job => job.conclusion === 'success') ? 'success' : 'neutral';
+    return {...run, conclusion};
+  }
+  const observed = await observe(current);
+  if (!RED.has(observed.conclusion) && observed.conclusion !== 'success') return;
   const history = [];
   let newerGreen = null;
   for await (const response of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
@@ -108,21 +188,25 @@ async function run({github, context, core, env = process.env}) {
   })) {
     for (const candidate of [...response.data.workflow_runs].sort((a, b) => b.run_number - a.run_number)) {
       if (!eligible(candidate)) continue;
-      if (candidate.run_number > current.run_number && candidate.conclusion === 'success') newerGreen = candidate;
-      if (candidate.run_number >= current.run_number) continue;
-      history.push(candidate);
-      if (candidate.conclusion === 'success') break;
+      if (candidate.run_number === current.run_number) continue;
+      const past = await observe({...candidate, path: current.path});
+      if (candidate.run_number > current.run_number) {
+        if (past.conclusion === 'success') newerGreen = past;
+        continue;
+      }
+      history.push(past);
+      if (past.conclusion === 'success') break;
     }
     if (history.some(past => past.conclusion === 'success')) break;
   }
   const channel = `${repo.owner}/${repo.repo}/${current.workflow_id}`;
   const title = `Main red [${channel}]`;
   const issues = githubIssuesClient(github, repo);
-  const recovery = current.conclusion === 'success' ? current : newerGreen;
+  const recovery = observed.conclusion === 'success' ? observed : newerGreen;
   const eventRun = recovery || current;
   const eventKey = `run-${eventRun.id}-attempt-${eventRun.run_attempt || 1}`;
   const dryRun = env.MAIN_RED_DRY_RUN === 'true';
-  const episode = findEpisode(current, history);
+  const episode = findEpisode(observed, history);
   if (!episode && recovery) {
     const issue = await issues.findRun(current.id);
     if (issue) {
@@ -139,36 +223,16 @@ async function run({github, context, core, env = process.env}) {
   const details = recovery ? [`Green main run: ${recovery.html_url}`]
     : [`Main is red.\nRun: ${current.html_url}`, `${first.event === 'push' ? 'First red' : 'Observed red'} SHA: ${first.head_sha}`];
   let author;
+  let owner;
   if (!recovery) {
-    const pulls = first.event === 'push' ? await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
-      ...repo, commit_sha: first.head_sha, per_page: 100,
-    }) : [];
-    const pr = introducingMerge(first.head_sha, pulls);
-    const merged = pulls.filter(item => item.merged_at && item.base?.ref === 'main'
-      && Date.parse(item.merged_at) <= Date.parse(first.updated_at));
-    const batch = !pr && merged.length > 1;
-    let ownerPr = pr;
-    if (!ownerPr) {
-      const candidates = batch ? merged : await github.paginate(github.rest.pulls.list, {
-        ...repo, state: 'closed', base: 'main', sort: 'updated', direction: 'desc', per_page: 100,
-      });
-      ownerPr = candidates.filter(item => item.merged_at && Date.parse(item.merged_at) <= Date.parse(first.updated_at))
-        .sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at))[0];
-    }
-    const owner = ownerPr ? (await github.rest.pulls.get({...repo, pull_number: ownerPr.number})).data.merged_by?.login : null;
-    author = pr?.user?.login;
-    details.push(pr ? `First red merge: #${pr.number} (${first.head_sha}); GitHub author: ${author ? `@${author}` : 'unknown'}.`
-      : batch ? `batch: PRs ${merged.map(item => `#${item.number}`).join(', ')}.` : 'introducing merge unknown.',
-      `SHA range: ${episode.green?.head_sha || 'unknown baseline'}...${first.head_sha}.`,
-      `Owner: ${owner ? `@${owner}` : 'unknown (no merger found in available history)'}.`,
+    const attributionResult = await attribution(github, repo, first, episode.green, first.event === 'push');
+    ({author, owner} = attributionResult);
+    details.push(...attributionResult.details,
+      ...(first.event === 'push' ? [`First red push: ${first.html_url || first.id} (${first.head_sha}).`] : []),
       `Last green: ${episode.green ? `${episode.green.html_url || episode.green.id} (${episode.green.head_sha})` : 'not present in available history'}.`,
-      first.event === 'push' ? 'Attribution uses the first red push run; intervening merges require diagnosis.'
-        : 'No red push run in available workflow history; introducing merge unknown.',
-      `Target: green in under 4 h; deadline ${new Date(Date.parse(first.updated_at) + 4 * 3600000).toISOString()}.`);
-    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
-      ...repo, run_id: current.id, attempt_number: current.run_attempt || 1, per_page: 100,
-    });
-    const failedJobs = jobs.filter(job => RED.has(job.conclusion));
+      'Attribution uses the first red main push when available; the SHA range requires diagnosis.',
+      `Target: green in under 4 h; deadline ${new Date(Date.parse(episode.firstRed.updated_at) + 4 * 3600000).toISOString()}.`);
+    const failedJobs = (await jobs(current)).filter(job => RED.has(job.conclusion));
     if (!failedJobs.length) details.push('Failing tests: no failed-job evidence available; inspect the run.');
     for (const job of failedJobs) {
       let evidence = {ids: [], assertions: []};
@@ -184,7 +248,7 @@ async function run({github, context, core, env = process.env}) {
     }
   }
   const result = await publish(issues, {key, eventKey, title, recovered: Boolean(recovery), body: details.join('\n\n')}, dryRun);
-  core.info(JSON.stringify({...result, key, title, author, run: eventRun.html_url, dryRun}));
+  core.info(JSON.stringify({...result, key, title, author, owner, run: eventRun.html_url, dryRun}));
 }
 
 module.exports = {extractFailures, findEpisode, introducingMerge, publish, githubIssuesClient, run};

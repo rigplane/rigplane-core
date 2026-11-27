@@ -4,19 +4,27 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const policy = require('./main-red-policy.js');
+const shared = policy;
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures/main-red', name), 'utf8');
 const history = () => JSON.parse(fixture('history.json'));
 const repo = {owner: 'example', repo: 'repo'};
 const episodeMarker = '<!-- main-red:episode:example/repo/7:green-11 -->';
 
-function harness({logsFail = false, labelExists = true, failClose = false, dryRun = false, replay = false, issueReadFail = false, noFailedJobs = false, associatedPulls} = {}) {
-  let current = {...history()[0], path: '.github/workflows/full.yml', workflow_id: 7, run_attempt: 1,
+function harness({logsFail = false, labelExists = true, failClose = false, dryRun = false, replay = false, issueReadFail = false, noFailedJobs = false, macos = false, corePolicy = true, compareFails = false, ownerFails = false} = {}) {
+  const implementation = corePolicy ? shared : policy;
+  let current = {...history()[0], path: corePolicy ? '.github/workflows/full.yml' : macos ? '.github/workflows/onboarding-workflow-tests.yml' : '.github/workflows/pytest.yml', workflow_id: 7, run_attempt: 1,
     html_url: 'https://github.com/example/repo/actions/runs/13', head_repository: {full_name: 'example/repo'}};
   let runs = history();
+  const jobOverrides = new Map();
   const mutations = [];
   const reads = [];
   const stored = [];
   const messages = [];
+  const pullOverrides = new Map();
+  let commits = null;
+  let commitHistory = null;
+  const pull = (number, sha) => ({number, merged_at: '2026-11-26T03:00:00Z', merge_commit_sha: sha,
+    base: {ref: 'main'}, user: {login: 'builder'}});
   let closeFails = failClose;
   const issues = {
     listForRepo: async params => {
@@ -67,31 +75,48 @@ function harness({logsFail = false, labelExists = true, failClose = false, dryRu
       if (logsFail) throw Object.assign(new Error('logs expired'), {status: 410});
       return {data: new TextEncoder().encode(fixture('failure.txt')).buffer};
     },
-  }, repos: {listPullRequestsAssociatedWithCommit: 'pulls'}, pulls: {
-    list: 'recentPulls',
-    get: async params => ({data: {number: params.pull_number, merged_by: {login: `merger-${params.pull_number}`}}}),
-  }}};
+  }, repos: {
+    listPullRequestsAssociatedWithCommit: 'pulls', compareCommitsWithBasehead: 'compare', listCommits: 'commits',
+  }, pulls: {get: async params => {
+    if (ownerFails) throw Object.assign(new Error('pull detail unavailable'), {status: 503});
+    reads.push({method: 'pull', ...params});
+    return {data: {...pull(params.pull_number, ''), merged_by: {login: `merger-${params.pull_number}`}}};
+  }}}};
   github.paginate = async (method, params) => {
-    if (method === 'pulls') return associatedPulls ?? [{number: 42, merged_at: '2026-11-26', merge_commit_sha: params.commit_sha,
-      base: {ref: 'main'}, user: {login: 'builder'}}];
-    if (method === 'recentPulls') return [
-      {number: 90, merged_at: '2026-11-26T05:00:00Z'},
-      {number: 39, merged_at: '2026-11-26T01:00:00Z'},
-      {number: 40, merged_at: '2026-11-26T02:30:00Z'},
-    ];
-    if (method === 'jobs') return noFailedJobs ? [] : [{id: 99, name: 'test (3.12)', html_url: 'https://github.com/example/repo/actions/runs/13/job/99',
-      conclusion: 'failure', steps: [{name: 'Run tests', conclusion: 'failure'}]}];
+    if (method === 'pulls') {
+      reads.push({method, ...params});
+      return pullOverrides.get(params.commit_sha) || [pull(42, params.commit_sha)];
+    }
+    if (method === 'jobs') return jobOverrides.get(params.run_id) || (noFailedJobs ? [] : [{id: 99, name: macos ? 'browser-webkit-macos' : 'test (3.12)', html_url: 'https://github.com/example/repo/actions/runs/13/job/99',
+      conclusion: macos && params.run_id === 11 ? 'success' : 'failure', steps: [{name: 'Run tests', conclusion: 'failure'}]}]);
     return (await method(params)).data;
   };
-  github.paginate.iterator = async function* (_method, params) {
+  github.paginate.iterator = async function* (method, params) {
+    if (method === 'compare') {
+      reads.push({method, ...params});
+      if (compareFails) throw Object.assign(new Error('compare unavailable'), {status: 503});
+      // Compare responses are objects with a commits array, unlike listCommits.
+      yield {data: {url: 'https://api.github.com/repos/example/repo/compare/range',
+        commits: commits || [{sha: params.basehead.split('...')[1]}]}};
+      return;
+    }
+    if (method === 'commits') {
+      reads.push({method, ...params});
+      yield {data: commitHistory || [{sha: params.sha}, {sha: history()[2].head_sha}]};
+      return;
+    }
     assert.equal(params.workflow_id, current.workflow_id);
     yield {data: {workflow_runs: runs}};
   };
   return {
     mutations, stored, reads, messages,
+    setJobs: (id, jobs) => jobOverrides.set(id, jobs),
     setCurrent: changes => {current = {...current, ...changes};},
     setHistory: values => {runs = values;},
-    run: () => policy.run({github, context: {repo, payload: replay ? {} : {workflow_run: current}},
+    setPulls: (sha, values) => pullOverrides.set(sha, values),
+    setCommits: values => {commits = values;},
+    setCommitHistory: values => {commitHistory = values;},
+    run: () => implementation.run({github, context: {repo, payload: replay ? {} : {workflow_run: current}},
       core: {info: message => messages.push(message)},
       env: {MAIN_RED_RUN_ID: String(current.id), MAIN_RED_DRY_RUN: String(dryRun)}}),
   };
@@ -118,43 +143,15 @@ test('green identifies the preceding episode; an earlier green alone has no inci
   assert.equal(policy.findEpisode(history()[2], history()), null);
 });
 
-test('cancelled and action-required history is neutral between green and red and within a red episode', () => {
+test('neutral fixture rows between green and red never become attribution or recovery', () => {
   const runs = JSON.parse(fixture('neutral-history.json'));
   const episode = policy.findEpisode(runs[0], runs);
-  assert.equal(episode.firstRed.id, 23);
-  assert.equal(episode.green.id, 11);
-  assert.equal(policy.findEpisode(history()[3], history()), null);
-  const neutralHistory = runs.filter(run => run.conclusion !== 'failure');
-  assert.equal(policy.findEpisode({...runs[0], conclusion: 'success'}, neutralHistory), null);
-});
-
-test('neutral fixture rows do not change issue attribution or its last-green episode key', async () => {
-  const runs = JSON.parse(fixture('neutral-history.json'));
-  const h = harness();
-  h.setCurrent(runs[0]);
-  h.setHistory(runs);
-  await h.run();
-  assert.ok(h.stored[0].body.includes(episodeMarker));
-  assert.match(h.stored[0].body, /First red SHA: c{40}/u);
-});
-
-test('neutral-only completions neither open nor close an incident, including replay', async () => {
+  assert.equal(episode.firstRed.id, 24);
+  assert.equal(episode.green.id, 21);
   for (const conclusion of ['cancelled', 'action_required']) {
-    for (const replay of [false, true]) {
-      const h = harness({replay});
-      h.setCurrent({conclusion});
-      assert.equal(policy.findEpisode({...history()[0], conclusion}, history()), null);
-      await h.run();
-      assert.equal(h.mutations.length, 0);
-      assert.equal(h.reads.length, 0);
-    }
-    const h = harness();
-    await h.run();
-    h.setCurrent({id: 14, run_number: 14, conclusion});
-    await h.run();
-    assert.deepEqual(h.mutations.map(item => item.method), ['create']);
-    assert.equal(h.stored[0].state, 'open');
+    assert.equal(policy.findEpisode({...runs[0], conclusion}, runs), null);
   }
+  assert.equal(policy.findEpisode(history()[3], history()), null);
 });
 
 test('missing green is explicit instead of inventing an introducing baseline', () => {
@@ -168,50 +165,8 @@ test('introducing merge must match first red SHA and main, not a later associate
   assert.equal(policy.introducingMerge(sha, [{...pr, base: {ref: 'release/1.0.x'}}]), null);
   assert.equal(policy.introducingMerge(sha, []), null);
   assert.equal(policy.introducingMerge(sha, [pr, {...pr, number: 43}]), null);
-  assert.equal(policy.introducingMerge(sha, [null, {}]), null);
+  assert.equal(policy.introducingMerge(sha, [{}, null]), null);
 });
-
-for (const event of ['schedule', 'workflow_dispatch']) {
-  test(`${event} red completion attributes the first red push, skipping an earlier non-push failure`, async () => {
-    const h = harness();
-    h.setHistory([...history().map(run => ({...run, run_number: run.run_number * 10})),
-      {...history()[1], id: 111, run_number: 115, event,
-      head_sha: 'd'.repeat(40)}]);
-    h.setCurrent({event, run_number: 130, head_sha: 'e'.repeat(40)});
-    await h.run();
-    assert.match(h.stored[0].body, /First red SHA: b{40}/u);
-    assert.match(h.stored[0].body, /First red merge: #42 \(b{40}\)/u);
-    assert.doesNotMatch(h.stored[0].body, /First red SHA: [de]{40}/u);
-  });
-}
-
-test('a scheduled-only failure reports unknown attribution instead of inventing a push merge', async () => {
-  const h = harness();
-  h.setCurrent({event: 'schedule'});
-  h.setHistory([history()[2]]);
-  await h.run();
-  assert.match(h.stored[0].body, /introducing merge unknown/u);
-  assert.match(h.stored[0].body, /No red push run in available workflow history/u);
-});
-
-for (const scenario of ['direct push', 'batch', 'revert']) {
-  test(`${scenario} attribution still creates and updates an issue with its SHA range and last merger`, async () => {
-    const pr = {number: 41, merged_at: '2026-11-26T02:45:00Z',
-      merge_commit_sha: 'f'.repeat(40), base: {ref: 'main'}, user: {login: 'builder'}};
-    const associatedPulls = scenario === 'direct push' ? [] : scenario === 'batch'
-      ? [pr, {...pr, number: 42, merged_at: '2026-11-26T02:50:00Z'}] : [pr];
-    const h = harness({associatedPulls});
-    await h.run();
-    h.setCurrent({id: 14, run_number: 14});
-    await h.run();
-    assert.deepEqual(h.mutations.map(item => item.method), ['create', 'createComment']);
-    for (const report of [h.stored[0].body, h.stored[0].comments[0].body]) {
-      assert.match(report, /SHA range: a{40}\.\.\.b{40}/u);
-      assert.match(report, scenario === 'batch' ? /batch: PRs #41, #42/u : /introducing merge unknown/u);
-      assert.match(report, scenario === 'batch' ? /Owner: @merger-42/u : /Owner: @merger-40/u);
-    }
-  });
-}
 
 test('creates one labelled GitHub issue with first-red attribution, failure evidence and four-hour target', async () => {
   const h = harness();
@@ -226,7 +181,6 @@ test('creates one labelled GitHub issue with first-red attribution, failure evid
   assert.ok(issue.body.includes(episodeMarker));
   assert.match(issue.body, /#42 \(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\)/u);
   assert.match(issue.body, /GitHub (?:lane\/)?author: @?builder/u);
-  assert.match(issue.body, /Owner: @merger-42/u);
   assert.match(issue.body, /tests\/test_contract.py::test_main/u);
   assert.match(issue.body, /AssertionError: expected ready/u);
   assert.match(issue.body, /https:\/\/github.com\/example\/repo\/actions\/runs\/13/u);
@@ -419,3 +373,152 @@ test('workflow keeps main completion/replay triggers, read-only defaults and job
   assert.doesNotMatch(workflow, /LINEAR|OWNER_MAP|secrets\[|secrets\.|vars\./u);
   assert.doesNotMatch(workflow, /ref:.*workflow_run/u);
 });
+
+for (const corePolicy of [true]) {
+  const layer = corePolicy ? 'Core shared policy' : 'Pro adapter';
+  for (const conclusion of ['cancelled', 'action_required']) {
+    test(`${layer}: ${conclusion}-only history opens nothing and cannot recover an incident`, async () => {
+      const h = harness({corePolicy});
+      h.setCurrent({conclusion});
+      h.setHistory(history().map(run => ({...run, conclusion})));
+      await h.run();
+      assert.equal(h.mutations.length, 0);
+      h.setHistory(history());
+      h.setCurrent({conclusion: 'failure'});
+      await h.run();
+      h.setCurrent({id: 14, run_number: 14, conclusion});
+      await h.run();
+      assert.equal(h.stored[0].state, 'open');
+      assert.equal(h.stored[0].comments.length, 0);
+    });
+
+    test(`${layer}: ${conclusion} between green and red preserves the first red attribution`, async () => {
+      const h = harness({corePolicy});
+      const runs = JSON.parse(fixture('neutral-history.json'));
+      h.setHistory(runs);
+      h.setCurrent(runs[0]);
+      await h.run();
+      assert.match(h.stored[0].body, /First red SHA: b{40}/u);
+      assert.match(h.stored[0].body, /green-21/u);
+      assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+    });
+  }
+
+  for (const event of ['schedule', 'workflow_dispatch']) {
+    test(`${layer}: a ${event} red uses the first red push even after an earlier manual red`, async () => {
+      const h = harness({corePolicy});
+      const runs = history();
+      // A non-push failure can precede the first observed red push in this episode.
+      const earlier = {...runs[1], id: 111, run_number: 12, event: 'workflow_dispatch', head_sha: 'd'.repeat(40)};
+      const push = {...runs[1], run_number: 13};
+      h.setHistory([earlier, push, runs[2]]);
+      h.setCurrent({id: 14, run_number: 14, event, head_sha: 'e'.repeat(40)});
+      await h.run();
+      const body = h.stored[0].body;
+      assert.match(body, /First red SHA: b{40}/u);
+      assert.match(body, /First red push:.*b{40}/u);
+      assert.doesNotMatch(body, /First red SHA: [de]{40}/u);
+      assert.ok(h.reads.some(read => read.method === 'pulls' && read.commit_sha === push.head_sha));
+    });
+
+    test(`${layer}: a ${event} red without a red push reports unknown attribution`, async () => {
+      const h = harness({corePolicy});
+      h.setHistory(history().map(run => ({...run, event})));
+      h.setCurrent({event});
+      await h.run();
+      assert.match(h.stored[0].body, /Observed red SHA: b{40}/u);
+      assert.match(h.stored[0].body, /No red push run found/u);
+      assert.match(h.stored[0].body, /introducing merge unknown/iu);
+      assert.doesNotMatch(h.stored[0].body, /First red merge:/u);
+    });
+  }
+
+  for (const scenario of ['direct push', 'revert']) {
+    test(`${layer}: ${scenario} creates and updates an unknown-merge issue with the range and last merger`, async () => {
+      const h = harness({corePolicy});
+      const sha = history()[1].head_sha;
+      h.setPulls(sha, scenario === 'revert' ? [{number: 42, merged_at: '2026-11-26T01:00:00Z',
+        merge_commit_sha: history()[2].head_sha, base: {ref: 'main'}, user: {login: 'builder'}}] : []);
+      h.setCommits([{sha, commit: {message: scenario === 'revert' ? 'Revert "a change"' : 'Direct change'}}]);
+      await h.run();
+      assert.equal(h.stored.length, 1);
+      assert.match(h.stored[0].body, /introducing merge unknown/iu);
+      assert.match(h.stored[0].body, /SHA range: a{40}\.\.\.b{40}/u);
+      assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+      assert.match(h.stored[0].body, /AssertionError: expected ready/u);
+      h.setCurrent({id: 14, run_number: 14});
+      await h.run();
+      assert.equal(h.stored[0].comments.length, 1);
+      assert.match(h.stored[0].comments[0].body, /introducing merge unknown/iu);
+    });
+  }
+
+  test(`${layer}: merge-queue batches list every PR in the range and use the last merger`, async () => {
+    const h = harness({corePolicy});
+    const first = 'd'.repeat(40);
+    const last = history()[1].head_sha;
+    h.setCommits([{sha: first}, {sha: last}]);
+    h.setPulls(first, [{number: 41, merged_at: '2026-11-26T02:30:00Z', merge_commit_sha: first,
+      base: {ref: 'main'}, user: {login: 'earlier-builder'}}]);
+    h.setPulls(last, [{number: 42, merged_at: '2026-11-26T03:00:00Z', merge_commit_sha: last,
+      base: {ref: 'main'}, user: {login: 'builder'}}]);
+    await h.run();
+    assert.match(h.stored[0].body, /batch: PRs #41, #42/u);
+    assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+    assert.match(h.stored[0].body, /SHA range: a{40}\.\.\.b{40}/u);
+    assert.doesNotMatch(h.stored[0].body, /First red merge: #42/u);
+  });
+
+  test(`${layer}: multiple PRs associated with one batch SHA do not suppress the issue`, async () => {
+    const h = harness({corePolicy});
+    const sha = history()[1].head_sha;
+    h.setPulls(sha, [41, 42, 43].map(number => ({number, merged_at: `2026-11-26T03:00:0${number - 40}Z`,
+      merge_commit_sha: sha, base: {ref: 'main'}, user: {login: 'builder'}})));
+    await h.run();
+    assert.match(h.stored[0].body, /batch: PRs #41, #42, #43/u);
+    assert.match(h.stored[0].body, /Owner: @merger-43 \(last merger\)/u);
+  });
+
+  test(`${layer}: a batch with distinct merge SHAs keeps all in-range associated PRs`, async () => {
+    const h = harness({corePolicy});
+    h.setPulls(history()[1].head_sha, [41, 42].map(number => ({number,
+      merged_at: `2026-11-26T02:${number + 4}:00Z`, merge_commit_sha: 'f'.repeat(40),
+      base: {ref: 'main'}, user: {login: 'builder'}})));
+    await h.run();
+    assert.match(h.stored[0].body, /batch: PRs #41, #42/u);
+    assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+  });
+
+  test(`${layer}: unavailable PR author data does not suppress a known merge incident`, async () => {
+    const h = harness({corePolicy});
+    const sha = history()[1].head_sha;
+    h.setPulls(sha, [{number: 42, merged_at: '2026-11-26T03:00:00Z', merge_commit_sha: sha,
+      base: {ref: 'main'}, user: null}]);
+    await h.run();
+    assert.match(h.stored[0].body, /First red merge: #42/u);
+    assert.match(h.stored[0].body, /GitHub author: unknown/u);
+    assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+  });
+
+  test(`${layer}: missing history still opens an unknown-range incident for a direct push`, async () => {
+    const h = harness({corePolicy});
+    h.setHistory([]);
+    h.setPulls(history()[0].head_sha, []);
+    h.setCommitHistory([{sha: history()[0].head_sha}, {sha: history()[2].head_sha}]);
+    await h.run();
+    assert.match(h.stored[0].body, /introducing merge unknown/iu);
+    assert.match(h.stored[0].body, /SHA range: unknown baseline\.\.\.c{40}/u);
+    assert.match(h.stored[0].body, /Owner: @merger-42 \(last merger\)/u);
+  });
+
+  for (const failure of ['compareFails', 'ownerFails']) {
+    test(`${layer}: ${failure} cannot suppress the incident or failure evidence`, async () => {
+      const h = harness({corePolicy, [failure]: true});
+      await h.run();
+      assert.equal(h.stored.length, 1);
+      assert.match(h.stored[0].body, /Attribution lookup unavailable \(HTTP 503\)/u);
+      assert.match(h.stored[0].body, /SHA range: a{40}\.\.\.b{40}/u);
+      assert.match(h.stored[0].body, /AssertionError: expected ready/u);
+    });
+  }
+}

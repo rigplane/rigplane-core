@@ -1,8 +1,7 @@
 [
-  {"id": 25, "run_number": 25, "status": "completed", "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "conclusion": "failure", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T08:00:00Z"},
-  {"id": 24, "run_number": 24, "status": "completed", "head_sha": "dddddddddddddddddddddddddddddddddddddddd", "conclusion": "cancelled", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T07:00:00Z"},
-  {"id": 23, "run_number": 23, "status": "completed", "head_sha": "cccccccccccccccccccccccccccccccccccccccc", "conclusion": "failure", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T06:00:00Z"},
-  {"id": 22, "run_number": 22, "status": "completed", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "conclusion": "action_required", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T05:00:00Z"},
-  {"id": 21, "run_number": 21, "status": "completed", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "conclusion": "cancelled", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T04:00:00Z"},
-  {"id": 11, "run_number": 11, "status": "completed", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "conclusion": "success", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T02:00:00Z"}
+  {"id": 25, "run_number": 25, "status": "completed", "head_sha": "cccccccccccccccccccccccccccccccccccccccc", "conclusion": "failure", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T04:00:00Z"},
+  {"id": 24, "run_number": 24, "status": "completed", "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "conclusion": "failure", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T03:00:00Z"},
+  {"id": 23, "run_number": 23, "status": "completed", "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "conclusion": "action_required", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T02:30:00Z"},
+  {"id": 22, "run_number": 22, "status": "completed", "head_sha": "dddddddddddddddddddddddddddddddddddddddd", "conclusion": "cancelled", "head_branch": "main", "event": "push", "updated_at": "2026-11-26T02:15:00Z"},
+  {"id": 21, "run_number": 21, "status": "completed", "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "conclusion": "success", "head_branch": "main", "event": "schedule", "updated_at": "2026-11-26T02:00:00Z"}
 ]
