@@ -229,7 +229,7 @@
     if (scopeConnected) return scopeContentState === 'out-of-range' ? 'out-of-range' : null;
     if (scopeTxKnown) return 'transmitting';
     if (scopeHiddenOnRadio) return 'hidden';
-    if (runtime.caps !== null && selectedScopeId === null) return 'no-source';
+    if (runtime.caps !== null && runtime.caps.scope !== true && selectedScopeId === null) return 'no-source';
     return 'disconnected';
   });
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;

@@ -89,4 +89,16 @@ describe('SpectrumPanel no-scope-source note (MOR-4798)', () => {
     flushSync();
     expect(note()).toBeNull();
   });
+
+  it('shows the disconnected overlay for scope: true with no source fields, not no-source', () => {
+    const caps = { ...IC7300_CAPABILITIES, scope: true };
+    delete caps.scopeSources;
+    delete caps.scopeDefaultSourceId;
+    delete caps.scopeSource;
+    setCapabilities(caps);
+    panel = mount(SpectrumPanel, { target, props: {} });
+    flushSync();
+    expect(note()).toBeNull();
+    expect(generic()).not.toBeNull();
+  });
 });
