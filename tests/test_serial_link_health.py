@@ -14,6 +14,7 @@ from rigplane.backends import _icom_serial_base
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers import serial_civ_link
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.backends.yaesu_cat import poller as cat_poller
 from rigplane.backends.yaesu_cat import radio as cat_radio
 from rigplane.backends.yaesu_cat import transport as cat_transport
@@ -25,6 +26,7 @@ from rigplane.core.exceptions import (
     CommandError,
     ConnectionError as RadioConnectionError,
 )
+from rigplane.core.serial_health import SerialLinkHealth, require_keying_control
 from rigplane.runtime import _civ_rx
 from rigplane.runtime import radio as radio_runtime
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -33,6 +35,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxRefusalReason,
 )
 from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web import runtime_helpers
@@ -40,6 +43,21 @@ from rigplane.web.server import WebConfig, WebServer
 
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
+
+
+def test_uncredited_serial_link_does_not_refuse_key() -> None:
+    link = SimpleNamespace(connected=False, _link_health=SerialLinkHealth())
+    SerialCivTransport(link).require_keying_control()
+
+
+@pytest.mark.parametrize("failure", ["io_failed", "no_reply"])
+def test_only_latched_serial_failure_refuses_key(failure: str) -> None:
+    health = SerialLinkHealth()
+    setattr(health, failure, True)
+    with pytest.raises(CommandError, match="Keying requires control connectivity"):
+        require_keying_control(health)
+    setattr(health, failure, False)
+    require_keying_control(health)
 
 
 @pytest.fixture
@@ -159,6 +177,15 @@ async def _finish(clock: VirtualClock, operation: Any) -> Any:
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def _assert_key_refused(clock: VirtualClock, operation: Any) -> None:
+    try:
+        result = await _finish(clock, operation)
+    except CommandError as exc:
+        assert getattr(exc, "reason", None) is ManagedTxRefusalReason.OTHER
+    else:
+        assert result is ActuationResult.REJECTED
 
 
 async def _route_serial_response(radio: Any, response: bytes | None) -> None:
@@ -603,10 +630,8 @@ async def test_usable_serial_stream_admits_release_and_recovery_after_failure(
                 "stop-tune": AbortOperation.STOP_TUNE,
             }[semantic]
             if stale:
-                with pytest.raises(
-                    (RadioConnectionError, cat_transport.CatTransportError)
-                ):
-                    await _finish(
+                try:
+                    result = await _finish(
                         serial_clock,
                         radio.actuate(
                             EffectToken(1, 1, "stale-serial-recovery"),
@@ -614,6 +639,11 @@ async def test_usable_serial_stream_admits_release_and_recovery_after_failure(
                             is_current=lambda: False,
                         ),
                     )
+                except (RadioConnectionError, cat_transport.CatTransportError):
+                    pass
+                else:
+                    assert action is ActuationOperation.FORCE_RECEIVE
+                    assert result is ActuationResult.UNCERTAIN
                 assert writer.writes[before:] == []
                 assert cable.transmitting is True
                 assert cable.opens == opens
@@ -711,16 +741,13 @@ async def test_serial_key_is_refused_until_response_clears_failure(
         with pytest.raises((CommandError, RadioConnectionError)):
             await _finish(serial_clock, radio.set_ptt(True))
         for action in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            assert (
-                await _finish(
-                    serial_clock,
-                    radio.actuate(
-                        EffectToken(1, 1, "serial-key"),
-                        action,
-                        is_current=lambda: True,
-                    ),
-                )
-                is ActuationResult.REJECTED
+            await _assert_key_refused(
+                serial_clock,
+                radio.actuate(
+                    EffectToken(1, 1, "serial-key"),
+                    action,
+                    is_current=lambda: True,
+                ),
             )
         assert writer.writes == before
         assert await _finish(serial_clock, radio.get_freq()) == 14_074_000
@@ -855,16 +882,13 @@ async def test_malformed_serial_reply_cannot_reauthorize_key(
         with pytest.raises((CommandError, RadioConnectionError)):
             await _finish(serial_clock, radio.set_ptt(True))
         for action in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            assert (
-                await _finish(
-                    serial_clock,
-                    radio.actuate(
-                        EffectToken(1, 1, "malformed-serial-reply"),
-                        action,
-                        is_current=lambda: True,
-                    ),
-                )
-                is ActuationResult.REJECTED
+            await _assert_key_refused(
+                serial_clock,
+                radio.actuate(
+                    EffectToken(1, 1, "malformed-serial-reply"),
+                    action,
+                    is_current=lambda: True,
+                ),
             )
         assert writer.writes == before_key
         await _finish(serial_clock, radio.set_ptt(False))

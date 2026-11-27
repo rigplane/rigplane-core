@@ -153,7 +153,7 @@ class SerialCivTransport:
         return bool(getattr(self._civ_link, "connected", False))
 
     def require_keying_control(self) -> None:
-        require_keying_control(self.connected)
+        require_keying_control(getattr(self._civ_link, "_link_health", None))
 
     @property
     def ready(self) -> bool:

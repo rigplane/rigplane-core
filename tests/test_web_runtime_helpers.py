@@ -634,11 +634,22 @@ def test_radio_health_classifies_ready_radio() -> None:
 def test_radio_health_control_failure_overrides_stale_ready() -> None:
     radio = _FakeRadio(connected=True, radio_ready_flag=True)
     radio.control_connected = False
+    radio.serial_reconnects_total = 0
 
     health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
 
     assert health["radioLink"] == "reconnecting"
     assert health["readiness"] == "recovering"
+
+
+def test_lan_health_does_not_infer_serial_failure_from_control_connection() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    radio.control_connected = False
+
+    health = classify_radio_health(radio, now_monotonic=100.0)
+
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "ready"
 
 
 def test_radio_health_classifies_network_loss_separately_from_server_loss() -> None:

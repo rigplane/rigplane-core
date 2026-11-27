@@ -2136,8 +2136,9 @@ class YaesuCatRadio:
             on: ``True`` to transmit, ``False`` to receive.
         """
         if on:
-            self._require_connected(allow_failed_io=True)
-            require_keying_control(self.control_connected)
+            require_keying_control(
+                getattr(getattr(self, "_transport", None), "_link_health", None)
+            )
         await self._write("set_ptt", state="1" if on else "0")
 
     # The profile command each managed-release abort executes (MOR-4352).
@@ -2200,8 +2201,9 @@ class YaesuCatRadio:
 
         try:
             if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-                self._require_connected(allow_failed_io=True)
-                require_keying_control(self.control_connected)
+                require_keying_control(
+                    getattr(getattr(self, "_transport", None), "_link_health", None)
+                )
             await self._write(
                 command,
                 is_current=is_current,

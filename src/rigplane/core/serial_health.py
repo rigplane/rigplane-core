@@ -20,9 +20,11 @@ class SerialResponse(bytes):
         return response
 
 
-def require_keying_control(control_connected: bool) -> None:
-    """Refuse new KEY admission without control connectivity."""
-    if not control_connected:
+def require_keying_control(health: SerialLinkHealth | None) -> None:
+    """Refuse new KEY admission on a latched serial link failure."""
+    if health is not None and (
+        health.io_failed or getattr(health, "no_reply", False) is True
+    ):
         raise CommandError("Keying requires control connectivity")
 
 

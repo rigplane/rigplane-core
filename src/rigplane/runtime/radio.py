@@ -4421,12 +4421,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             else self._commands.ptt_off(to_addr=self._radio_addr)
         )
         if on:
-            self._require_keying_control()
+            CoreRadio._require_keying_control(self)
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
 
     def _require_keying_control(self) -> None:
-        check = getattr(self._civ_transport, "require_keying_control", None)
+        check = getattr(
+            getattr(self, "_civ_transport", None), "require_keying_control", None
+        )
         if callable(check):
             check()
 
@@ -4470,7 +4472,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ActuationOperation.PTT_ON,
                 ActuationOperation.TRANSMIT_ON,
             ):
-                self._require_keying_control()
+                CoreRadio._require_keying_control(self)
                 civ = self._commands.ptt_on(to_addr=self._radio_addr)
                 priority = Priority.IMMEDIATE
             elif operation is ActuationOperation.FORCE_RECEIVE:
