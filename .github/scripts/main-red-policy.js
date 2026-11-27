@@ -36,7 +36,7 @@ function findEpisode(current, history) {
       if (run.event === 'push') firstRedPush = run;
     }
   }
-  return firstRed ? {firstRed: firstRedPush || firstRed, green} : null;
+  return firstRed ? {firstRed: firstRedPush || firstRed, firstObservedRed: firstRed, green} : null;
 }
 
 function introducingMerge(sha, pulls) {
@@ -81,7 +81,13 @@ async function attribution(github, repo, first, green, hasRedPush) {
   if (!lookupError && hasRedPush && candidates.length > 1) details.push(`Introducing merge batch: PRs ${candidates.map(item => `#${item.number}`).join(', ')}.`);
   else if (pr) details.push(`First red merge: #${pr.number} (${first.head_sha}); GitHub author: ${pr.user?.login ? `@${pr.user.login}` : 'unknown'}.`);
   else details.push('Introducing merge unknown; diagnose the SHA range.');
-  if (!hasRedPush) details.push('No red push run found in the available episode history; the range ends at the first observed red SHA.');
+  if (!hasRedPush) {
+    details.push(`No red push run found in the available episode history; attributing merges between the last green and the first observed ${first.event} red SHA.`);
+    if (green && !lookupError) {
+      const rangeMerges = green.head_sha === first.head_sha ? [] : candidates;
+      details.push(`Merges in observed red range: ${rangeMerges.length ? `PRs ${rangeMerges.map(item => `#${item.number}`).join(', ')}` : 'no matching PRs found'}.`);
+    } else details.push('Merges in observed red range: unavailable (missing baseline or failed lookup).');
+  }
   let lastMerge = candidates.at(-1);
   let owner;
   try {
@@ -141,7 +147,8 @@ function githubIssuesClient(github, repo) {
     findRun: async id => {
       for (const issue of await issues()) {
         const full = await comments(issue);
-        if ([full.body, ...full.comments.map(comment => comment.body)].some(body => body?.includes(`<!-- main-red:run-${id}-attempt-`))) return full;
+        if ([full.body, ...full.comments.map(comment => comment.body)].some(body => body?.includes(marker(`first-red-run-${id}`))
+          || body?.includes(`<!-- main-red:run-${id}-attempt-`))) return full;
       }
       return null;
     },
@@ -186,7 +193,7 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
   for await (const response of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
     ...repo, workflow_id: current.workflow_id, branch: 'main', status: 'completed', per_page: 100,
   })) {
-    for (const candidate of [...response.data.workflow_runs].sort((a, b) => b.run_number - a.run_number)) {
+    for (const candidate of [...response.data].sort((a, b) => b.run_number - a.run_number)) {
       if (!eligible(candidate)) continue;
       if (candidate.run_number === current.run_number) continue;
       const past = await observe({...candidate, path: current.path});
@@ -221,7 +228,7 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
   const key = `episode:${channel}:green-${episode.green?.id || 'none'}`;
   const first = episode.firstRed;
   const details = recovery ? [`Green main run: ${recovery.html_url}`]
-    : [`Main is red.\nRun: ${current.html_url}`, `${first.event === 'push' ? 'First red' : 'Observed red'} SHA: ${first.head_sha}`];
+    : [marker(`first-red-run-${episode.firstObservedRed.id}`), `Main is red.\nRun: ${current.html_url}`, `${first.event === 'push' ? 'First red' : 'Observed red'} SHA: ${first.head_sha}`];
   let author;
   let owner;
   if (!recovery) {
