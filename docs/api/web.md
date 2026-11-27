@@ -309,9 +309,10 @@ conditions the `/api/v1/transport/webrtc/*` routes check.
 
 An offer may include `correlation_id`: an opaque string of at most 128 ASCII
 characters from `[A-Za-z0-9._:-]` (the empty string is allowed). Core echoes it
-unchanged in the terminal event and never interprets it. An invalid value is
-rejected at the HTTP offer edge with HTTP 400 and the existing typed
-`WebRtcRequestError` code `sdp_error`. A missing or null ID produces no event;
+unchanged in the terminal event, including `""` for an empty-string ID, and never
+interprets it. An invalid value is rejected at the HTTP offer edge with HTTP 400
+and the existing typed `WebRtcRequestError` code `sdp_error`. A missing or null
+ID produces no event;
 `WebRtcOffer.to_json()` omits a null ID, preserving the old offer shape. The
 offer response keeps its existing fields.
 
@@ -325,11 +326,12 @@ After completed peer teardown, a correlated offer emits one event:
 `ended_at` is Unix seconds as an integer, sampled after teardown. `ever_connected`
 records whether the peer ever entered `connected`, even if it later disconnected.
 `path` currently always reports `unknown`; Core does not inspect private ICE
-fields or infer a selected path from SDP or TURN configuration. The public
+fields or infer a selected path from SDP or TURN configuration. The producer's
 `WebRtcPath` vocabulary reserves `direct` and `relay` alongside `unknown`.
 
 The initiating reason survives later peer-close callbacks. These reason strings
-are stable public API; receivers retain unknown future values as strings:
+are stable public API; receivers retain unknown future `reason` and `path` values
+as strings and ignore unknown event fields:
 
 | Reason | Meaning |
 |--------|---------|
@@ -343,6 +345,8 @@ Delivery is best-effort: the event may be dropped when the events queue is full,
 is never retried, and never blocks teardown. There is no additional queue, replay,
 or reliable-delivery guarantee. Closing all sessions emits one event per
 correlated session whose teardown completes; a failed teardown emits none.
+A single caller cancellation while awaiting peer close is re-raised only after
+that peer's teardown and event emission attempt complete.
 
 The shared producer/consumer definitions are
 `src/rigplane/web/transport/webrtc_contract.py: WebRtcSessionEnded`,

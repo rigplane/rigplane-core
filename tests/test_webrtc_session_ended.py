@@ -423,26 +423,41 @@ async def test_repeated_session_close_preserves_first_reason_and_emits_once(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("close_all", [False, True])
 async def test_cancelled_close_keeps_initiating_reason_and_emits_once(
     peers: list[_Peer],
+    close_all: bool,
     virtual_clock: VirtualClock,
 ) -> None:
-    _, manager, queue = _setup(ManualClock())
+    now = ManualClock(1795737600)
+    _, manager, queue = _setup(now)
     answer = await manager.negotiate("offer", "offer", correlation_id="cancel")
     peer = peers[0]
     peer.close_release.clear()
-    task = asyncio.create_task(manager.close_session(answer["sessionId"]))
+    task = asyncio.create_task(
+        manager.close_all() if close_all else manager.close_session(answer["sessionId"])
+    )
     await virtual_clock.elapse(0)
     assert peer.close_started.is_set()
     task.cancel()
     await virtual_clock.elapse(0)
     await peer.state("failed")
+    assert not task.done()
+    assert not peer.teardown_completed
     assert queue.empty()
+    now.advance(2)
     peer.close_release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert peer.teardown_completed
-    assert queue.get_nowait()["data"]["reason"] == "close_requested"
+    assert queue.get_nowait()["data"] == {
+        "correlation_id": "cancel",
+        "ended_at": 1795737602,
+        "reason": "all_sessions_closed" if close_all else "close_requested",
+        "ever_connected": False,
+        "path": "unknown",
+    }
+    assert manager.active_session_ids == []
     await peer.state("closed")
     assert queue.empty()
 

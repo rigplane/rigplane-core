@@ -218,8 +218,18 @@ def test_session_end_reason_names_are_stable() -> None:
     }
 
 
-@pytest.mark.parametrize("path", ["direct", "relay", "unknown"])
-def test_session_ended_contract_preserves_future_reason(path: str) -> None:
+@pytest.mark.parametrize(
+    ("path", "extra"),
+    [
+        ("direct", {}),
+        ("relay", {}),
+        ("unknown", {}),
+        ("future_value", {"future_field": {"version": 2}}),
+    ],
+)
+def test_session_ended_contract_preserves_future_reason_and_path(
+    path: str, extra: dict[str, object]
+) -> None:
     wire = {
         "correlation_id": "Opaque_1:a.b-c",
         "ended_at": 1795737600,
@@ -227,9 +237,10 @@ def test_session_ended_contract_preserves_future_reason(path: str) -> None:
         "ever_connected": False,
         "path": path,
     }
-    event = rigplane.WebRtcSessionEnded.from_json(wire)
+    event = rigplane.WebRtcSessionEnded.from_json({**wire, **extra})
     assert event.to_json() == wire
     assert event.reason == "future_reason"
+    assert event.path == path
     assert type(event.ended_at) is int
 
 
@@ -241,7 +252,11 @@ def test_session_ended_contract_preserves_future_reason(path: str) -> None:
         ("ended_at", True),
         ("reason", 1),
         ("ever_connected", 1),
-        ("path", "guessed"),
+        ("path", None),
+        ("path", 1),
+        ("path", False),
+        ("path", []),
+        ("path", {}),
     ],
 )
 def test_session_ended_contract_rejects_wrong_types(field: str, value: object) -> None:

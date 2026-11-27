@@ -144,6 +144,7 @@ class WebRtcSessionEndReason(StrEnum):
     ALL_SESSIONS_CLOSED = "all_sessions_closed"  #: A caller requested close_all.
 
 
+#: Producer vocabulary; received events retain unknown future path strings.
 WebRtcPath = Literal["direct", "relay", "unknown"]
 
 
@@ -163,7 +164,7 @@ class WebRtcSessionEnded:
     ended_at: int
     reason: str
     ever_connected: bool
-    path: WebRtcPath
+    path: str
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -187,7 +188,7 @@ class WebRtcSessionEnded:
             or type(ended_at) is not int
             or not isinstance(reason, str)
             or type(ever_connected) is not bool
-            or path not in get_args(WebRtcPath)
+            or not isinstance(path, str)
         ):
             raise ValueError(f"not a WebRTC session-ended event: {dict(payload)!r}")
         return cls(
@@ -195,7 +196,7 @@ class WebRtcSessionEnded:
             ended_at=ended_at,
             reason=reason,
             ever_connected=ever_connected,
-            path=cast(WebRtcPath, path),
+            path=path,
         )
 
 
