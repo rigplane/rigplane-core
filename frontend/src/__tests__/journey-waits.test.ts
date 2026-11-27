@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { ESLint } from 'eslint';
-import { fileURLToPath } from 'node:url';
-import { relative } from 'node:path';
+import { join, relative } from 'node:path';
 
-const frontend = fileURLToPath(new URL('../..', import.meta.url));
+// import.meta.url is not a file: URL under the vitest DOM environment; use the
+// same root resolution as the other source tests in this folder.
+const frontend = join(__dirname, '..', '..');
 const ruleId = 'journey-waits/condition-waits';
 // Existing files without failure evidence retain their current lint debt.
 const legacy: Record<string, number> = {
