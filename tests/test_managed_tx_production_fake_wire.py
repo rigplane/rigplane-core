@@ -158,26 +158,6 @@ class _RigctldActuator(_DelayedWire):
         return self.wire[-1] if self.wire else False
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("actuator_type", [_IcomActuator, _YaesuActuator])
-@pytest.mark.parametrize(
-    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
-)
-async def test_answering_production_actuator_keys_without_serial_health(
-    actuator_type: type[_IcomActuator] | type[_YaesuActuator],
-    operation: ActuationOperation,
-) -> None:
-    actuator = actuator_type()
-    actuator.release_on.set()
-
-    result = await actuator.actuate(
-        EffectToken(1, 1, "healthy-key"), operation, is_current=lambda: True
-    )
-
-    assert result is ActuationResult.ACCEPTED
-    assert actuator.wire == [True]
-
-
 class _HttpWriter:
     def __init__(self) -> None:
         self.buffer = bytearray()

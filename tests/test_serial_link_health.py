@@ -14,7 +14,6 @@ from rigplane.backends import _icom_serial_base
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers import serial_civ_link
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
-from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.backends.yaesu_cat import poller as cat_poller
 from rigplane.backends.yaesu_cat import radio as cat_radio
 from rigplane.backends.yaesu_cat import transport as cat_transport
@@ -22,11 +21,7 @@ from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core import civ
 from rigplane.commands import parse_civ_frame
-from rigplane.core.exceptions import (
-    CommandError,
-    ConnectionError as RadioConnectionError,
-)
-from rigplane.core.serial_health import SerialLinkHealth, require_keying_control
+from rigplane.core.exceptions import ConnectionError as RadioConnectionError
 from rigplane.runtime import _civ_rx
 from rigplane.runtime import radio as radio_runtime
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -35,7 +30,6 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
-    ManagedTxRefusalReason,
 )
 from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web import runtime_helpers
@@ -43,21 +37,6 @@ from rigplane.web.server import WebConfig, WebServer
 
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
-
-
-def test_uncredited_serial_link_does_not_refuse_key() -> None:
-    link = SimpleNamespace(connected=False, _link_health=SerialLinkHealth())
-    SerialCivTransport(link).require_keying_control()
-
-
-@pytest.mark.parametrize("failure", ["io_failed", "no_reply"])
-def test_only_latched_serial_failure_refuses_key(failure: str) -> None:
-    health = SerialLinkHealth()
-    setattr(health, failure, True)
-    with pytest.raises(CommandError, match="Keying requires control connectivity"):
-        require_keying_control(health)
-    setattr(health, failure, False)
-    require_keying_control(health)
 
 
 @pytest.fixture
@@ -177,15 +156,6 @@ async def _finish(clock: VirtualClock, operation: Any) -> Any:
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-
-
-async def _assert_key_refused(clock: VirtualClock, operation: Any) -> None:
-    try:
-        result = await _finish(clock, operation)
-    except CommandError as exc:
-        assert getattr(exc, "reason", None) is ManagedTxRefusalReason.OTHER
-    else:
-        assert result is ActuationResult.REJECTED
 
 
 async def _route_serial_response(radio: Any, response: bytes | None) -> None:
@@ -696,8 +666,12 @@ async def test_usable_serial_stream_admits_release_and_recovery_after_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("personality", ["icom", "yaesu"])
-async def test_serial_key_is_refused_until_response_clears_failure(
+@pytest.mark.parametrize("operation", ["raw-on", "ptt-on", "transmit-on"])
+@pytest.mark.parametrize("write_fails", [False, True], ids=["usable", "write-error"])
+async def test_serial_key_uses_existing_write_path_after_link_failure(
     personality: str,
+    operation: str,
+    write_fails: bool,
     serial_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -716,9 +690,9 @@ async def test_serial_key_is_refused_until_response_clears_failure(
         )
         await _finish(serial_clock, radio.connect())
         await radio._stop_civ_data_watchdog()
-
-        async def fail() -> None:
-            await link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd")
+        failure_write = link.send_written
+        failure_payload = b"\xfe\xfe\x94\xe0\x03\xfd"
+        key = bytes(radio._commands.ptt_on(to_addr=radio._radio_addr))
     else:
         monkeypatch.setattr(cat_transport, "open_serial_port", cable.open)
         radio = YaesuCatRadio(
@@ -726,39 +700,52 @@ async def test_serial_key_is_refused_until_response_clears_failure(
         )
         link = radio._transport
         await link.connect()
-
-        async def fail() -> None:
-            await link._raw_write("FA;")
+        failure_write = link._raw_write
+        failure_payload = "FA;"
+        key = b"TX1;"
 
     try:
         writer = cable.writer
         assert writer is not None
+        cable.respond = False
         writer.fail_next = True
-        with pytest.raises((OSError, cat_transport.CatTransportError)):
-            await _finish(serial_clock, fail())
+        with pytest.raises(
+            (OSError, cat_transport.CatTransportError), match="transient"
+        ):
+            await _finish(serial_clock, failure_write(failure_payload))
         assert radio.control_connected is False
         before = list(writer.writes)
-        with pytest.raises((CommandError, RadioConnectionError)):
-            await _finish(serial_clock, radio.set_ptt(True))
-        for action in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            await _assert_key_refused(
-                serial_clock,
-                radio.actuate(
-                    EffectToken(1, 1, "serial-key"),
-                    action,
-                    is_current=lambda: True,
-                ),
+        writer.fail_next = write_fails
+
+        if operation == "raw-on":
+            pending = radio.set_ptt(True)
+        else:
+            action = {
+                "ptt-on": ActuationOperation.PTT_ON,
+                "transmit-on": ActuationOperation.TRANSMIT_ON,
+            }[operation]
+            pending = radio.actuate(
+                EffectToken(1, 1, "serial-write"), action, is_current=lambda: True
             )
-        assert writer.writes == before
-        assert await _finish(serial_clock, radio.get_freq()) == 14_074_000
-        assert radio.control_connected is True
-        await _finish(serial_clock, radio.set_ptt(True))
-        assert writer.writes[-1] == (
-            b"TX1;"
-            if personality == "yaesu"
-            else bytes(radio._commands.ptt_on(to_addr=radio._radio_addr))
-        )
+        if write_fails:
+            with pytest.raises(
+                (OSError, cat_transport.CatTransportError), match="transient"
+            ):
+                await _finish(serial_clock, pending)
+            assert writer.fail_next is False
+            assert writer.writes == before
+        else:
+            result = await _finish(serial_clock, pending)
+            if operation != "raw-on":
+                assert result is ActuationResult.ACCEPTED
+            assert writer.writes[len(before) :] == [key]
+            assert cable.transmitting is True
+        assert radio.control_connected is False
+        assert radio.connected is False
+        assert radio.radio_ready is False
         assert cable.opens == 1
+        assert cable.writer is writer
+        assert writer.closed is False
     finally:
         if personality == "icom":
             await _finish(serial_clock, radio.disconnect())
@@ -806,7 +793,7 @@ async def test_serial_key_is_refused_until_response_clears_failure(
         "yaesu-default-recover-other-tx",
     ],
 )
-async def test_malformed_serial_reply_cannot_reauthorize_key(
+async def test_malformed_serial_reply_cannot_clear_link_failure(
     personality: str,
     malformed: bytes,
     recovery_reply: bytes,
@@ -878,21 +865,9 @@ async def test_malformed_serial_reply_cannot_reauthorize_key(
         assert radio.control_connected is False
         assert radio.radio_ready is False
         assert radio.last_valid_frame_monotonic == stamp
-        before_key = list(writer.writes)
-        with pytest.raises((CommandError, RadioConnectionError)):
-            await _finish(serial_clock, radio.set_ptt(True))
-        for action in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            await _assert_key_refused(
-                serial_clock,
-                radio.actuate(
-                    EffectToken(1, 1, "malformed-serial-reply"),
-                    action,
-                    is_current=lambda: True,
-                ),
-            )
-        assert writer.writes == before_key
+        before_release = len(writer.writes)
         await _finish(serial_clock, radio.set_ptt(False))
-        assert writer.writes[len(before_key) :] == [release]
+        assert writer.writes[before_release:] == [release]
         assert radio.control_connected is False
         assert radio.radio_ready is False
 

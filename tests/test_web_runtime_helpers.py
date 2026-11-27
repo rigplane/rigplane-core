@@ -936,6 +936,34 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["main"]["sMeter"] == 42
 
 
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("live", [False, True, None, "no-radio"])
+def test_live_control_connection_overrides_stored_boolean(
+    stored: bool, live: bool | str | None
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.parse("connection.connection.control_connected"),
+            stored,
+            at=clock.now(),
+        )
+    )
+    radio = _FakeRadio()
+    radio.control_connected = live
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None if live == "no-radio" else radio,
+        receiver_count=1,
+    )
+
+    assert payload["connection"]["controlConnected"] is (
+        live if isinstance(live, bool) else stored
+    )
+
+
 def test_tx_target_missing_is_explicit_in_both_public_producers() -> None:
     expected = {"status": "unknown", "reason": "not-observed"}
     dataclass_payload = build_public_state_payload(
