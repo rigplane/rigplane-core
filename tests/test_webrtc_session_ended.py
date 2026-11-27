@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,9 +50,17 @@ class _Peer:
 
         return register
 
-    async def state(self, state: str) -> None:
+    def emit_state(self, state: str) -> asyncio.Future[None] | None:
         self.connectionState = state
-        await self.handlers["connectionstatechange"]()
+        result = self.handlers["connectionstatechange"]()
+        if inspect.isawaitable(result):
+            return asyncio.ensure_future(result)
+        return None
+
+    async def state(self, state: str) -> None:
+        task = self.emit_state(state)
+        if task is not None:
+            await task
 
     async def setRemoteDescription(self, description: _Description) -> None:
         if self.fail_negotiate:
@@ -179,6 +188,7 @@ async def test_terminal_reason_once_after_teardown(
     now.advance(2.5)
     peer.close_release.set()
     await task
+    await virtual_clock.elapse(0)
     assert peer.teardown_completed
     envelope = queue.get_nowait()
     assert envelope == {
@@ -195,6 +205,90 @@ async def test_terminal_reason_once_after_teardown(
     assert WebRtcSessionEnded.from_json(envelope["data"]).to_json() == envelope["data"]
     await peer.state("failed")
     await peer.state("closed")
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("states", "ever_connected"),
+    [
+        (("connected", "failed"), True),
+        (("failed", "closed"), False),
+        (("connected", "failed", "closed"), True),
+    ],
+)
+async def test_back_to_back_peer_states_preserve_history_and_first_reason(
+    peers: list[_Peer],
+    states: tuple[str, ...],
+    ever_connected: bool,
+    virtual_clock: VirtualClock,
+) -> None:
+    now = ManualClock(1795737600)
+    server, manager, queue = _setup(now)
+    server._control_event_queues.remove(queue)
+    queue = BoundedQueue(maxsize=10)
+    server._control_event_queues.add(queue)
+    answer = await manager.negotiate("offer", "offer", correlation_id="rapid")
+    session = manager._sessions[answer["sessionId"]]
+    peer = peers[0]
+    peer.close_release.clear()
+
+    for state in states:
+        peer.emit_state(state)
+    assert not peer.close_started.is_set()
+    assert queue.empty()
+
+    await virtual_clock.elapse(0)
+    assert peer.close_started.is_set()
+    assert not peer.teardown_completed
+    assert queue.empty()
+    now.advance(2)
+    peer.close_release.set()
+    await virtual_clock.elapse(0)
+
+    assert peer.teardown_completed
+    assert queue.get_nowait() == {
+        "type": "event",
+        "name": "webrtc_session_ended",
+        "data": {
+            "correlation_id": "rapid",
+            "ended_at": 1795737602,
+            "reason": "peer_failed",
+            "ever_connected": ever_connected,
+            "path": "unknown",
+        },
+    }
+    assert queue.empty()
+    assert manager.active_session_ids == []
+    assert not session.tasks
+    peer.emit_state("failed")
+    peer.emit_state("closed")
+    await virtual_clock.elapse(0)
+    assert queue.empty()
+    assert not session.tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_all", [False, True])
+async def test_peer_failure_reason_is_latched_before_an_explicit_close(
+    peers: list[_Peer],
+    close_all: bool,
+    virtual_clock: VirtualClock,
+) -> None:
+    _, manager, queue = _setup(ManualClock())
+    answer = await manager.negotiate("offer", "offer", correlation_id="race")
+    peer = peers[0]
+    peer.emit_state("connected")
+    peer.emit_state("failed")
+    if close_all:
+        assert await manager.close_all() == [answer["sessionId"]]
+    else:
+        await manager.close_session(answer["sessionId"])
+    await virtual_clock.elapse(0)
+    assert peer.teardown_completed
+    data = queue.get_nowait()["data"]
+    assert data["reason"] == "peer_failed"
+    assert data["ever_connected"] is True
     assert queue.empty()
 
 
@@ -312,3 +406,24 @@ async def test_failed_teardown_does_not_publish_terminal_fact(
         await manager.close_session(answer["sessionId"])
     assert not peers[0].teardown_completed
     assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_peer_teardown_failure_reaches_dispatch_without_a_terminal_fact(
+    peers: list[_Peer],
+    virtual_clock: VirtualClock,
+) -> None:
+    _, manager, queue = _setup(ManualClock())
+    answer = await manager.negotiate("offer", "offer", correlation_id="broken-peer")
+    session = manager._sessions[answer["sessionId"]]
+    peers[0].fail_close = True
+    task = peers[0].emit_state("failed")
+    assert task is not None
+    await virtual_clock.elapse(0)
+    assert task.done()
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await task
+    assert not peers[0].teardown_completed
+    assert queue.empty()
+    assert not session.tasks
+    assert manager.active_session_ids == []

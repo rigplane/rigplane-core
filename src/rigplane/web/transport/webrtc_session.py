@@ -313,16 +313,24 @@ class WebRtcSessionManager:
             self._dispatch_channel(session_id, session, channel)
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
-        async def _on_state() -> None:
+        def _on_state() -> asyncio.Task[None] | None:
             state = pc.connectionState
             if state == "connected":
                 session.ever_connected = True
             elif state == "disconnected":
                 self._fence_peer(session_id)
-            elif state == "failed":
-                await self._drop(session_id, WebRtcSessionEndReason.PEER_FAILED)
-            elif state == "closed":
-                await self._drop(session_id, WebRtcSessionEndReason.PEER_CLOSED)
+            elif state in ("failed", "closed") and session._close_reason is None:
+                reason = (
+                    WebRtcSessionEndReason.PEER_FAILED
+                    if state == "failed"
+                    else WebRtcSessionEndReason.PEER_CLOSED
+                )
+                session._close_reason = reason
+                task = asyncio.create_task(self._drop(session_id, reason))
+                session.tasks.add(task)
+                task.add_done_callback(session.tasks.discard)
+                return task
+            return None
 
         try:
             policy = (
