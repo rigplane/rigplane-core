@@ -39,6 +39,7 @@ from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver
 from rigplane.testing.timing import ManualClock, VirtualClock, await_until
+from rigplane.web.server import WebConfig, WebServer
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
 RESUME_BOUND_S = 10.0
@@ -419,6 +420,109 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
         await sub.release()
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.parametrize("callback", ["absent", "present", "raises"])
+async def test_rx_restore_failure_is_retained_at_third_attempt_and_clears_on_frames(
+    callback: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    stack = await soak_driver._start_simulator_stack()
+    try:
+        radio = stack.radio
+        session = radio.audio_session
+        recovery: list[AudioRecoveryState] = []
+
+        def report(state: AudioRecoveryState) -> None:
+            recovery.append(state)
+            if callback == "raises":
+                raise RuntimeError("embedder callback failed")
+
+        radio._on_audio_recovery = None if callback == "absent" else report
+        server = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        server._attach_audio_session_listener()
+        broadcaster = server._audio_broadcaster
+        deliveries: list[object] = []
+
+        def record_delivery() -> None:
+            deliveries.append(broadcaster.rx_start_status()["failure"])
+
+        server._on_rx_start_status_change = record_delivery
+        sub = await session.subscribe_rx("restore-failure-test")
+        try:
+            assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+            assert session.rx_restore_failed is False
+            assert broadcaster.rx_start_status()["failure"] is None
+            attempts: list[int] = []
+            observed_failures: list[tuple[bool, object]] = []
+            original_ensure = radio._ensure_audio_transport
+
+            async def fail_ensure() -> None:
+                attempts.append(1)
+                # Neither a partial budget nor an in-flight final attempt is FAILED.
+                observed_failures.append(
+                    (
+                        session.rx_restore_failed,
+                        broadcaster.rx_start_status()["failure"],
+                    )
+                )
+                raise CoreConnectionError("audio leg never returns")
+
+            radio._ensure_audio_transport = fail_ensure
+            try:
+                _kill_client_audio_only(radio)
+                await _drive_rx_silent(radio)
+                assert await await_until(
+                    lambda: (
+                        len(attempts) == 3 and radio._audio_silence_repair_task is None
+                    ),
+                    timeout=15.0,
+                )
+            finally:
+                radio._ensure_audio_transport = original_ensure
+
+            assert session.rx_restore_failed is True
+            assert observed_failures == [(False, None)] * 3
+            assert recovery == (
+                [] if callback == "absent" else [AudioRecoveryState.FAILED]
+            )
+            failure = {
+                "stage": "rx_recovery",
+                "code": "core_rx_restore_failed",
+                "reason": "retries_exhausted",
+            }
+            assert broadcaster.rx_start_status()["failure"] == failure
+            assert server.build_public_state()["audioReceive"]["failure"] == failure
+            assert deliveries[-1] == failure
+            deliveries.clear()
+            warnings = [
+                record
+                for record in caplog.records
+                if "event=rx_audio_restore_failed" in record.getMessage()
+            ]
+            assert len(warnings) == 1
+            assert warnings[0].levelname == "WARNING"
+            assert "RX audio could not be restored" in warnings[0].getMessage()
+            async with session._lock:
+                session._check_liveness_locked()
+            assert session.rx_restore_failed is True
+
+            # Re-arming alone is not evidence of recovery.
+            await radio._ensure_audio_transport()
+            assert session.rx_restore_failed is True
+            await session.reestablish()
+            _drain(sub)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert await await_until(
+                lambda: not session.rx_restore_failed, timeout=RESUME_BOUND_S
+            )
+            assert broadcaster.rx_start_status()["failure"] is None
+            assert server.build_public_state()["audioReceive"]["failure"] is None
+            assert deliveries[-1] is None
+        finally:
+            server._detach_audio_session_listener()
+            await sub.release()
     finally:
         await stack.aclose()
 
@@ -1098,6 +1202,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
                 assert bus.last_rx_frame_monotonic == heartbeat_before_death
                 assert radio._audio_silence_repair_task is None
                 assert radio._audio_silence_repair_attempts == round_no
+                assert session.rx_restore_failed is (round_no == 3)
                 assert len(reestablished) == round_no
                 assert recovery == (
                     [AudioRecoveryState.FAILED] if round_no == 3 else []
@@ -1148,6 +1253,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
                 "fresh RX was not observed by a healthy liveness decision"
             )
             assert radio._audio_silence_repair_attempts == 0
+            assert session.rx_restore_failed is False
             await _drive_rx_silent()
             task = radio._audio_silence_repair_task
             assert task is not None, "fresh ingress did not reopen the episode"

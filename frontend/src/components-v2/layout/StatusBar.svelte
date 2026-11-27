@@ -192,8 +192,12 @@
   );
   // MOR-3753: demand-gated, not socket-gated — an absent browser socket with
   // no demand is idle (neutral), not a fault (red).
+  let rxRestoreFailed = $derived(
+    runtime.state?.audioReceive?.failure?.code === 'core_rx_restore_failed',
+  );
   let audioState = $derived(
-    deriveAudioIndicatorState(getAudioState(), isAudioConnected(), isPoweredOff),
+    rxRestoreFailed ? 'failed'
+      : deriveAudioIndicatorState(getAudioState(), isAudioConnected(), isPoweredOff),
   );
   let audioTooltip = $derived(t(`core.statusbar.audio.${audioState}`));
   // MOR-1791: the server cannot decode Opus, so browser TX runs on the PCM16
@@ -419,6 +423,9 @@
         <span class="indicator-dot"></span>
         <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
       </span>
+      {/if}
+      {#if rxRestoreFailed}
+        <span role="status" data-testid="rx-audio-restore-failed">{t('core.statusbar.audio.restoreFailed')}</span>
       {/if}
       {#if txCodecFallback}
         <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
