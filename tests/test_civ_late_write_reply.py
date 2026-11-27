@@ -1,4 +1,4 @@
-"""MOR-4856: abandoned writes retain ownership of their late bare reply."""
+"""MOR-4856: abandoned writes claim late replies for the MOR-2860 window."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 
 import pytest
+from _helpers import wrap_civ_in_udp
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_radio import MockTransport
 
@@ -14,7 +15,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core import civ
 from rigplane.core.civ import CivEvent, CivEventType, CivRequestKey, CivRequestTracker
 from rigplane.core.exceptions import CommandError, TimeoutError as CivTimeoutError
-from rigplane.runtime import _civ_rx
+from rigplane.runtime import _civ_rx, radio as radio_module
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
@@ -39,6 +40,7 @@ async def wired_radio(
 ) -> AsyncGenerator[tuple[IcomRadio, Callable[[bytes], None], list[bytes]], None]:
     virtual_clock.scope_to(monkeypatch, civ)
     virtual_clock.scope_to(monkeypatch, _civ_rx)
+    virtual_clock.scope_to(monkeypatch, radio_module)
     radio = IcomRadio("127.0.0.1", timeout=2.0, model="IC-7610")
     if request.param == "serial":
         link = _FakeSerialCivLink()
@@ -55,7 +57,7 @@ async def wired_radio(
         transport = MockTransport()
 
         def inject(frame: bytes) -> None:
-            transport.queue_response(radio._wrap_civ(frame))
+            transport.queue_response(wrap_civ_in_udp(frame))
 
         sent = transport.sent_packets
     radio._civ_transport = transport
@@ -64,6 +66,7 @@ async def wired_radio(
     try:
         yield radio, inject, sent
     finally:
+        await radio._civ_runtime.stop_worker()
         await radio._civ_runtime.stop_pump()
         radio._civ_request_tracker.fail_all(RuntimeError("test cleanup"))
 
@@ -79,7 +82,7 @@ async def test_abandoned_write_consumes_late_reply_without_backlogging(
     retire_via: str,
 ) -> None:
     virtual_clock.scope_to(monkeypatch, civ)
-    tracker = CivRequestTracker()
+    tracker = CivRequestTracker(stale_ttl=0.1)
     first = tracker.register_ack(consume_backlog=False)
     assert isinstance(first, asyncio.Future)
     tracker.mark_sent(virtual_clock(), futures=(first,))
@@ -88,13 +91,14 @@ async def test_abandoned_write_consumes_late_reply_without_backlogging(
         tracker.unregister(first)
         first.cancel()
 
-    # Neither ordinary sink expiry nor stale GC may erase the reply debt.
-    await virtual_clock.elapse(11.0)
-    tracker.expire_ack_sinks(answer_window=2.0)
     tracker.cleanup_stale()
     if retire_via == "stale-gc":
         with pytest.raises(asyncio.TimeoutError):
             first.result()
+    # The claim lasts one MOR-2860 window from abandonment, not from send.
+    await virtual_clock.elapse(1.99)
+    tracker.expire_ack_sinks(answer_window=2.0)
+    tracker.cleanup_stale()
     assert tracker.pending_count == 0
     assert tracker.ack_sink_count == 0
     late = CivEvent(
@@ -121,14 +125,58 @@ async def test_abandoned_write_consumes_late_reply_without_backlogging(
     assert tracker.pending_count == 0
 
 
+@pytest.mark.parametrize("retire_via", ["unregister", "stale-gc"])
+@pytest.mark.parametrize("command", [0xFB, 0xFA])
+async def test_lost_write_reply_claim_expires_at_the_mor2860_window(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    retire_via: str,
+    command: int,
+) -> None:
+    virtual_clock.scope_to(monkeypatch, civ)
+    tracker = CivRequestTracker(stale_ttl=0.1)
+    first = tracker.register_ack(consume_backlog=False)
+    assert isinstance(first, asyncio.Future)
+    tracker.mark_sent(virtual_clock(), futures=(first,))
+    await virtual_clock.elapse(0.25)
+    if retire_via == "unregister":
+        tracker.unregister(first)
+        first.cancel()
+    else:
+        tracker.cleanup_stale()
+        with pytest.raises(asyncio.TimeoutError):
+            first.result()
+    abandoned_at = tracker.ack_unclaimed_at
+    assert abandoned_at == virtual_clock()
+    await virtual_clock.elapse(2.0)
+    assert tracker.expire_ack_sinks(answer_window=2.0) == 1
+    assert tracker.ack_unclaimed_at == abandoned_at, "expiry renewed the window"
+    tracker.cleanup_stale()
+    second = tracker.register_ack(consume_backlog=False)
+    assert isinstance(second, asyncio.Future)
+    tracker.mark_sent(virtual_clock(), futures=(second,))
+    own = parse_civ_frame(_reply(command))
+    assert tracker.resolve(
+        CivEvent(
+            type=CivEventType.ACK if command == 0xFB else CivEventType.NAK,
+            frame=own,
+        )
+    )
+    assert second.result() is own
+
+
 @pytest.mark.parametrize("first_path", ["ptt", "write", "raw", "cancelled"])
 @pytest.mark.parametrize("late_command,own_command", [(0xFB, 0xFA), (0xFA, 0xFB)])
+@pytest.mark.parametrize("second_path", ["write", "ptt"])
+@pytest.mark.parametrize("past_window", [False, True], ids=["late", "lost"])
 async def test_expired_write_cannot_decide_next_write_through_receive_pump(
     virtual_clock: VirtualClock,
     wired_radio: tuple[IcomRadio, Callable[[bytes], None], list[bytes]],
     first_path: str,
     late_command: int,
     own_command: int,
+    second_path: str,
+    past_window: bool,
 ) -> None:
     radio, inject, sent = wired_radio
     write = build_civ_frame(0x98, CONTROLLER_ADDR, 0x14, sub=0x01, data=b"\x01\x10")
@@ -171,22 +219,92 @@ async def test_expired_write_cannot_decide_next_write_through_receive_pump(
             with pytest.raises((CivTimeoutError, asyncio.TimeoutError)):
                 await first
 
-        second = asyncio.create_task(radio._execute_civ_raw(write))
+        if past_window:
+            await virtual_clock.elapse(radio._civ_get_timeout)
+        second = asyncio.create_task(
+            radio._execute_civ_raw(write)
+            if second_path == "write"
+            else radio.actuate(
+                EffectToken(0, 1, "next-ack"),
+                ActuationOperation.PTT_ON,
+                is_current=lambda: True,
+            )
+        )
         tasks.append(second)
         await virtual_clock.elapse(0)
         assert len(sent) == 2
-        inject(_reply(late_command))
-        await virtual_clock.elapse(0)
-        assert not second.done(), "write A's late reply settled write B"
+        if not past_window:
+            inject(_reply(late_command))
+            await virtual_clock.elapse(0)
+            assert not second.done(), "write A's late reply settled write B"
         inject(_reply(own_command))
         await virtual_clock.elapse(0)
         assert second.done()
-        assert (await second).command == own_command
+        if second_path == "write":
+            assert (await second).command == own_command
+        else:
+            assert await second is (
+                ActuationResult.ACCEPTED
+                if own_command == 0xFB
+                else ActuationResult.REJECTED
+            )
         assert radio._civ_request_tracker.pending_count == 0
     finally:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("first_path", ["ptt", "write"])
+async def test_release_is_confirmed_after_the_lost_reply_window(
+    virtual_clock: VirtualClock,
+    wired_radio: tuple[IcomRadio, Callable[[bytes], None], list[bytes]],
+    first_path: str,
+) -> None:
+    radio, inject, sent = wired_radio
+    first = asyncio.create_task(
+        radio.actuate(
+            EffectToken(0, 0, "lost-key-ack"),
+            ActuationOperation.PTT_ON,
+            is_current=lambda: True,
+        )
+        if first_path == "ptt"
+        else radio._execute_civ_raw(
+            build_civ_frame(0x98, CONTROLLER_ADDR, 0x14, sub=0x01, data=b"\x01\x10")
+        )
+    )
+    second = None
+    try:
+        await virtual_clock.elapse(0)
+        assert len(sent) == 1
+        await virtual_clock.elapse(radio._civ_get_timeout + 0.01)
+        assert first.done()
+        if first_path == "ptt":
+            assert await first is ActuationResult.ACCEPTED
+        else:
+            with pytest.raises(CivTimeoutError):
+                await first
+        await virtual_clock.elapse(radio._civ_get_timeout)
+        second = asyncio.create_task(
+            radio.actuate(
+                EffectToken(0, 1, "confirmed-release"),
+                ActuationOperation.FORCE_RECEIVE,
+                is_current=lambda: True,
+            )
+        )
+        await virtual_clock.elapse(0)
+        assert len(sent) == 2
+        inject(_reply(0xFB))
+        await virtual_clock.elapse(0)
+        assert second.done(), "an expired write claim swallowed the release's FB"
+        assert await second is ActuationResult.ACCEPTED
+    finally:
+        first.cancel()
+        if second is not None:
+            second.cancel()
+        await asyncio.gather(
+            first, *([second] if second is not None else []), return_exceptions=True
+        )
 
 
 @pytest.mark.parametrize("first_path", ["write", "raw"])

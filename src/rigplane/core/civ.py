@@ -171,7 +171,7 @@ class _AckWaiter:
     sent_order: int = 0
     # The data waiter of the same read (a NAK-only waiter's partner).
     pair: asyncio.Future[CivFrame] | None = None
-    retired: bool = False
+    abandoned_at: float | None = None
 
 
 @dataclass(slots=True)
@@ -305,7 +305,7 @@ class CivRequestTracker:
     @property
     def pending_count(self) -> int:
         """Number of unresolved pending requests."""
-        return sum(not w.retired for w in self._ack_waiters) + len(
+        return sum(w.abandoned_at is None for w in self._ack_waiters) + len(
             self._response_waiters
         )
 
@@ -343,7 +343,9 @@ class CivRequestTracker:
     @property
     def ack_sink_count(self) -> int:
         """Number of fire-and-forget ACK sink waiters currently tracked."""
-        return sum(1 for w in self._ack_waiters if w.future is None and not w.retired)
+        return sum(
+            1 for w in self._ack_waiters if w.future is None and w.abandoned_at is None
+        )
 
     @property
     def generation(self) -> int:
@@ -374,9 +376,10 @@ class CivRequestTracker:
         """
         return self._ack_unclaimed_at
 
-    def note_ack_unclaimed(self) -> None:
+    def note_ack_unclaimed(self) -> float:
         """Record that a write's ACK/NAK can still arrive with no waiter."""
         self._ack_unclaimed_at = time.monotonic()
+        return self._ack_unclaimed_at
 
     def snapshot_stats(self) -> dict[str, int]:
         """Return tracker counters for monitoring."""
@@ -511,8 +514,9 @@ class CivRequestTracker:
         """Detach a future, retaining an unanswered sent write's reply sink.
 
         A bare FB/FA carries no request identity. Keep an abandoned write's
-        sent order until its reply is consumed, ordered evidence retires it,
-        or the session ends (``test_civ_late_write_reply.py``).
+        sent order for the MOR-2860 window from :meth:`note_ack_unclaimed`;
+        :meth:`expire_ack_sinks` closes that claim. A reply, ordered evidence
+        or session end can remove it sooner (``test_civ_late_write_reply.py``).
         ``sent=False`` discards a tentative stamp after a pre-wire refusal.
         """
         kept: list[_AckWaiter] = []
@@ -530,9 +534,8 @@ class CivRequestTracker:
                 )
             ):
                 waiter.future = None
-                waiter.retired = True
+                waiter.abandoned_at = self.note_ack_unclaimed()
                 kept.append(waiter)
-                self.note_ack_unclaimed()
         self._ack_waiters = kept
         self._response_waiters = [
             w for w in self._response_waiters if w.future is not future
@@ -575,7 +578,7 @@ class CivRequestTracker:
     def expire_ack_sinks(
         self, *, answer_window: float, now_monotonic: float | None = None
     ) -> int:
-        """Drop fire-and-forget sinks whose own answer window has closed.
+        """Drop sinks whose answer window has closed.
 
         A sink is owed its answer for ``answer_window`` from its send
         stamp (registration until sent); only an ordered answer that passed
@@ -584,23 +587,27 @@ class CivRequestTracker:
         :meth:`note_ack_unclaimed` (read by the PTT-release check); a read
         is never answered with FB and does not.
 
+        An abandoned blocking write uses the same MOR-2860 unclaimed-answer
+        timestamp and window. Expiring that claim does not renew ambiguity
+        (``test_lost_write_reply_claim_expires_at_the_mor2860_window``).
+
         Returns:
             Number of sink entries expired.
         """
         now = now_monotonic if now_monotonic is not None else time.monotonic()
         kept: list[_AckWaiter] = []
         for waiter in self._ack_waiters:
-            sent = waiter.sent_monotonic
+            sent = (
+                waiter.sent_monotonic
+                if waiter.abandoned_at is None
+                else waiter.abandoned_at
+            )
             sent = waiter.created_monotonic if sent is None else sent
-            if (
-                waiter.retired
-                or waiter.future is not None
-                or now < sent + answer_window
-            ):
+            if waiter.future is not None or now < sent + answer_window:
                 kept.append(waiter)
             else:
                 _log_sink("civ.sink.expired", waiter, now)
-                if waiter.response_key is None:
+                if waiter.response_key is None and waiter.abandoned_at is None:
                     self.note_ack_unclaimed()
         expired = len(self._ack_waiters) - len(kept)
         self._ack_waiters = kept
@@ -621,7 +628,7 @@ class CivRequestTracker:
 
         fresh_ack: list[_AckWaiter] = []
         for waiter in self._ack_waiters:
-            if waiter.retired or waiter.created_monotonic > cutoff:
+            if waiter.abandoned_at is not None or waiter.created_monotonic > cutoff:
                 fresh_ack.append(waiter)
                 continue
             cleaned += 1
@@ -636,9 +643,8 @@ class CivRequestTracker:
                 and not waiter.nak_only
             ):
                 waiter.future = None
-                waiter.retired = True
+                waiter.abandoned_at = self.note_ack_unclaimed()
                 fresh_ack.append(waiter)
-                self.note_ack_unclaimed()
         self._ack_waiters = fresh_ack
 
         fresh_response: list[_PendingRequest] = []

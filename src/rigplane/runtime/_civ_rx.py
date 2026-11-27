@@ -1332,8 +1332,6 @@ class CivRuntime:
                 frame = pending_waiters[0].result()
         except asyncio.TimeoutError:
             self._host._civ_request_tracker.note_timeout()
-            if expect == "ack":
-                self._host._civ_request_tracker.note_ack_unclaimed()
             logger.debug(
                 "CI-V transaction 0x%02X timed out",
                 request_key.command,
@@ -5169,13 +5167,6 @@ class CivRuntime:
                     pending.cancel()
                 elif not pending.cancelled():
                     pending.exception()
-                # A sent write left without its FB/FA may still be answered.
-                if (
-                    sent
-                    and not expects_response
-                    and (pending.cancelled() or pending.exception() is not None)
-                ):
-                    tracker.note_ack_unclaimed()
             if nak_pending is not None:
                 tracker.unregister(nak_pending)
                 if not nak_pending.done():
