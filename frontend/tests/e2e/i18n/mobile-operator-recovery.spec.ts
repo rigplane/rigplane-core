@@ -727,6 +727,47 @@ test('portrait panorama keeps its box with no toolbar above it (MOR-2851)', asyn
   expect(writes).toEqual([]);
 });
 
+test('panorama and its landscape and station overlays render without blur (MOR-2551)', async ({ page }) => {
+  const readEffects = (selector: string) => page.locator(selector).evaluateAll((elements) => elements.map((element) => {
+    const style = getComputedStyle(element);
+    return {
+      element: `${element.tagName}.${element.getAttribute('class') ?? ''}`,
+      backdrop: style.getPropertyValue('backdrop-filter'),
+      webkitBackdrop: style.getPropertyValue('-webkit-backdrop-filter'),
+      filter: style.filter,
+    };
+  }));
+  const writes = await prepare(page, scopeReadState);
+  await page.setViewportSize({ width: 812, height: 375 });
+  await page.goto('/');
+  await settled(page);
+  const overlay = page.locator('.m-ls-overlay');
+  await expect(overlay).toBeVisible();
+  await expect(overlay).toHaveCSS('position', 'absolute');
+  await expect(overlay).toHaveCSS('background-color', 'rgba(0, 0, 0, 0.65)');
+  await expect(page.locator('.spectrum-panel')).toBeVisible();
+  const effects = await readEffects('.spectrum-panel, .spectrum-panel *, .m-ls-overlay');
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.locator('.m-layout')).toBeVisible();
+  await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
+  await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
+  await page.getByTestId('scope-more').click();
+  await expect(page.getByTestId('scope-more-sheet')).toBeVisible();
+  await page.getByRole('button', { name: 'EiBi Stations', exact: true }).click();
+  const backdrop = page.locator('.eibi-backdrop');
+  await expect(backdrop).toBeVisible();
+  await expect(backdrop).toHaveCSS('position', 'fixed');
+  await expect(backdrop).toHaveCSS('background-color', 'rgba(0, 0, 0, 0.5)');
+  effects.push(...await readEffects('.spectrum-panel, .spectrum-panel *, .eibi-backdrop, .eibi-backdrop *'));
+  expect(effects.length).toBeGreaterThan(3);
+  for (const effect of effects) {
+    expect(effect.backdrop, effect.element).toBe('none');
+    expect(['', 'none'], effect.element).toContain(effect.webkitBackdrop);
+    expect(effect.filter, effect.element).not.toMatch(/\bblur\s*\(/);
+  }
+  expect(writes).toEqual([]);
+});
+
 // Landscape is MEASURED only (owner ruling: portrait-only change) — the
 // numbers are reported, nothing is asserted and nothing is changed there.
 test('landscape button label sizes measured, report only (MOR-2816)', async ({ page }, info) => {

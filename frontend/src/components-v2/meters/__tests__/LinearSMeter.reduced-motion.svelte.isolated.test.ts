@@ -1,6 +1,5 @@
 import { browserRenderTiming, ScopeRenderScheduler } from '$lib/canvas/scope-render-scheduler';
 import { createSmoother, onReducedMotionChange, prefersReducedMotion } from '$lib/utils/smoothing.svelte';
-import mobileLayout from '../../layout/MobileRadioLayout.svelte?raw';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
@@ -410,10 +409,6 @@ describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cy
   });
 });
 
-const panoramaSources = import.meta.glob('../../../components/spectrum/**/*.svelte', {
-  eager: true, query: '?raw', import: 'default',
-}) as Record<string, string>;
-
 function frameClock(initiallyHidden = false) {
   let hidden = initiallyHidden;
   let nextId = 0;
@@ -604,14 +599,4 @@ it('reads reduced motion once for shared consumers and reacts to a query change'
     expect(second).toHaveBeenLastCalledWith(false);
   } finally { stopReactive(); stopFirst(); stopSecond(); }
   expect(query.listeners.size).toBe(0);
-});
-
-it('keeps panorama layers and its landscape overlay free of backdrop filters and blur', () => {
-  expect(Object.keys(panoramaSources).length).toBeGreaterThan(0);
-  for (const [path, source] of Object.entries(panoramaSources)) {
-    expect(source, path).not.toMatch(/(?:-webkit-)?backdrop-filter\s*:|filter\s*:[^;}]*\bblur\s*\(/);
-  }
-  const overlay = mobileLayout.match(/\.m-ls-overlay\s*\{([^}]+)\}/)?.[1];
-  expect(overlay).toBeDefined();
-  expect(overlay).not.toMatch(/(?:-webkit-)?backdrop-filter\s*:|filter\s*:[^;}]*\bblur\s*\(/);
 });
