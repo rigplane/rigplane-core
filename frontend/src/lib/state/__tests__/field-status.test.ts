@@ -221,6 +221,14 @@ describe('field-status refusal localisation (MOR-4828)', () => {
     expect(refusedFieldEntries(state)).toHaveLength(1);
   });
 
+  it('does not render a stale refusal key on a missing row (field-reason e2e)', () => {
+    // The e2e unobserved replay grafts a refused snapshot and clears only
+    // `message`: the stale `messageKey` must not surface as a refusal on a
+    // row the producer no longer marks `unavailable`.
+    const state = stateWith({ micGain: refusedRow({ availability: 'missing', message: undefined }) });
+    expect(getFieldAvailabilityMessage(state, 'micGain')).toBeUndefined();
+  });
+
   it('dedups public-path aliases of one store path into a single entry', () => {
     const state = stateWith({ micGain: refusedRow(), micGainAlias: refusedRow() });
     const entries = refusedFieldEntries(state);

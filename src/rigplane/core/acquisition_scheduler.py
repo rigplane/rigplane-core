@@ -593,7 +593,9 @@ class _ReadRefusal:
 
     def message_key(self) -> str:
         """The locale-table code for this refusal variant (MOR-4828)."""
-        return MALFORMED_READ_MESSAGE_KEY if self.malformed else READ_REFUSAL_MESSAGE_KEY
+        return (
+            MALFORMED_READ_MESSAGE_KEY if self.malformed else READ_REFUSAL_MESSAGE_KEY
+        )
 
     def message_params(self, path: FieldPath) -> dict[str, str]:
         """The interpolation values for :meth:`message_key` (MOR-4828)."""

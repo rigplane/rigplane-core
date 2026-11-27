@@ -81,7 +81,14 @@ export function getFieldAvailabilityMessage(
   publicPath: string,
 ): FieldStatus['message'] {
   const { availability, status } = resolveFieldAvailability(state, publicPath);
-  return availability === 'available' ? undefined : resolveFieldStatusMessage(status);
+  if (availability === 'available') return undefined;
+  // A refusal sentence belongs to an `unavailable` row: the producer
+  // contract projects a refused read as `unavailable`, and the recovered
+  // row drops its message. Any other non-available row keeps the legacy
+  // raw `message` read, so a stale key lingering on a missing row cannot
+  // render as a refusal (field-reason e2e: 'Not yet observed').
+  if (availability !== 'unavailable') return status?.message;
+  return resolveFieldStatusMessage(status);
 }
 
 /**
