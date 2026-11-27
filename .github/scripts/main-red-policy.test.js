@@ -287,7 +287,7 @@ for (const event of ['push', 'schedule', 'workflow_dispatch']) {
   test(`reported ${event} red replay stays in its closed episode after first-red recovery`, async () => {
     const h = harness({corePolicy: true, workflowPageSize: 1});
     const first = {...history()[1], event};
-    const later = {...history()[0], event, head_sha: first.head_sha};
+    const later = {...history()[0], event, head_sha: first.head_sha, run_attempt: 1};
     h.setCurrent(later);
     h.setHistory([later, first, ...history().slice(2)]);
     await h.run();
@@ -354,7 +354,7 @@ for (const event of ['push', 'schedule', 'workflow_dispatch']) {
 test('red replay keeps its episode when its marker was recorded in a comment', async () => {
   const h = harness({corePolicy: true, workflowPageSize: 1});
   await h.run();
-  const later = {...history()[0], id: 14, run_number: 14};
+  const later = {...history()[0], id: 14, run_number: 14, run_attempt: 1};
   h.setCurrent(later);
   h.setHistory([later, ...history()]);
   await h.run();
@@ -390,7 +390,7 @@ test('reconciliation closes every recovered channel episode across older pages a
   await h.run();
   const old = {...h.stored[0], number: 2,
     body: '<!-- main-red:episode:example/repo/7:green-8 -->\n<!-- main-red:first-red-run-9 -->', comments: []};
-  const foreign = {...old, number: 3, body: old.body.replace('/7:', '/70:')};
+  const foreign = {...old, number: 3, body: old.body.replace('/7:', '/70:'), comments: []};
   h.stored.push(old, foreign);
   const previous = {...history()[1], id: 9, run_number: 9};
   const green = {...history()[2], id: 14, run_number: 14};
