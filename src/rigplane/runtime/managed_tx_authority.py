@@ -8,10 +8,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.tx_observation import TX_READ_DEADLINE_SECONDS, TxStateReading
 from rigplane.runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -30,6 +31,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationSettled,
     EffectToken,
     ForceOff,
+    ManagedTxActuationRefused,
     ManagedTxEffect,
     ManagedTxEvent,
     ManagedTxIntent,
@@ -138,12 +140,23 @@ class ShutdownResult(StrEnum):
     TERMINATED = "terminated"
 
 
+ManagedTxStopOutcome = Literal["released", "unconfirmed", "never_keyed"]
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedTxStopResult:
+    provider_generation: int | None
+    outcome: ManagedTxStopOutcome
+    reason: str
+
+
 _ProviderRetirement = Callable[[int], Awaitable[None]]
 
 # Defaults of ManagedTxAuthority's attempt_timeout_seconds and
 # retry_delay_seconds.
 ATTEMPT_TIMEOUT_S: float = 3.0
 RETRY_DELAY_S: float = 1.0
+PREPARE_STOP_LEASE_SECONDS: float = 10.0
 
 # Upper bound for one admitted owner-specific TX audio push
 # (``owned_tx_submission``). A stuck push must never hold the
@@ -181,6 +194,7 @@ class ManagedTxAuthority:
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
         radio_tx: RadioTxProbe | None = None,
+        read_transmit_state: Callable[[], Awaitable[TxStateReading]] | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -218,6 +232,12 @@ class ManagedTxAuthority:
         self._release_drained.set()
         self._shutting_down = False
         self._shutdown_requested = False
+        self._prepare_stop_deadline: float | None = None
+        self._prepare_stop_task: asyncio.Task[ManagedTxStopResult] | None = None
+        self._prepare_stop_reopened = asyncio.Event()
+        self._prepare_stop_reopened.set()
+        self._possible_other_tx = False
+        self._read_transmit_state = read_transmit_state
         self._terminated = False
         self._shutdown_termination: asyncio.Event | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
@@ -393,6 +413,7 @@ class ManagedTxAuthority:
         if ready is not None and not isinstance(ready, asyncio.Future):
             raise TypeError("positive TX readiness must be an existing Future or Task")
         generation = self._provider_generation
+        arrived_during_stop = self.prepare_stop_blocks_ingress()
         token = self._abort_fence.issue()
         admitted: asyncio.Future[ManagedTxTransition] = (
             asyncio.get_running_loop().create_future()
@@ -411,6 +432,12 @@ class ManagedTxAuthority:
                 async with self._tx_admission_lock:
                     async with self._lock:
                         self._require_ingress_open_locked()
+                        if arrived_during_stop or self.prepare_stop_blocks_ingress():
+                            return ManagedTxTransition(
+                                self._state,
+                                ManagedTxOutcome.REJECTED,
+                                reason=ManagedTxRefusalReason.RELEASE_IN_PROGRESS,
+                            ), None
                         if controller_ticket is not None:
                             controller_ticket.authority.validate_positive(
                                 controller_ticket
@@ -832,7 +859,7 @@ class ManagedTxAuthority:
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
         if operation is not ActuationOperation.FORCE_RECEIVE:
-            if self._shutdown_requested:
+            if self._shutdown_requested or self.prepare_stop_blocks_ingress():
                 return False
             ticket = self._controller_effects.get(token)
             if ticket is None and self._controller is not None:
@@ -985,6 +1012,7 @@ class ManagedTxAuthority:
             or self._shutdown_requested
             or self._shutting_down
             or self._terminated
+            or self.prepare_stop_blocks_ingress()
         ):
             return False
         if self._provider_generation is None:
@@ -1035,13 +1063,16 @@ class ManagedTxAuthority:
     async def provider_unavailable(self) -> None:
         await asyncio.shield(self.start_provider_unavailable())
 
-    async def provider_available(self, generation: int) -> None:
+    async def provider_available(self, generation: int) -> bool:
+        """Publish a provider, returning False while stop preparation defers it."""
         transition = None
         async with self._lock:
             self._require_open_locked()
             self._require_provider_change_locked()
             if generation == self._provider_generation:
-                return
+                return True
+            if self.prepare_stop_blocks_ingress():
+                return False
             if self._provider_generation is not None:
                 raise RuntimeError("current provider must become unavailable first")
             if generation <= self._generation_high_water:
@@ -1057,6 +1088,157 @@ class ManagedTxAuthority:
             self._wakeup.wake()
         if transition is not None:
             await self._execute(transition.effects, full_force=False)
+        return True
+
+    def prepare_stop_blocks_ingress(self) -> bool:
+        return self._prepare_stop_task is not None or (
+            self._prepare_stop_deadline is not None
+            and self._clock() < self._prepare_stop_deadline
+        )
+
+    def admit_local_tx_work(self) -> None:
+        self._require_ingress_open_locked()
+        if self.prepare_stop_blocks_ingress():
+            raise ManagedTxActuationRefused(ManagedTxRefusalReason.RELEASE_IN_PROGRESS)
+        self._possible_other_tx = True
+
+    async def wait_for_prepare_stop_resume(self) -> None:
+        await self._prepare_stop_reopened.wait()
+
+    async def prepare_stop(self) -> ManagedTxStopResult:
+        """Close admission before releasing TX on the current provider."""
+        async with self._lock:
+            self._require_ingress_open_locked(release=True)
+            self._prepare_stop_deadline = self._clock() + PREPARE_STOP_LEASE_SECONDS
+            self._prepare_stop_reopened.clear()
+            task = self._prepare_stop_task
+            if task is None:
+                # Invalidate pre-lease requests even when no RF effect is pending.
+                self._pending_abort_cleanup.append(self._abort_fence.force_off())
+                task = asyncio.create_task(self._complete_prepare_stop())
+                self._prepare_stop_task = task
+            self._wakeup.wake()
+        return await asyncio.shield(task)
+
+    async def resume_after_prepare_stop(self) -> None:
+        async with self._lock:
+            self._require_open_locked()
+            self._prepare_stop_deadline = None
+            task = self._prepare_stop_task
+            self._update_prepare_stop_lease()
+            self._wakeup.wake()
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _update_prepare_stop_lease(self) -> None:
+        if (
+            self._prepare_stop_deadline is not None
+            and self._prepare_stop_deadline <= self._clock()
+        ):
+            self._prepare_stop_deadline = None
+        if not self.prepare_stop_blocks_ingress():
+            self._prepare_stop_reopened.set()
+
+    async def _complete_prepare_stop(self) -> ManagedTxStopResult:
+        generation = self._provider_generation
+        binding = (
+            self._generation_high_water if self._generation_high_water >= 0 else None
+        )
+        settlements = self._pending_settlements_locked()
+        had_keying = bool(
+            self._latest_on_epoch
+            or self._possible_other_tx
+            or self._radio_tx_refusal_locked()
+        )
+        needs_release = had_keying or not self._state_is_clean_locked()
+
+        def unconfirmed(reason: str) -> ManagedTxStopResult:
+            return ManagedTxStopResult(binding, "unconfirmed", reason)
+
+        try:
+            budget = min(
+                self._attempt_timeout + TX_READ_DEADLINE_SECONDS,
+                PREPARE_STOP_LEASE_SECONDS,
+            )
+            async with asyncio.timeout(budget):
+                self._start_abort_cleanup()
+                if generation is None:
+                    await self._finish_abort_cleanup()
+                    if binding is None and not needs_release:
+                        return ManagedTxStopResult(None, "never_keyed", "no_keying")
+                    return unconfirmed("provider_unavailable")
+
+                if not needs_release:
+                    reading = await self._read_prepare_stop_ptt()
+                    if self._prepare_stop_receive_confirmed(reading):
+                        await self._finish_abort_cleanup()
+                        if (
+                            generation == self._provider_generation
+                            and self._state_is_clean_locked()
+                        ):
+                            return ManagedTxStopResult(
+                                binding, "never_keyed", "no_keying"
+                            )
+                    if reading.verified_readback and reading.value is True:
+                        self._possible_other_tx = True
+
+                if generation != self._provider_generation:
+                    return unconfirmed("binding_changed")
+                submission = await self.submit_force_off()
+                released = await submission.wait_settlement()
+                await self._finish_abort_cleanup()
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in settlements),
+                    return_exceptions=True,
+                )
+                if generation != self._provider_generation:
+                    return unconfirmed("binding_changed")
+                reading = await self._read_prepare_stop_ptt()
+                if generation != self._provider_generation:
+                    return unconfirmed("binding_changed")
+                if not self._prepare_stop_receive_confirmed(reading):
+                    reason = reading.failure or (
+                        "still_transmitting"
+                        if reading.verified_readback and reading.value is True
+                        else "receive_not_verified"
+                    )
+                    return unconfirmed(reason)
+                if (
+                    released is None
+                    or released.result is not ActuationResult.ACCEPTED
+                    or not self._state_is_clean_locked()
+                ):
+                    return unconfirmed("release_not_settled")
+                return ManagedTxStopResult(binding, "released", "receive_confirmed")
+        except TimeoutError:
+            return unconfirmed("deadline_expired")
+        except RuntimeError:
+            return unconfirmed("authority_unavailable")
+        finally:
+            self._prepare_stop_task = None
+            self._update_prepare_stop_lease()
+            self._wakeup.wake()
+
+    async def _read_prepare_stop_ptt(self) -> TxStateReading:
+        reader = self._read_transmit_state
+        if reader is None:
+            return TxStateReading(None, failure="readback_unsupported")
+        try:
+            async with asyncio.timeout(TX_READ_DEADLINE_SECONDS):
+                return await reader()
+        except TimeoutError:
+            return TxStateReading(None, failure="no_response")
+        except Exception:
+            logger.warning("prepare stop PTT read failed", exc_info=True)
+            return TxStateReading(None, failure="receive_read_failed")
+
+    @staticmethod
+    def _prepare_stop_receive_confirmed(reading: TxStateReading) -> bool:
+        return (
+            reading.failure is None
+            and reading.verified_readback
+            and reading.value is False
+        )
 
     def close_ingress_for_shutdown(self) -> None:
         self._shutdown_requested = True
@@ -1445,6 +1627,7 @@ class ManagedTxAuthority:
             if self._closing or self._closed or self._terminated:
                 return
             now = self._clock()
+            self._update_prepare_stop_lease()
             tot_due = self._tot_deadline_locked()
             if tot_due is not None and tot_due <= now:
                 transition = self._force_off_locked()
@@ -1472,7 +1655,11 @@ class ManagedTxAuthority:
     def _next_due_locked(self) -> float | None:
         due = [
             item
-            for item in (self._tot_deadline_locked(), self._retry_due)
+            for item in (
+                self._tot_deadline_locked(),
+                self._retry_due,
+                self._prepare_stop_deadline,
+            )
             if item is not None
         ]
         return min(due, default=None)

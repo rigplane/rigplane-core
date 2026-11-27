@@ -7,20 +7,22 @@ import pytest
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.profiles import resolve_radio_profile
 from rigplane.core.civ import CivRequestTracker
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import CivFrame
-from rigplane.runtime.managed_tx_composition import (
-    ManagedTxComposition,
-    install_managed_tx_composition,
-)
+from rigplane.profiles import resolve_radio_profile
+from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime._poller_types import (
     execute_command_queue_entry,
     execute_positive_tx_queue_entry,
     validate_command_queue_entry_currency,
 )
-from rigplane.runtime.radio import CoreRadio
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -28,6 +30,8 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
     ManagedTxIntentKind,
 )
+from rigplane.runtime.radio import CoreRadio
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
@@ -192,6 +196,9 @@ class _HttpWriter:
     async def drain(self) -> None:
         return None
 
+    def get_extra_info(self, name: str) -> object:
+        return ("127.0.0.1", 1234) if name == "peername" else None
+
     @property
     def status(self) -> int:
         return int(self.buffer.split(b" ", 2)[1])
@@ -249,7 +256,7 @@ def _control_handler(
 
 
 async def _joined_web_runtime(
-    tmp_path: Any, actuator_type: type[_DelayedWire]
+    tmp_path: Any, actuator_type: type[_DelayedWire], **web_options: Any
 ) -> tuple[_DelayedWire, ManagedTxComposition, WebServer]:
     actuator = actuator_type()
     actuator.release_on.set()
@@ -269,7 +276,10 @@ async def _joined_web_runtime(
     )
     install_managed_tx_composition(actuator, composition)
     actuator.set_ptt = raw_set_ptt  # type: ignore[attr-defined]
-    server = WebServer(actuator, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
+    server = WebServer(
+        actuator,  # type: ignore[arg-type]
+        WebConfig(host="127.0.0.1", port=0, **web_options),
+    )
     server.command_queue.bind_connection_generation(lambda: actuator)
     await composition.transport_ready(actuator)
     await composition.bind_state_store(server.command_state_store)
@@ -290,6 +300,232 @@ async def _drain_managed_positive_queue(server: WebServer) -> None:
                 require_connection_generation=True,
             )
             await execute_command_queue_entry(entry, execute_positive_tx_queue_entry)
+
+
+class _PrepareStopWire(_DelayedWire):
+    def __init__(self) -> None:
+        super().__init__()
+        self.force_started = asyncio.Event()
+        self.allow_force = asyncio.Event()
+        self.allow_force.set()
+        self.reads: list[bool] = []
+        self.answers = True
+
+    async def actuate(
+        self,
+        _token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        if operation is ActuationOperation.FORCE_RECEIVE:
+            self.force_started.set()
+            await self.allow_force.wait()
+            await self.finish(False, is_current)
+        elif isinstance(operation, ActuationOperation):
+            await self.finish(True, is_current)
+        return ActuationResult.ACCEPTED
+
+    async def read_transmit_state(self) -> TxStateReading:
+        if not self.answers:
+            return TxStateReading(None, failure="no_response")
+        keyed = bool(self.wire and self.wire[-1])
+        self.reads.append(keyed)
+        return TxStateReading(keyed, verified_readback=True)
+
+
+async def _post_managed_tx(
+    server: WebServer,
+    suffix: str,
+    payload: dict[str, object],
+    *,
+    token: str | None = "existing-station-token",
+    writer: _HttpWriter | None = None,
+) -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload).encode()
+    reader = asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+    headers = {"content-length": str(len(body))}
+    if token is not None:
+        headers["authorization"] = f"Bearer {token}"
+    writer = writer if writer is not None else _HttpWriter()
+    await server._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "POST",
+        f"/api/{'v1' if suffix == 'command' else 'local/v1'}/managed-transmit/{suffix}",
+        headers=headers,
+        reader=reader,
+    )
+    return writer.status, json.loads(writer.buffer.split(b"\r\n\r\n", 1)[1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(10)
+async def test_prepare_stop_reports_current_binding_evidence(virtual_clock, tmp_path):
+    actuator, composition, server = await _joined_web_runtime(
+        tmp_path, _PrepareStopWire, runtime_auth_token="existing-station-token"
+    )
+    assert isinstance(actuator, _PrepareStopWire)
+    drain = asyncio.create_task(_drain_managed_positive_queue(server))
+    try:
+        status, reply = await _post_managed_tx(server, "prepare-stop", {})
+        assert status == 200
+        assert reply["bindings"] == [
+            {"providerGeneration": 1, "outcome": "never_keyed", "reason": "no_keying"}
+        ]
+        assert actuator.wire == []
+        assert (await _post_managed_tx(server, "resume", {}))[0] == 200
+
+        await _http_tx_command(server, "transmit_on")
+        await virtual_clock.elapse(0)
+        assert actuator.wire == [True]
+        actuator.answers = False
+        status, reply = await _post_managed_tx(server, "prepare-stop", {})
+        assert status == 200
+        assert reply["bindings"][0]["outcome"] == "unconfirmed"
+        assert reply["bindings"][0]["reason"] == "no_response"
+        assert actuator.wire == [True, False]
+
+        actuator.answers = True
+        status, reply = await _post_managed_tx(server, "prepare-stop", {})
+        assert status == 200
+        assert reply["bindings"] == [
+            {
+                "providerGeneration": 1,
+                "outcome": "released",
+                "reason": "receive_confirmed",
+            }
+        ]
+        assert actuator.wire[-1] is False
+        assert actuator.reads == [False, False, False]  # startup, idle, fresh RX
+        # Legacy emergency OFF remains available during the lease.
+        await _http_tx_command(server, "force_off")
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("reopen", ["resume", "expiry"])
+async def test_prepare_stop_fences_cat_web_and_provider_admission(
+    reopen, virtual_clock: VirtualClock, monkeypatch, tmp_path
+):
+    from rigplane.runtime import managed_tx_authority
+
+    virtual_clock.scope_to(monkeypatch, managed_tx_authority)
+    actuator, composition, server = await _joined_web_runtime(
+        tmp_path, _PrepareStopWire, runtime_auth_token="existing-station-token"
+    )
+    assert isinstance(actuator, _PrepareStopWire)
+    drain = asyncio.create_task(_drain_managed_positive_queue(server))
+    cat = RigctldServer(
+        actuator,  # type: ignore[arg-type]
+        RigctldConfig(host="127.0.0.1", port=0),
+        allow_not_ready=True,
+        managed_tx_authority=composition.authority,
+        command_queue=server.command_queue,
+        command_service=server.command_service,
+    )
+    await cat.start()
+    assert cat._server is not None  # noqa: SLF001
+    cat_reader, cat_writer = await asyncio.open_connection(
+        "127.0.0.1",
+        cat._server.sockets[0].getsockname()[1],  # noqa: SLF001
+    )
+    try:
+        actuator.release_on.clear()
+        await _http_tx_command(server, "transmit_on")
+        await actuator.on_started.wait()
+        actuator.allow_force.clear()
+        prepare = asyncio.create_task(_post_managed_tx(server, "prepare-stop", {}))
+        await actuator.force_started.wait()
+
+        cat_writer.write(b"T 1\n")
+        await cat_writer.drain()
+        assert await cat_reader.readline() not in (b"RPRT 0\n", b"")
+        status, _ = await _post_managed_tx(
+            server, "command", {"operation": "transmit_on"}
+        )
+        assert status >= 400
+        actuator.release_on.set()
+        actuator.allow_force.set()
+        assert (await prepare)[1]["bindings"][0]["outcome"] == "released"
+        assert actuator.wire and not any(actuator.wire)
+
+        await composition.transport_unavailable(actuator)
+        await composition.transport_ready(object())
+        assert (await composition.authority.snapshot()).provider_generation is None
+
+        if reopen == "resume":
+            assert (await _post_managed_tx(server, "resume", {}))[0] == 200
+        else:
+            lease = managed_tx_authority.PREPARE_STOP_LEASE_SECONDS
+            await virtual_clock.elapse(lease / 2)
+            assert (await _post_managed_tx(server, "prepare-stop", {}))[0] == 200
+            await virtual_clock.elapse(lease / 2)
+            assert (await composition.authority.snapshot()).provider_generation is None
+            await virtual_clock.elapse(lease / 2)
+        await virtual_clock.elapse(0)
+        assert (await composition.authority.snapshot()).provider_generation == 2
+        await _http_tx_command(server, "transmit_on")
+        await virtual_clock.elapse(0)
+        assert actuator.wire[-1] is True
+        await _http_tx_command(server, "force_off")
+        await virtual_clock.elapse(0)
+        cat_writer.write(b"T 1\n")
+        await cat_writer.drain()
+        assert await cat_reader.readline() == b"RPRT 0\n"
+        await virtual_clock.elapse(0)
+        assert actuator.wire[-1] is True
+        cat_writer.write(b"T 0\n")
+        await cat_writer.drain()
+        assert await cat_reader.readline() == b"RPRT 0\n"
+        await virtual_clock.elapse(0)
+        assert actuator.wire[-1] is False
+    finally:
+        actuator.release_on.set()
+        actuator.allow_force.set()
+        cat_writer.close()
+        await cat_writer.wait_closed()
+        await cat.stop()
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(10)
+async def test_prepare_stop_requires_runtime_bearer_and_a_real_loopback_peer(tmp_path):
+    class RemoteWriter(_HttpWriter):
+        def get_extra_info(self, name: str) -> object:
+            if name == "peername":
+                return ("192.0.2.1", 1234)
+            return None
+
+    class ChannelWriter(_HttpWriter):
+        def get_extra_info(self, name: str) -> object:
+            return name == "rigplane_api_channel" or super().get_extra_info(name)
+
+    actuator, composition, server = await _joined_web_runtime(
+        tmp_path, _PrepareStopWire, runtime_auth_token="existing-station-token"
+    )
+    assert isinstance(actuator, _PrepareStopWire)
+    try:
+        for suffix in ("prepare-stop", "resume"):
+            assert (await _post_managed_tx(server, suffix, {}, token=None))[0] == 401
+            assert (await _post_managed_tx(server, suffix, {}, token="wrong"))[0] == 401
+            for writer in (RemoteWriter(), ChannelWriter()):
+                assert (await _post_managed_tx(server, suffix, {}, writer=writer))[
+                    0
+                ] == 403
+            assert (await _post_managed_tx(server, suffix, {"extra": True}))[0] == 400
+        assert actuator.wire == []
+        assert actuator.reads == [False]  # startup only
+    finally:
+        await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio

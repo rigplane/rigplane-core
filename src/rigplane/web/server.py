@@ -28,6 +28,7 @@ import gzip as _gzip
 import ipaddress
 import binascii
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -152,12 +153,15 @@ from ._delta_encoder import (  # noqa: TID251
     top_level_delta,
 )
 from .api_contract import (  # noqa: TID251
+    MANAGED_TRANSMIT_PREPARE_STOP_PATH,
     WEB_API_CONTRACT_VERSION,
     CivIngressPayload,
     ConnectionIdentityRecord,
     ConnectionSessionRecord,
     ManagedTransmitCommandReply,
     ManagedTransmitDocument,
+    ManagedTransmitPrepareStopReply,
+    ManagedTransmitResumeReply,
 )
 from .api_channel import ApiChannelHandler  # noqa: TID251
 from .channel_attach import (  # noqa: TID251
@@ -1110,6 +1114,7 @@ class WebConfig:
     # Band plan data directory (also holds the persisted ``_config.toml``);
     # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
     band_plans_dir: pathlib.Path | None = None
+    runtime_auth_token: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if self.sdr_config is not None:
@@ -5916,6 +5921,67 @@ class WebServer:
                 "code": ManagedTxRefusalReason.AUTHORITY_UNAVAILABLE,
             },
         )
+
+    async def _handle_http_managed_tx_stop(
+        self,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        peer = writer.get_extra_info("peername")
+        if (
+            writer.get_extra_info("rigplane_api_channel") is True
+            or not peer
+            or not ipaddress.ip_address(peer[0]).is_loopback
+        ):
+            await self._send_json(
+                writer, 403, "Forbidden", {"error": "loopback_required"}
+            )
+            return
+        token = self._config.runtime_auth_token
+        scheme, _, credential = (headers or {}).get("authorization", "").partition(" ")
+        if (
+            not token
+            or scheme.lower() != "bearer"
+            or not hmac.compare_digest(credential.encode(), token.encode())
+        ):
+            await self._send_json(
+                writer, 401, "Unauthorized", {"error": "runtime_auth_required"}
+            )
+            return
+        payload = await self._read_json_object(writer, headers, reader)
+        if payload is None:
+            return
+        if payload:
+            await self._send_json(
+                writer, 400, "Bad Request", {"error": "invalid_request"}
+            )
+            return
+        authority = self._managed_tx_authority()
+        if not isinstance(authority, ManagedTxAuthority):
+            await self._managed_tx_unavailable(writer)
+            return
+        reply: ManagedTransmitPrepareStopReply | ManagedTransmitResumeReply
+        try:
+            if path == MANAGED_TRANSMIT_PREPARE_STOP_PATH:
+                result = await authority.prepare_stop()
+                reply = {
+                    "bindings": [
+                        {
+                            "providerGeneration": result.provider_generation,
+                            "outcome": result.outcome,
+                            "reason": result.reason,
+                        }
+                    ],
+                }
+            else:
+                await authority.resume_after_prepare_stop()
+                reply = {"ok": True}
+        except RuntimeError:
+            await self._managed_tx_unavailable(writer)
+            return
+        await self._send_json(writer, 200, "OK", reply)
 
     async def _handle_http_managed_tx(
         self,

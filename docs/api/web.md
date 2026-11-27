@@ -26,7 +26,7 @@ diagnostic/experimental.
 
 ## Application authentication removal
 
-Core HTTP and WebSocket clients that can reach the listener need no application
+Core HTTP and WebSocket clients using the public routes need no application
 credential. Bearer headers and query tokens no longer authenticate requests.
 This changes the previous token-protected route semantics without changing the
 `/api/v1` route names. See `src/rigplane/web/web_routing.py: dispatch_http_request`
@@ -132,6 +132,8 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/managed-transmit` | Managed transmit authority snapshot |
 | `POST` | `/api/v1/managed-transmit/command` | Submit a latched transmit or force-off intent |
 | `PUT` | `/api/v1/managed-transmit/tot` | Update the managed transmit time-out |
+| `POST` | `/api/local/v1/managed-transmit/prepare-stop` | Pause admission and report release evidence |
+| `POST` | `/api/local/v1/managed-transmit/resume` | End the admission pause |
 | `GET` | `/api/v1/bridge` | Audio bridge status |
 | `POST` | `/api/v1/bridge` | Start audio bridge |
 | `DELETE` | `/api/v1/bridge` | Stop audio bridge |
@@ -282,8 +284,8 @@ web --webrtc` or `rigplane --model <MODEL> station --webrtc` (one shared flag
 definition, `src/rigplane/cli/__init__.py: _build_parser._add_webrtc_flags`);
 programmatic callers set `WebConfig(webrtc_enabled=True)`.
 
-The offer and ICE routes carry no application credential, the same as every
-other route on the listener. Who can reach them is decided by the listener's
+The offer and ICE routes carry no application credential. Who can reach them
+is decided by the listener's
 bind address: `station` binds `127.0.0.1` unless `--listen` names another
 address (`--listen 0.0.0.0` is also rewritten to `127.0.0.1`,
 `src/rigplane/cli/__init__.py: _apply_managed_runtime_defaults`), so on a
@@ -1506,6 +1508,35 @@ Server publishes `state_update` messages in two shapes:
   ```json
   {"type":"state_update","data":{"type":"delta","changed":{"main":{"freqHz":14075000}},"revision":2}}
   ```
+
+### Local managed-transmit stop control
+
+Send `POST /api/local/v1/managed-transmit/prepare-stop` directly to the Core
+loopback listener with `Authorization: Bearer <runtime token>` and the empty JSON
+object `{}` (`ManagedTransmitStopRequest`). In `station`, pass the existing
+token file with `--runtime-auth-token-file`. An embedded server can supply that same
+token via `WebConfig.runtime_auth_token`.
+
+The `ManagedTransmitPrepareStopReply` body contains one entry in `bindings` for
+the managed authority in this Core process. `providerGeneration` is scoped to
+the process and is null before a provider has been published. Each entry has an
+`outcome` and a diagnostic `reason` string.
+
+| Outcome | Meaning |
+| --- | --- |
+| `released` | Core settled force-off and read verified receive from the same provider. |
+| `unconfirmed` | Core could not establish that the binding was released. |
+| `never_keyed` | Core has no possible keying to release and verified receive, or no provider was ever published and Core has no release debt. |
+
+Treat unknown outcome strings like `unconfirmed` and retain the raw outcome
+and reason for diagnostics. A repeated prepare renews the lease and returns
+current evidence. The lease is controlled by `PREPARE_STOP_LEASE_SECONDS` in
+`src/rigplane/runtime/managed_tx_authority.py`. While it holds, Core refuses new
+keying and defers provider publication. Admission resumes automatically on
+expiry. To end the lease early, send `POST /api/local/v1/managed-transmit/resume`
+with the same bearer and `{}`. Its `ManagedTransmitResumeReply` is
+`{"ok": true}`. Both routes require a real loopback HTTP peer. Call them on
+the child listener directly.
 
 ### Managed-transmit refusals
 

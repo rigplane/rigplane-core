@@ -580,6 +580,14 @@ class _RigplaneArgumentParser(argparse.ArgumentParser):
         parsed._explicit_control_port = _has_explicit_radio_control_port(argv)  # noqa: SLF001
         _resolve_deprecated_listen_host(parsed)
         _apply_managed_runtime_defaults(parsed)
+        if getattr(parsed, "command", None) == "station":
+            token_file = parsed.runtime_auth_token_file
+            if token_file is not None and (
+                not token_file or not _is_loopback_host(parsed.web_host)
+            ):
+                self.error(
+                    "--runtime-auth-token-file requires a path and a loopback station listener"
+                )
         _warn_web_host_ambiguity(parsed)
         return parsed
 
@@ -1916,6 +1924,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=argparse.SUPPRESS,
+    )
+    station_p.add_argument(
+        "--runtime-auth-token-file",
+        default=None,
+        metavar="PATH",
+        help="Existing bearer token file for local prepare-stop and resume requests",
     )
     station_p.add_argument(
         "--no-discovery",
@@ -4844,6 +4858,23 @@ async def _cmd_web(
     managed_runtime = getattr(args, "managed_runtime", False)
     if managed_runtime:
         config_kwargs["emit_startup_event"] = True
+    if (token_file := getattr(args, "runtime_auth_token_file", None)) is not None:
+        if getattr(args, "command", None) != "station" or not _is_loopback_host(
+            args.web_host
+        ):
+            print(
+                "Error: runtime auth requires a loopback station listener",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            token = ""
+        if not token or not token.isascii() or any(char.isspace() for char in token):
+            print("Error: could not load the station runtime token", file=sys.stderr)
+            return 1
+        config_kwargs["runtime_auth_token"] = token
 
     tls_cert = getattr(args, "tls_cert", "")
     tls_key = getattr(args, "tls_key", "")

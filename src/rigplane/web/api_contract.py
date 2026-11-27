@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Final, Literal, NotRequired, TypedDict
 
+from rigplane.runtime.managed_tx_authority import ManagedTxStopOutcome
 from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
 
 WEB_API_CONTRACT_VERSION: Final[int] = 1
@@ -218,6 +219,36 @@ class ManagedTransmitCommandReply(TypedDict):
     code: NotRequired[ManagedTxRefusalReason]
 
 
+MANAGED_TRANSMIT_PREPARE_STOP_PATH: Final = (
+    "/api/local/v1/managed-transmit/prepare-stop"
+)
+MANAGED_TRANSMIT_RESUME_PATH: Final = "/api/local/v1/managed-transmit/resume"
+
+
+class ManagedTransmitStopRequest(TypedDict):
+    """The empty JSON object sent to either local stop-control endpoint."""
+
+
+class ManagedTransmitStopBinding(TypedDict):
+    """One binding's release evidence.
+
+    Receivers must handle unknown outcomes as unconfirmed and keep the raw
+    outcome and reason for diagnostics.
+    """
+
+    providerGeneration: int | None
+    outcome: ManagedTxStopOutcome
+    reason: str
+
+
+class ManagedTransmitPrepareStopReply(TypedDict):
+    bindings: list[ManagedTransmitStopBinding]
+
+
+class ManagedTransmitResumeReply(TypedDict):
+    ok: Literal[True]
+
+
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
     {
         "method": "GET",
@@ -290,6 +321,18 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
         "path": "/api/v1/managed-transmit/tot",
         "purpose": "update managed transmit time-out",
         "auth": "none",
+    },
+    {
+        "method": "POST",
+        "path": MANAGED_TRANSMIT_PREPARE_STOP_PATH,
+        "purpose": "pause transmit and provider admission and confirm receive",
+        "auth": "loopback-runtime-bearer",
+    },
+    {
+        "method": "POST",
+        "path": MANAGED_TRANSMIT_RESUME_PATH,
+        "purpose": "end the transmit admission pause",
+        "auth": "loopback-runtime-bearer",
     },
     {
         "method": "GET",
@@ -438,6 +481,8 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "txObservation",
         )
     },
+    MANAGED_TRANSMIT_PREPARE_STOP_PATH: {"required": ("bindings",)},
+    MANAGED_TRANSMIT_RESUME_PATH: {"required": ("ok",)},
     "/api/v1/commands": {"required": ("ok", "name", "result")},
     "/api/v1/commands/batch": {"required": ("ok", "results")},
 }

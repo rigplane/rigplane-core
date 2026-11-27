@@ -31,10 +31,15 @@ class LocalTxWorkRunner:
     live currency check.
     """
 
-    def __init__(self, abort_fence: TxAbortFence) -> None:
+    def __init__(
+        self, abort_fence: TxAbortFence, *, admit: Callable[[], None] | None = None
+    ) -> None:
         self._abort_fence = abort_fence
+        self._admit = admit
 
     async def run(self, work: LocalTxWork[_T]) -> _T:
+        if self._admit is not None:
+            self._admit()
         token = self._abort_fence.issue()
 
         async def invoke() -> _T:

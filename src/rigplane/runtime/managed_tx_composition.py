@@ -137,7 +137,6 @@ class ManagedTxComposition:
         self._prepare_provider = prepare_provider
         self._retire_provider = retire_provider
         self._abort_fence = TxAbortFence()
-        self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
         self._tot_config_store = ManagedTxTotConfigStore(config_path)
         self._effect_lane = ManagedTxEffectLane(
             actuator, poison_generation=self._poison_tx_generation
@@ -148,6 +147,14 @@ class ManagedTxComposition:
             self._abort_fence,
             provider_generation=None,
             radio_tx=self,
+            read_transmit_state=(
+                actuator.read_transmit_state
+                if isinstance(actuator, TransmitStateReadable)
+                else None
+            ),
+        )
+        self._local_tx_work_runner = LocalTxWorkRunner(
+            self._abort_fence, admit=self._authority.admit_local_tx_work
         )
         self._legacy_supervisor = _LegacyManagedTxCutoverGate(self._authority)
         self._state_store: StateStore | None = None
@@ -162,6 +169,7 @@ class ManagedTxComposition:
         self._transition_lock = asyncio.Lock()
         self._transition_task: asyncio.Task[None] | None = None
         self._recovery_task: asyncio.Task[None] | None = None
+        self._deferred_provider: asyncio.Task[None] | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
 
     @property
@@ -268,6 +276,9 @@ class ManagedTxComposition:
         identity = self._live_transport_identity
         if store is None or identity is None or self._active_provider is not None:
             return
+        if self._authority.prepare_stop_blocks_ingress():
+            self._defer_provider_admission()
+            return
         observation_generation = int(store.provider_generation)
         if observation_generation != self._observation_generation:
             return
@@ -281,6 +292,20 @@ class ManagedTxComposition:
             return
         self._events[event.provider_generation] = event
         await self._publish_prepared_provider(event)
+
+    def _defer_provider_admission(self) -> None:
+        if self._deferred_provider is not None:
+            return
+
+        async def publish_when_open() -> None:
+            await self._authority.wait_for_prepare_stop_resume()
+            async with self._transition_lock:
+                self._deferred_provider = None
+                if self._shutdown_task is None:
+                    await self._ensure_current_locked()
+
+        self._deferred_provider = asyncio.create_task(publish_when_open())
+        self._deferred_provider.add_done_callback(self._harvest)
 
     async def _publish_prepared_provider(self, event: _ProviderEvent) -> None:
         """Publish a prepared provider as one cancellation-joined unit.
@@ -355,7 +380,10 @@ class ManagedTxComposition:
         # force_receive under its own lock, before any ingress can key.
         try:
             startup_release = await self._record_startup_release()
-            await self._authority.provider_available(event.provider_generation)
+            if not await self._authority.provider_available(event.provider_generation):
+                await self._retire_once(event)
+                self._defer_provider_admission()
+                return
         except BaseException:
             # Any abort — a failed publication or a cancellation of the
             # publication task itself — retires the prepared provider;
@@ -600,6 +628,10 @@ class ManagedTxComposition:
                 await self._retire_once(terminal)
             return result
         finally:
+            deferred = self._deferred_provider
+            if deferred is not None:
+                deferred.cancel()
+                await asyncio.gather(deferred, return_exceptions=True)
             recovery = self._recovery_task
             if recovery is not None:
                 recovery.cancel()

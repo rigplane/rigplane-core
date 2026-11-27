@@ -35,6 +35,10 @@ from rigplane.core.host_guard import (  # noqa: TID251
     host_header_allowed,
     same_origin_allowed,
 )
+from .api_contract import (  # noqa: TID251
+    MANAGED_TRANSMIT_PREPARE_STOP_PATH,
+    MANAGED_TRANSMIT_RESUME_PATH,
+)
 
 if TYPE_CHECKING:
     from .server import WebServer  # noqa: TID251
@@ -487,6 +491,18 @@ async def _handle_route_managed_tx(
     await server._handle_http_managed_tx(path, writer, headers, reader)
 
 
+async def _handle_route_managed_tx_stop(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    await server._handle_http_managed_tx_stop(path, writer, headers, reader)
+
+
 async def _handle_route_bridge(
     server: WebServer,
     writer: asyncio.StreamWriter,
@@ -804,6 +820,10 @@ API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
     ApiRoute(("POST",), "/api/v1/managed-transmit/command", _handle_route_managed_tx),
     ApiRoute(("PUT",), "/api/v1/managed-transmit/tot", _handle_route_managed_tx),
     ApiRoute(
+        ("POST",), MANAGED_TRANSMIT_PREPARE_STOP_PATH, _handle_route_managed_tx_stop
+    ),
+    ApiRoute(("POST",), MANAGED_TRANSMIT_RESUME_PATH, _handle_route_managed_tx_stop),
+    ApiRoute(
         ("GET", "HEAD", "POST", "PATCH", "DELETE"),
         "/api/v1/bridge",
         _handle_route_bridge,
@@ -1009,6 +1029,11 @@ async def dispatch_http_with_controller_gate(
     route = api_route_for_path(path)
     if route is not None and route.handler is _handle_route_controller:
         await route.handler(server, writer, method, path, headers, reader, query)
+        return
+    if route is not None and route.handler is _handle_route_managed_tx_stop:
+        await _dispatch_http_routes(
+            server, writer, method, path, headers, reader, query
+        )
         return
     controller = getattr(server, "_controller", None)
     if not isinstance(controller, ControllerAuthority):

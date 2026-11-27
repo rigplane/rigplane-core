@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.cli import _build_parser, _cmd_web
 from rigplane.web.api_contract import (
     RESPONSE_FIELD_CONTRACTS,
     STABLE_HTTP_ENDPOINTS,
@@ -307,6 +310,8 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/api/v1/managed-transmit") in http
     assert ("POST", "/api/v1/managed-transmit/command") in http
     assert ("PUT", "/api/v1/managed-transmit/tot") in http
+    assert ("POST", "/api/local/v1/managed-transmit/prepare-stop") in http
+    assert ("POST", "/api/local/v1/managed-transmit/resume") in http
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
     assert ("PATCH", "/api/v1/bridge") in http
@@ -357,10 +362,45 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     ids=[f"{route['method']} {route['path']}" for route in STABLE_HTTP_ENDPOINTS]
     + [f"WS {route['path']}" for route in STABLE_WEBSOCKET_ROUTES],
 )
-def test_stable_routes_require_no_application_credentials(
+def test_stable_routes_pin_the_auth_boundary(
     route: HttpEndpoint | WebSocketRoute,
 ) -> None:
-    assert route["auth"] == "none"
+    expected = (
+        "loopback-runtime-bearer"
+        if route["path"]
+        in (
+            "/api/local/v1/managed-transmit/prepare-stop",
+            "/api/local/v1/managed-transmit/resume",
+        )
+        else "none"
+    )
+    assert route["auth"] == expected
+
+
+@pytest.mark.asyncio
+async def test_station_loads_the_runtime_bearer_for_local_stop(tmp_path, monkeypatch):
+    token_file = tmp_path / "runtime-token"
+    token_file.write_text("existing-station-token\n", encoding="utf-8")
+    flag = ["--runtime-auth-token-file", str(token_file)]
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["station", "--listen", "192.0.2.1", *flag])
+    args = parser.parse_args(["station", *flag])
+    args.web_rigctld = False
+    captured: list[WebConfig] = []
+
+    class ConfigCapture:
+        def __init__(self, _radio, config: WebConfig) -> None:
+            captured.append(config)
+
+        async def serve_forever(self, *, on_started) -> None:
+            on_started()
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("rigplane.web.server.WebServer", ConfigCapture)
+    assert await _cmd_web(AsyncMock(), args) == 0
+    assert captured[0].runtime_auth_token == "existing-station-token"
+    assert "existing-station-token" not in repr(captured[0])
 
 
 def test_command_batch_docs_use_numeric_data_mode_contract() -> None:
