@@ -5240,8 +5240,7 @@ async def test_mor4828_bad_shift_still_binds_and_serves_critical_paths(
         gate_clock,
     ):
         assert gate_clock.now < 10.0, (
-            f"startup held {gate_clock.now:.1f}s virtual "
-            "(>= 10s non-critical deadline)"
+            f"startup held {gate_clock.now:.1f}s virtual (>= 10s non-critical deadline)"
         )
         host, port = _addr(web)
 
