@@ -97,6 +97,8 @@ scripts/*
 # And the pre-push quick gate and its selection logic are tracked (MOR-4372).
 !scripts/local-ci.sh
 !scripts/pre_push_scope.py
+# And the assertion-free ledger regen the pre-push gate calls is tracked (MOR-4890).
+!scripts/regen_assertion_free_ledger.py
 # And the IC-7300 capture bridge and scope session driver are tracked (MOR-3595).
 !scripts/ic7300_capture/
 # And the TCI recording proxy is tracked (MOR-3821).
