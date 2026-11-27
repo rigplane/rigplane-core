@@ -21,7 +21,10 @@ type ServerStateWithObservation = ServerState & {
 };
 
 describe('remote controller channel grouping', () => {
-  beforeEach(() => {
+  let controllerClient: typeof import('../controller-client')['controllerClient'];
+  let WsChannel: typeof import('../ws-client')['WsChannel'];
+
+  beforeEach(async () => {
     vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
     vi.stubGlobal('WebSocket', ControllerSocket);
     vi.stubGlobal('fetch', vi.fn(async (_url, init?: RequestInit) => new Response(JSON.stringify(
@@ -29,26 +32,32 @@ describe('remote controller channel grouping', () => {
         ? { controller_key: 'a'.repeat(64), generation: 1, ttl_ms: 6000, heartbeat_ms: 2000 }
         : { protocol_version: 1, mode: 'remote', state: 'idle' },
     ), { status: init?.method === 'POST' ? 201 : 200 })));
+    ({ controllerClient } = await import('../controller-client'));
+    ({ WsChannel } = await import('../ws-client'));
   });
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
+  afterEach(async () => {
+    await controllerClient.release();
+    vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules();
+  });
 
   it('attaches primary before scope, clears pending commands on loss and ignores old callbacks', async () => {
-    const { controllerClient } = await import('../controller-client');
-    const { WsChannel } = await import('../ws-client');
+    const startedAt = Date.now();
     const control = new WsChannel();
     const scope = new WsChannel(false);
     control.send({ type: 'cmd', id: 'local-pending', name: 'set_freq', params: { freq: 2 } });
     await controllerClient.prepare();
     control.connect('wss://station.test/api/v1/ws');
     scope.connect('wss://station.test/api/v1/scope');
-    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(1);
     const primary = instances[0] as ControllerSocket;
     expect(new URL(primary.url).searchParams.get('controller_role')).toBe('primary');
     expect(primary.protocols).toEqual([`rigplane-controller-v1.${'a'.repeat(64)}`]);
     expect(primary.url).not.toContain('a'.repeat(64));
     primary.simulateOpen();
     expect(primary.sent.some((raw) => JSON.parse(raw).id === 'local-pending')).toBe(false);
-    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(2);
     const child = instances[1] as ControllerSocket;
     expect(child.protocols).toEqual(primary.protocols);
     child.simulateOpen();
@@ -63,18 +72,23 @@ describe('remote controller channel grouping', () => {
     expect(received).toHaveBeenCalledTimes(count);
     await controllerClient.prepare();
     control.connect('wss://station.test/api/v1/ws');
-    await vi.waitFor(() => expect(instances).toHaveLength(3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(3);
     instances[2].simulateOpen();
     expect(instances[2].sent.some((raw) => JSON.parse(raw).id === 'old')).toBe(false);
     expect(control.send({ type: 'cmd', id: 'fresh', name: 'ptt', params: { state: true } })).toBe(true);
     control.disconnect();
+    expect(Date.now()).toBe(startedAt);
   });
 });
 
 describe('local controller session channels', () => {
   const sessionKey = 'b'.repeat(64);
 
-  beforeEach(() => {
+  let controllerClient: typeof import('../controller-client')['controllerClient'];
+  let WsChannel: typeof import('../ws-client')['WsChannel'];
+
+  beforeEach(async () => {
     vi.resetModules(); vi.useFakeTimers(); instances.length = 0;
     vi.stubGlobal('WebSocket', ControllerSocket);
     let posts = 0;
@@ -83,12 +97,16 @@ describe('local controller session channels', () => {
         ? { controller_key: sessionKey, generation: ++posts, ttl_ms: 6000, heartbeat_ms: 2000 }
         : { protocol_version: 1, mode: 'local', state: 'idle' },
     ), { status: init?.method === 'POST' ? 201 : 200 })));
+    ({ controllerClient } = await import('../controller-client'));
+    ({ WsChannel } = await import('../ws-client'));
   });
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); });
+  afterEach(async () => {
+    await controllerClient.release();
+    vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules();
+  });
 
   it('attaches every channel with the session subprotocol and recovers after loss without replaying PTT', async () => {
-    const { controllerClient } = await import('../controller-client');
-    const { WsChannel } = await import('../ws-client');
+    const startedAt = Date.now();
     const control = new WsChannel();
     const scope = new WsChannel(false);
     // Silent-recovery pin: a local session loss must surface no error toast.
@@ -101,13 +119,15 @@ describe('local controller session channels', () => {
     expect(controllerClient.remote).toBe(false);
     control.connect('wss://station.test/api/v1/ws');
     scope.connect('wss://station.test/api/v1/scope');
-    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(1);
     const primary = instances[0] as ControllerSocket;
     expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
     expect(primary.url).not.toContain(sessionKey);
     expect(new URL(primary.url).searchParams.get('controller_role')).toBe('primary');
     primary.simulateOpen();
-    await vi.waitFor(() => expect(instances).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(2);
     const child = instances[1] as ControllerSocket;
     expect(child.protocols).toEqual(primary.protocols);
     child.simulateOpen();
@@ -115,7 +135,8 @@ describe('local controller session channels', () => {
     expect(child.readyState).toBe(ControllerSocket.CLOSED);
     expect(control.send({ type: 'cmd', id: 'stale-ptt', name: 'ptt', params: { state: true } })).toBe(false);
     control.send({ type: 'cmd', id: 'queued-set', name: 'set_freq', params: { freq: 2 } });
-    await vi.waitFor(() => expect(instances).toHaveLength(3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(3);
     const recovered = instances[2] as ControllerSocket;
     expect(recovered.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
     recovered.simulateOpen();
@@ -128,15 +149,15 @@ describe('local controller session channels', () => {
     expect(notifications).toEqual([]);
     control.disconnect();
     scope.disconnect();
+    expect(Date.now()).toBe(startedAt);
   });
 
   it('attaches the control channel from the unauthenticated same-origin relative URL', async () => {
-    const { controllerClient } = await import('../controller-client');
-    const { WsChannel } = await import('../ws-client');
     const control = new WsChannel();
     await controllerClient.prepare();
     control.connect('/api/v1/ws');
-    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(1);
     const primary = instances[0] as ControllerSocket;
     expect(primary.protocols).toEqual([`rigplane-controller-v1.${sessionKey}`]);
     expect(new URL(primary.url, location.href).pathname).toBe('/api/v1/ws');
@@ -150,12 +171,11 @@ describe('local controller session channels', () => {
         ? { error: 'remote_disabled' }
         : { protocol_version: 1, mode: 'local', state: 'idle' },
     ), { status: init?.method === 'POST' ? 403 : 200 })));
-    const { controllerClient } = await import('../controller-client');
-    const { WsChannel } = await import('../ws-client');
     const control = new WsChannel();
     await controllerClient.prepare();
     control.connect('wss://station.test/api/v1/ws');
-    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(instances).toHaveLength(1);
     const socket = instances[0] as ControllerSocket;
     expect(socket.protocols).toEqual([]);
     expect(new URL(socket.url).searchParams.has('controller_role')).toBe(false);
