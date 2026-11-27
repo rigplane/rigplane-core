@@ -532,9 +532,8 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# MOR-4875 RX bench, 2026-11-26: in MAIN FM BC0 still reported ON after
-# BC00, and BP00 reported ON despite the unusable BP01 read below. BC
-# switched and read back correctly in USB. The toggle clauses cover FM.
+# MOR-4875 RX bench, 2026-11-26: in MAIN FM `BC0;` still returned
+# `BC01;` after `BC00;`. In USB the read-back followed the writes.
 [state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
@@ -542,6 +541,7 @@ available_when = [
     { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
 ]
 
+# The MAIN manual-notch toggle takes its FM gate from the BP01 probe below.
 [state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
@@ -586,14 +586,11 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# BC and BP use the same parameters on MAIN and SUB (Yaesu CAT OM 2508-C).
 [state_acquisition.field_policies."receiver.sub.operator_toggles.auto_notch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "receiver.sub.active.freq_mode.mode", not_in = ["FM"] },
-]
 
+# The SUB manual-notch toggle takes its FM gate from the BP11 policy below.
 [state_acquisition.field_policies."receiver.sub.operator_toggles.manual_notch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0

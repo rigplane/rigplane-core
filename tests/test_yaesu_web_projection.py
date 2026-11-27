@@ -665,7 +665,7 @@ async def test_ftx1_notch_is_unavailable_in_fm_and_recovers_in_usb() -> None:
     radio.read_manual_notch.reset_mock()
     radio.read_manual_notch_freq.reset_mock()
     await _apply_slow_controls(store, radio)
-    radio.read_auto_notch.assert_not_awaited()
+    radio.read_auto_notch.assert_awaited_once_with(1)
     radio.read_manual_notch.assert_not_awaited()
     radio.read_manual_notch_freq.assert_not_awaited()
 

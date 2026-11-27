@@ -965,9 +965,10 @@ async def test_get_auto_notch_sub_sends_bc1(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_auto_notch_sub_sends_bc1(connected_radio):
-    connected_radio._transport.query = AsyncMock(return_value="MD12")
+    connected_radio._transport.query = AsyncMock()
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_auto_notch(True, receiver=1)
+    connected_radio._transport.query.assert_not_awaited()
     connected_radio._transport.write.assert_called_once_with("BC11;")
 
 
@@ -1069,15 +1070,17 @@ async def test_set_manual_notch_freq_sub_sends_bp11(connected_radio):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("receiver", [0, 1])
 @pytest.mark.parametrize(
-    ("setter", "value"),
+    ("receiver", "setter", "value"),
     [
-        ("set_auto_notch", True),
-        ("set_auto_notch", False),
-        ("set_manual_notch", True),
-        ("set_manual_notch", False),
-        ("set_notch_filter", 120),
+        (0, "set_auto_notch", True),
+        (0, "set_auto_notch", False),
+        (0, "set_manual_notch", True),
+        (0, "set_manual_notch", False),
+        (0, "set_notch_filter", 120),
+        (1, "set_manual_notch", True),
+        (1, "set_manual_notch", False),
+        (1, "set_notch_filter", 120),
     ],
 )
 async def test_notch_write_refused_in_fm(connected_radio, receiver, setter, value):

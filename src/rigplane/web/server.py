@@ -280,6 +280,7 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         availability: Mapping[FieldPath, bool | None] | None = None,
         declared: Collection[FieldPath] | None = None,
         read_refusals: Mapping[FieldPath, str] | None = None,
+        unavailable_modes: Mapping[FieldPath, str] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
