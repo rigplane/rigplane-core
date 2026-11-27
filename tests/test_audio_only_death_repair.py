@@ -23,7 +23,6 @@ excluded (``backend_id`` is not ``"rigplane"``). The tests below use the same
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -39,7 +38,6 @@ from rigplane.testing.timing import ManualClock, VirtualClock, await_until
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
 RESUME_BOUND_S = 10.0
-#: Each test must stay well under ~30 s wall-clock.
 _SANITY_FIRST_FRAME_S = 10.0
 _CIV_CHECK_TIMEOUT_S = 5.0
 
@@ -90,6 +88,20 @@ def _kill_client_audio_only(radio: object) -> object:
     return audio_t
 
 
+async def _drive_rx_silent(radio: Any) -> float:
+    session = radio.audio_session
+    heartbeat = radio.audio_bus.last_rx_frame_monotonic
+    assert heartbeat is not None, "no RX heartbeat to drive silence from"
+    started = max(heartbeat, session._rx_armed_at)
+    decision = ManualClock(start=started)
+    decision.advance(RX_LIVENESS_TIMEOUT_S)
+    async with session._lock:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(session, "_monotonic", decision)
+            session._check_liveness_locked()
+    return started
+
+
 async def _civ_answers(radio: object) -> int:
     """Wire-level frequency read (bypasses the state cache fallback)."""
     return await asyncio.wait_for(
@@ -137,8 +149,8 @@ async def test_audio_only_death_never_repaired() -> None:
 
         _drain(sub)
         sent_before = sim.audio_rx_frames_sent
-        t_death = time.monotonic()
         _kill_client_audio_only(radio)
+        t_death = await _drive_rx_silent(radio)
 
         # CI-V stayed healthy throughout: isolate the death to audio-only.
         freq = await _civ_answers(radio)
@@ -182,11 +194,8 @@ async def test_manual_audio_rebuild_repairs_audio_only_death() -> None:
         _drain(sub)
         old_audio_t = _kill_client_audio_only(radio)
 
-        # Let the liveness detector observe the death first (3.0 s timeout).
-        for _ in range(60):
-            if any(e.reason == "rx_silent" for e in events):
-                break
-            await asyncio.sleep(0.1)
+        await _drive_rx_silent(radio)
+        assert any(e.reason == "rx_silent" for e in events)
 
         # The repair a fix would trigger — the same path
         # ``ControlPhaseRuntime._after_reconnect_parts`` runs for audio.
@@ -240,46 +249,36 @@ async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() 
             sub = await session.subscribe_rx("web-audio")
             assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
             _drain(sub)
-            t_death = time.monotonic()
-            deadline = t_death + RESUME_BOUND_S
-            audio_t = _kill_client_audio_only(radio)
+            async with asyncio.timeout(RESUME_BOUND_S):
+                audio_t = _kill_client_audio_only(radio)
+                t_death = await _drive_rx_silent(radio)
+                assert silent_seen.is_set()
+                assert repair_tasks, "rx_silent did not start a repair task"
+                await asyncio.shield(repair_tasks[0])
+                replacement = radio._audio_transport
+                assert replacement is not None and replacement is not audio_t
+                assert session.rx_demand > 0
+                assert session._bus.rx_active, (
+                    "repair did not re-arm RX before subscribing"
+                )
 
-            def remaining() -> float:
-                budget = deadline - time.monotonic()
-                assert budget > 0, "RX repair exceeded the original death+10s bound"
-                return budget
+                # Keep demand while opening a fresh, empty post-repair queue.
+                _drain(sub)
+                post_sub = await session.subscribe_rx("post-repair")
+                packet = await _next_frame_or_none(post_sub, RESUME_BOUND_S)
+                assert packet is not None
+                assert radio._audio_transport is replacement
 
-            await asyncio.wait_for(silent_seen.wait(), remaining())
-            assert repair_tasks, "rx_silent did not start a repair task"
-            await asyncio.wait_for(asyncio.shield(repair_tasks[0]), remaining())
-            replacement = radio._audio_transport
-            assert replacement is not None and replacement is not audio_t
-            assert session.rx_demand > 0
-            assert session._bus.rx_active, "repair did not re-arm RX before subscribing"
-
-            # Frames queued on the old subscription before the death cannot
-            # prove recovery. Keep its demand while opening a fresh empty queue.
-            _drain(sub)
-            post_sub = await asyncio.wait_for(
-                session.subscribe_rx("post-repair"), remaining()
-            )
-            packet = None
-            while packet is None:
-                packet = await _next_frame_or_none(post_sub, remaining())
-            assert radio._audio_transport is replacement
-
-            silent = [e for e in events if e.reason == "rx_silent"]
-            assert silent, "rx_silent never fired during the audio-only death"
-            delay = silent[0].timestamp - t_death
-            assert 2.9 <= delay < 10.0, f"rx_silent fired after {delay:.1f}s"
-            assert not soft_calls, "soft_reconnect ran during healthy CI-V"
-            assert audio_t._udp_error_count < 50, (  # noqa: SLF001
-                "UDP error storm — audio_error_watchdog_loop territory, "
-                "not a silent death"
-            )
-            assert await asyncio.wait_for(_civ_answers(radio), remaining()) > 0, (
-                "CI-V stopped answering"
-            )
+                silent = [e for e in events if e.reason == "rx_silent"]
+                assert silent, "rx_silent never fired during the audio-only death"
+                delay = silent[0].timestamp - t_death
+                assert 2.9 <= delay < 10.0, f"rx_silent fired after {delay:.1f}s"
+                assert not soft_calls, "soft_reconnect ran during healthy CI-V"
+                assert audio_t._udp_error_count < 50, (  # noqa: SLF001
+                    "UDP error storm — audio_error_watchdog_loop territory, "
+                    "not a silent death"
+                )
+                assert await _civ_answers(radio) > 0, "CI-V stopped answering"
         finally:
             radio.soft_reconnect = orig_soft  # type: ignore[method-assign]
             if post_sub is not None:
@@ -302,7 +301,8 @@ async def test_no_repair_without_rx_demand() -> None:
         calls, restore = _spy_method(radio, "_teardown_audio_transport")
         try:
             session._emit("rx_silent")  # noqa: SLF001
-            await asyncio.sleep(0.5)
+            async with VirtualClock.on_running_loop() as clock:
+                await clock.elapse(0.5)
             assert calls == []
             assert radio._audio_silence_repair_task is None
         finally:
@@ -323,7 +323,8 @@ async def test_no_repair_when_civ_not_healthy() -> None:
         try:
             radio._conn_state = RadioConnectionState.RECONNECTING
             radio.audio_session._emit("rx_silent")  # noqa: SLF001
-            await asyncio.sleep(0.5)
+            async with VirtualClock.on_running_loop() as clock:
+                await clock.elapse(0.5)
             assert calls == []
             assert radio._audio_silence_repair_task is None
         finally:
@@ -352,13 +353,15 @@ async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
         radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
+            await _drive_rx_silent(radio)
             # Wait for the first attempt to fail and the task to enter backoff.
             assert await await_until(lambda: len(ensure_calls) >= 1, timeout=8.0)
             await radio.disconnect()  # owner stops during the backoff sleep
             # The stop cancels the pending repair synchronously: no task
             # lingers in its backoff sleep after disconnect() returns.
             assert radio._audio_silence_repair_task is None
-            await asyncio.sleep(3.0)  # past every backoff window
+            async with VirtualClock.on_running_loop() as clock:
+                await clock.elapse(3.0)  # past every backoff window
             assert len(ensure_calls) == 1, "a stopped owner still got another attempt"
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
@@ -389,6 +392,7 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
         radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
+            await _drive_rx_silent(radio)
 
             # 3 attempts with 1 s + 2 s backoff, then FAILED once.
             def _repair_done() -> bool:
@@ -403,7 +407,8 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
             assert recovery == [AudioRecoveryState.FAILED]
 
             # No further attempts for ≥ 5 s after the cap.
-            await asyncio.sleep(5.0)
+            async with VirtualClock.on_running_loop() as clock:
+                await clock.elapse(5.0)
             assert len(ensure_calls) == 3
             assert radio._audio_silence_repair_attempts == 3
             assert recovery == [AudioRecoveryState.FAILED]
@@ -436,6 +441,7 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
         radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
+            await _drive_rx_silent(radio)
             assert await await_until(lambda: len(ensure_calls) >= 1, timeout=8.0)
             # A buffered frame landing mid-episode must not fund another round.
             radio.audio_session._emit("rx_resumed")  # noqa: SLF001
@@ -479,6 +485,7 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
         try:
             _kill_client_audio_only(radio)
             _drain(sub)
+            await _drive_rx_silent(radio)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert await await_until(
                 lambda: radio._audio_silence_repair_task is None, timeout=15.0
@@ -493,6 +500,7 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
             # episode with a fresh budget and is repaired again.
             _kill_client_audio_only(radio)
             _drain(sub)
+            await _drive_rx_silent(radio)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert len(teardown_calls) > 2
         finally:
@@ -525,15 +533,18 @@ async def test_third_successful_round_waits_for_real_frames(
         bus = radio.audio_bus
         orig_callback = bus._on_opus_packet
         allow_frames = asyncio.Event()
-        delivered_at: list[float] = []
-        returned_at: list[float] = []
+        delivery_order: list[str] = []
+        heartbeats: list[float] = []
         ensure_calls: list[int] = []
         release_frames: asyncio.TimerHandle | None = None
 
         def _gate_real_frames(packet: AudioPacket | None) -> None:
             if allow_frames.is_set() and packet is not None:
-                delivered_at.append(time.monotonic())
                 orig_callback(packet)
+                heartbeat = bus.last_rx_frame_monotonic
+                assert heartbeat is not None
+                heartbeats.append(heartbeat)
+                delivery_order.append("frame")
 
         async def _fail_first_two_ensures() -> None:
             ensure_calls.append(1)
@@ -546,12 +557,12 @@ async def test_third_successful_round_waits_for_real_frames(
             await orig_reestablish()
             if frames_before_return:
                 allow_frames.set()
-                assert await await_until(lambda: bool(delivered_at), timeout=2.0)
+                assert await await_until(lambda: bool(heartbeats), timeout=2.0)
             else:
                 release_frames = asyncio.get_running_loop().call_later(
                     0.3, allow_frames.set
                 )
-            returned_at.append(time.monotonic())
+            delivery_order.append("return")
 
         radio._ensure_audio_transport = _fail_first_two_ensures  # type: ignore[method-assign]
         session.reestablish = _reestablish_with_frame_gate  # type: ignore[method-assign]
@@ -559,7 +570,8 @@ async def test_third_successful_round_waits_for_real_frames(
         try:
             _kill_client_audio_only(radio)
             _drain(sub)
-            assert await await_until(lambda: bool(returned_at), timeout=12.0)
+            await _drive_rx_silent(radio)
+            assert await await_until(lambda: "return" in delivery_order, timeout=12.0)
             assert await _next_frame_or_none(sub, 2.0) is not None
             assert await await_until(
                 lambda: radio._audio_silence_repair_task is None, timeout=5.0
@@ -567,8 +579,10 @@ async def test_third_successful_round_waits_for_real_frames(
             assert len(teardown_calls) == 3
             assert radio._audio_silence_repair_attempts == 3
             assert recovery == [], "healthy third round falsely reported FAILED"
-            assert (delivered_at[0] < returned_at[0]) is frames_before_return
-            assert delivered_at[0] > radio._audio_silence_repair_teardown_completed
+            assert (
+                delivery_order.index("frame") < delivery_order.index("return")
+            ) is frames_before_return
+            assert heartbeats[0] > radio._audio_silence_repair_teardown_completed
         finally:
             if release_frames is not None:
                 release_frames.cancel()
@@ -618,6 +632,9 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]
             resumed_before = sum(1 for e in events if e.reason == "rx_resumed")
+            assert resumed_before == 0, (
+                "watchdog resumed from a pre-death heartbeat before audio was healed"
+            )
 
             # Another path rebuilds the transport and re-arms the stream
             # underneath the session but never reestablishes demand, so the
@@ -778,7 +795,8 @@ async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # t
         calls, restore = _spy_method(radio, "_teardown_audio_transport")
         try:
             session._emit("rx_silent")  # noqa: SLF001
-            await asyncio.sleep(0.5)
+            async with VirtualClock.on_running_loop() as clock:
+                await clock.elapse(0.5)
             assert calls == []
             assert radio._audio_silence_repair_task is None
         finally:
@@ -818,6 +836,7 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path(
         try:
             # Spend the whole budget: 3 failed attempts, FAILED once.
             _kill_client_audio_only(radio)
+            await _drive_rx_silent(radio)
             assert await await_until(
                 lambda: (
                     radio._audio_silence_repair_task is None and len(ensure_calls) == 3
@@ -1073,8 +1092,11 @@ async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> N
         radio._ensure_audio_transport = _fail_ensure  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
+            await _drive_rx_silent(radio)
             # Round 1 fails; the task now sleeps the 1 s backoff.
             assert await await_until(lambda: len(ensure_calls) >= 1, timeout=8.0)
+            task = radio._audio_silence_repair_task
+            assert task is not None
             # Another path heals audio mid-backoff: frames flow again well
             # before the repair wakes up.
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
@@ -1086,7 +1108,7 @@ async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> N
 
             # Past every backoff window the repair ran no second round: one
             # teardown from the repair, one from the healing path.
-            await asyncio.sleep(3.0)
+            await asyncio.wait_for(asyncio.shield(task), 3.0)
             assert len(teardown_calls) == 2
             assert recovery == []
         finally:
