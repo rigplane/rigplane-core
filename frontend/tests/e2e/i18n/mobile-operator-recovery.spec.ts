@@ -738,6 +738,9 @@ test('panorama and its landscape and station overlays render without blur (MOR-2
     };
   }));
   const writes = await prepare(page, scopeReadState);
+  await page.route('**/api/v1/band-plan/layers', (route) => route.fulfill({ json: {
+    layers: [{ layer: 'amateur', name: 'Amateur' }, { layer: 'broadcast', name: 'Broadcast' }],
+  } }));
   await page.setViewportSize({ width: 812, height: 375 });
   await page.goto('/');
   await settled(page);
@@ -750,13 +753,19 @@ test('panorama and its landscape and station overlays render without blur (MOR-2
   await page.evaluate(async () => {
     if (document.fullscreenElement) await document.exitFullscreen();
   });
-  await page.setViewportSize({ width: 375, height: 812 });
-  await expect(page.locator('.m-layout')).toBeVisible();
-  await page.getByRole('tab', { name: 'SCOPE', exact: true }).click();
-  await expect(page.locator('#m-chip-panel-scope')).toBeVisible();
-  await page.getByTestId('scope-more').click();
-  await expect(page.getByTestId('scope-more-sheet')).toBeVisible();
-  await page.getByRole('button', { name: 'EiBi Stations', exact: true }).click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await settled(page);
+  await expect(page.locator('.radio-layout')).toBeVisible();
+  const toolbar = page.locator('.spectrum-toolbar.hosted');
+  await expect(toolbar).toBeVisible();
+  await toolbar.getByTestId('scope-more').click();
+  const more = toolbar.getByTestId('scope-more-panel');
+  await expect(more).toBeVisible();
+  await expect(more.getByTestId('scope-more-layers')).toBeVisible();
+  const stations = more.getByRole('button', { name: 'EiBi Stations', exact: true });
+  await expect(stations).toBeVisible();
+  await expect(stations).toBeEnabled();
+  await stations.click();
   const backdrop = page.locator('.eibi-backdrop');
   await expect(backdrop).toBeVisible();
   await expect(backdrop).toHaveCSS('position', 'fixed');
