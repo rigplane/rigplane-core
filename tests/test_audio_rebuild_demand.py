@@ -90,6 +90,7 @@ async def demanded_radio(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IcomR
         for sub in list(session._rx_subs):
             await sub.release()
         await radio._teardown_audio_transport()
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio
