@@ -1,29 +1,34 @@
-"""MOR-4798: the FTX-1 serves no spectrum scope over CAT.
+"""MOR-4798: the FTX-1 serves no hardware spectrum scope over HTTP.
 
-The FTX-1 profile declares no ``scope`` capability tag, so both capability
-endpoints must publish ``scope is False`` with no scope source of any kind —
-the exact fact the scope panel reads to say so plainly instead of the generic
-"reconnecting" overlay. The IC-7300 is the control: it publishes a hardware
-scope source.
+The FTX-1 profile declares no ``scope`` capability tag, so the served
+``GET /api/v1/capabilities`` document — the panel's contract (``scope``,
+``scopeSources``, ``scopeDefaultSourceId``, ``span_choices_hz`` at the
+payload root, ``src/rigplane/web/server.py::_serve_capabilities``) —
+reports ``scope is False`` with no ``"radio"`` hardware scope source, and
+the ``GET /api/v1/info`` document — ``model`` at its root, ``hasSpectrum``
+and ``tags`` inside its ``capabilities`` object
+(``src/rigplane/web/server.py::_serve_info``) — agrees. The IC-7300 is the
+control: it publishes a hardware ``"radio"`` scope source on both
+endpoints.
+
+Both cases drive the real public API path: a real ``WebServer`` on a real
+socket wrapping the real backend object (constructed, never connected —
+the transport is a class-level fact of the backend), asserting on the
+served bodies over the wire, never on profile dict fields or helper
+output. This mirrors
+``tests/test_mor4437_transport_capabilities.py`` (the nearest existing
+seam test), whose serial-G7250 case pins the same no-``"radio"`` shape.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
-from rigplane.rig_loader import load_rig
+from rigplane.backends.ic7300.serial import Ic7300SerialRadio
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.web.server import WebConfig, WebServer
-
-_RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
-
-
-def _addr(server: WebServer) -> tuple[str, int]:
-    assert server._server is not None
-    return server._server.sockets[0].getsockname()
 
 
 async def _http_get(host: str, port: int, path: str) -> tuple[int, bytes]:
@@ -56,48 +61,72 @@ async def _http_get(host: str, port: int, path: str) -> tuple[int, bytes]:
             pass
 
 
-async def _capabilities_by_endpoint(rig_file: str) -> dict[str, dict[str, Any]]:
-    profile = load_rig(_RIGS_DIR / rig_file).to_profile()
-    radio = SimpleNamespace(
-        model=profile.model,
-        profile=profile,
-        capabilities=set(profile.capabilities),
-        connected=True,
-        control_connected=True,
-        radio_ready=True,
-    )
-    srv = WebServer(
-        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
-    )
-    await srv.start()
+async def _served_docs(radio: Any) -> dict[str, dict[str, Any]]:
+    """Serve both capability endpoints from a real WebServer, no lifecycle.
+
+    Binds ``_accept_client`` directly (the
+    ``test_mor4437_transport_capabilities`` seam): no ``start()`` poller
+    threads, so an unconnected backend is enough — connection state is a
+    served fact, not a serving precondition.
+    """
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     try:
-        host, port = _addr(srv)
-        out: dict[str, dict[str, Any]] = {}
+        host, port = web._server.sockets[0].getsockname()
+        docs: dict[str, dict[str, Any]] = {}
         for path in ("/api/v1/capabilities", "/api/v1/info"):
             status, body = await _http_get(host, port, path)
             assert status == 200, path
-            payload = json.loads(body)
-            out[path] = payload["capabilities"] if path == "/api/v1/info" else payload
-        return out
+            docs[path] = json.loads(body)
+        return docs
     finally:
-        await srv.stop()
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        tasks = tuple(web._client_tasks)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def test_ftx1_publishes_no_scope_source_over_http() -> None:
-    """FTX-1 manuals/CAT: no spectrum scope command exists — both endpoints
-    say so with ``scope is False`` and no scope source of any kind."""
-    served = await _capabilities_by_endpoint("ftx1.toml")
-    for path, capabilities in served.items():
-        assert capabilities["model"] == "FTX-1", path
-        assert capabilities["scope"] is False, path
-        assert capabilities.get("scopeSources", []) == [], path
-        assert capabilities.get("scopeDefaultSourceId") is None, path
+    """FTX-1 manuals/CAT: no spectrum scope command exists, so the served
+    documents carry ``scope is False`` and no ``"radio"`` hardware scope
+    source of any kind."""
+    docs = await _served_docs(YaesuCatRadio("/dev/null", profile="ftx1"))
+
+    capabilities = docs["/api/v1/capabilities"]
+    assert capabilities["model"] == "FTX-1"
+    assert capabilities["scope"] is False
+    assert "scope" not in capabilities["capabilities"]
+    assert "radio" not in capabilities["scopeSources"]
+    assert capabilities["scopeDefaultSourceId"] != "radio"
+    assert capabilities["span_choices_hz"] == []
+
+    info = docs["/api/v1/info"]
+    assert info["model"] == "FTX-1"
+    assert info["capabilities"]["hasSpectrum"] is False
+    assert "scope" not in info["capabilities"]["tags"]
 
 
 async def test_scope_capable_radio_publishes_a_scope_source_over_http() -> None:
-    """Control: the IC-7300 publishes a hardware scope source on both endpoints."""
-    served = await _capabilities_by_endpoint("ic7300.toml")
-    for path, capabilities in served.items():
-        assert capabilities["scope"] is True, path
-        assert "radio" in capabilities.get("scopeSources", []), path
-        assert capabilities.get("scopeDefaultSourceId") == "radio", path
+    """Control: the IC-7300 publishes a hardware scope source on both
+    endpoints."""
+    radio = Ic7300SerialRadio(device="/dev/null", model="IC-7300")
+    docs = await _served_docs(radio)
+
+    capabilities = docs["/api/v1/capabilities"]
+    assert capabilities["model"] == "IC-7300"
+    assert capabilities["scope"] is True
+    assert "scope" in capabilities["capabilities"]
+    assert "radio" in capabilities["scopeSources"]
+    assert capabilities["scopeDefaultSourceId"] == "radio"
+    assert capabilities["span_choices_hz"] == list(
+        radio.profile.scope_span_view_widths_hz
+    )
+
+    info = docs["/api/v1/info"]
+    assert info["model"] == "IC-7300"
+    assert info["capabilities"]["hasSpectrum"] is True
+    assert "scope" in info["capabilities"]["tags"]
