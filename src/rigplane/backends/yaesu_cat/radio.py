@@ -45,6 +45,7 @@ from ...core.radio_owned_modes import ModeWriteEvidence
 from ...runtime.callable_support import supports_callable
 from ...runtime._connection_state import RadioConnectionState
 from ...runtime.local_tx_work import LocalTxWorkRunner
+from ...runtime.managed_tx_composition import track_transport_open
 from ...runtime.memory_slot_lock import memory_slot_operation
 from ...runtime.managed_tx_fence import TxAbortFence
 from ...runtime.managed_tx_state import (
@@ -79,6 +80,7 @@ if TYPE_CHECKING:
     from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
+    from ...runtime.managed_tx_composition import ManagedTxCompositionPort
     from ...types import BandStackRegister, MemoryChannel
     from .poller import YaesuCatPoller
 
@@ -449,6 +451,13 @@ class YaesuCatRadio:
             # The identity phase already owns the open port — a reopen
             # would toggle DTR/RTS on a radio that may merely be off.
             return
+        composition = getattr(self, "_managed_tx_composition", None)
+        async with track_transport_open(composition):
+            await self._connect_serial(composition)
+
+    async def _connect_serial(
+        self, composition: ManagedTxCompositionPort | None
+    ) -> None:
         self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
@@ -474,8 +483,6 @@ class YaesuCatRadio:
                 if generation == self._identity_generation:
                     self.last_error = diagnostic
                 raise RadioConnectionError(diagnostic) from cause
-            # Installed on demand (install_managed_tx_composition), as the poller reads it.
-            composition = getattr(self, "_managed_tx_composition", None)
             if composition is not None:
                 composition.note_transport_opened()
             if generation != self._identity_generation:

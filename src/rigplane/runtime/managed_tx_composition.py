@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import AsyncIterator, Protocol, runtime_checkable
 
+from rigplane.core.exceptions import ConnectionError
 from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
@@ -75,6 +77,8 @@ class ManagedTxCompositionPort(Protocol):
 
     async def bind_state_store(self, store: StateStore) -> None: ...
 
+    def transport_open_attempt(self) -> AbstractAsyncContextManager[None]: ...
+
     def note_transport_opened(self) -> None: ...
 
     async def transport_ready(self, identity: object) -> None: ...
@@ -86,6 +90,14 @@ class ManagedTxCompositionPort(Protocol):
     ) -> None: ...
 
     async def shutdown(self, termination: asyncio.Event) -> ShutdownResult: ...
+
+
+def track_transport_open(
+    composition: ManagedTxCompositionPort | None,
+) -> AbstractAsyncContextManager[None]:
+    return (
+        nullcontext() if composition is None else composition.transport_open_attempt()
+    )
 
 
 class _LegacyManagedTxCutoverGate:
@@ -156,7 +168,9 @@ class ManagedTxComposition:
         self._unsubscribe: Callable[[], None] | None = None
         self._observation_generation: int | None = None
         self._live_transport_identity: object | None = None
-        self._ever_had_transport = False
+        self._transport_may_have_opened = False
+        self._transport_opens_in_flight = 0
+        self._detach_claimed_before_open = False
         self._stale_transport_identities: list[object] = []
         self._active_provider: _ProviderEvent | None = None
         self._events: dict[int, _ProviderEvent] = {}
@@ -220,9 +234,23 @@ class ManagedTxComposition:
         self._live_transport_identity = None
         self._poison_active()
 
+    @asynccontextmanager
+    async def transport_open_attempt(self) -> AsyncIterator[None]:
+        if self._detach_claimed_before_open:
+            raise ConnectionError("Serial port open refused for a detaching binding")
+        self._transport_opens_in_flight += 1
+        try:
+            yield
+        except asyncio.CancelledError:
+            # Cancellation can arrive after the port opened but before handoff.
+            self._transport_may_have_opened = True
+            raise
+        finally:
+            self._transport_opens_in_flight -= 1
+
     def note_transport_opened(self) -> None:
         # The serial open edge precedes identity checks and provider publication.
-        self._ever_had_transport = True
+        self._transport_may_have_opened = True
 
     async def transport_ready(self, identity: object) -> None:
         self.note_transport_opened()
@@ -241,8 +269,16 @@ class ManagedTxComposition:
             await self._join_transition_locked()
             await self._ensure_current_locked()
 
-    def never_had_transport(self, store: StateStore) -> bool:
-        return self._state_store is store and not self._ever_had_transport
+    def claim_detach_before_transport_open(self, store: StateStore) -> bool:
+        """Close open admission if this binding has no actual or pending open."""
+        if (
+            self._state_store is not store
+            or self._transport_may_have_opened
+            or self._transport_opens_in_flight
+        ):
+            return False
+        self._detach_claimed_before_open = True
+        return True
 
     async def transport_unavailable(self, identity: object) -> None:
         async with self._transition_lock:

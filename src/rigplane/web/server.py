@@ -5918,19 +5918,21 @@ class WebServer:
             },
         )
 
-    def _managed_tx_never_attached(self, authority: ManagedTxAuthority) -> bool:
+    def _claim_managed_tx_detach_before_open(
+        self, authority: ManagedTxAuthority
+    ) -> bool:
         from .web_startup import _serial_port_unopened  # noqa: TID251
 
         port = self._production_managed_tx_port
         return (
             isinstance(port, ManagedTxComposition)
             and port.authority is authority
-            and port.never_had_transport(self.command_state_store)
             and _serial_port_unopened(self)
             and isinstance(getattr(self._radio, "serial_open_error", None), str)
             and getattr(self._radio, "control_connected", None) is False
             and project_observed_ptt(self.command_state_store.snapshot())
             is not ObservedPtt.ON
+            and port.claim_detach_before_transport_open(self.command_state_store)
         )
 
     async def _handle_http_managed_tx(
@@ -6019,7 +6021,7 @@ class WebServer:
                 ) == "1" and isinstance(authority, ManagedTxAuthority):
                     submission = await authority.submit_force_off(
                         binding_never_attached=functools.partial(
-                            self._managed_tx_never_attached, authority
+                            self._claim_managed_tx_detach_before_open, authority
                         )
                     )
                 else:

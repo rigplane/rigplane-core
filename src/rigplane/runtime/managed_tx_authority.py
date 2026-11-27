@@ -798,8 +798,13 @@ class ManagedTxAuthority:
         """Advance the abort fence and return before provider settlement."""
         async with self._lock:
             self._require_ingress_open_locked(release=True)
+            # The callback can close open admission for a binding being detached.
+            # Invoke it only when ForceOff can honor the claimed disposition.
             never_attached = (
                 self._generation_high_water < 0
+                and self._provider_generation is None
+                and not self._state.release_required
+                and self._state.pending_effect is None
                 and binding_never_attached is not None
                 and binding_never_attached()
             )

@@ -141,8 +141,9 @@ These routes are part of the Pro/supervisor compatibility surface:
 An owner preparing to stop its station can submit `force_off` with
 `X-Rigplane-Release-For-Detach: 1`. The HTTP 202 receipt can include
 `releaseDisposition: "not_applicable"` when Core has evidence that the serial
-port never opened for that binding and there is no release debt. The value
-describes the detach request and makes no claim about the radio's RF state.
+port never opened for that binding, no open is in progress, and there is no
+release debt. Core then prevents retries from opening the port for that
+binding. The disposition describes the detach request.
 For an absent or unrecognized disposition, use the existing managed-transmit
 status and observed PTT to confirm release.
 

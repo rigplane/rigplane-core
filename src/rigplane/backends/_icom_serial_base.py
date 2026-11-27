@@ -30,6 +30,7 @@ from ..exceptions import (
     TimeoutError as RigplaneTimeoutError,
 )
 from ..radio import CoreRadio
+from ..runtime.managed_tx_composition import track_transport_open
 from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
 
 if TYPE_CHECKING:
@@ -507,6 +508,10 @@ class _IcomSerialRadioBase(CoreRadio):
             # with the watchdog's guard.
             return
 
+        async with track_transport_open(self._managed_tx_composition):
+            await self._connect_serial()
+
+    async def _connect_serial(self) -> None:
         # MOR-3071 round 4: a committed attempt opens a NEW link. The
         # answer recorded for the old link no longer applies, and a live
         # re-read task from an earlier hold must be cancelled before the
@@ -708,6 +713,10 @@ class _IcomSerialRadioBase(CoreRadio):
             # before.
             return
 
+        async with track_transport_open(self._managed_tx_composition):
+            await self._reopen_serial()
+
+    async def _reopen_serial(self) -> None:
         # MOR-3436: per-attempt owner-stop epoch, captured before the
         # first await, for the audio tail at this reconnect's completion.
         owner_stop_epoch = self._owner_stop_epoch
