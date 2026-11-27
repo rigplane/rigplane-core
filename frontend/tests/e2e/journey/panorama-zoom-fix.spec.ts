@@ -1,3 +1,4 @@
+// probe: run the journey legs on an unchanged main tree (do not merge)
 import { writeFile } from 'node:fs/promises';
 import { installSampler, settlePassband, passbandGaps, expectPassbandProbeReady, watchScopeFrames } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
