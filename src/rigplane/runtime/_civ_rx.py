@@ -60,6 +60,8 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.scope import _span_index_for_hz
+from rigplane.commands._frame import unwrap_receiver_prefix
+from rigplane.commands.cw import stop_cw
 from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
@@ -109,6 +111,10 @@ from rigplane.runtime._state_queries import (
     tx_target_max_age,
 )
 from rigplane.runtime.meter_cal import interpolate_meter
+from rigplane.runtime.tx_interlock import (
+    classify_raw_civ_frame_tx_family,
+    is_exact_raw_dekey_frame,
+)
 
 if TYPE_CHECKING:
     from ._runtime_protocols import CivRuntimeHost
@@ -4744,6 +4750,25 @@ class CivRuntime:
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
+            command_map = self._host._profile.command_map
+            body = unwrap_receiver_prefix(civ_frame[4:-1])
+            cw_start = (
+                command_map is not None
+                and command_map.has("send_cw")
+                and body.startswith(bytes(command_map.get("send_cw")))
+                and (
+                    not command_map.has("stop_cw")
+                    or body
+                    != stop_cw(to_addr=self._host._radio_addr, cmd_map=command_map)[
+                        4:-1
+                    ]
+                )
+            )
+            if cw_start or (
+                classify_raw_civ_frame_tx_family(civ_frame) is True
+                and not is_exact_raw_dekey_frame(civ_frame)
+            ):
+                raise StaleBeforeWireError("CI-V transport unavailable before dispatch")
             try:
                 await self._wait_for_civ_transport_recovery(timeout=timeout)
             except (ConnectionError, TimeoutError, asyncio.TimeoutError) as exc:
