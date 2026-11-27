@@ -32,6 +32,21 @@ from mock_server import MockIcomRadio  # noqa: E402
 from _caps import FULL_ICOM_CAPS as FULL_ICOM_CAPS  # noqa: F401, E402 — re-export
 from rigplane.testing.timing import VirtualClock  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def isolated_lan_session_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from rigplane.runtime._control_phase import ControlPhaseRuntime
+
+    original = ControlPhaseRuntime._session_record_path
+    monkeypatch.setattr(
+        ControlPhaseRuntime,
+        "_session_record_path",
+        lambda self: tmp_path / original(self).name,
+    )
+
+
 _HEADER_FMT = "<IHHII"
 
 
