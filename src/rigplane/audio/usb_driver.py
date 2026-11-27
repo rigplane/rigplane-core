@@ -51,6 +51,7 @@ from .backend import (
     PortAudioBackend,
     RxStream,
     TxStream,
+    _ACCESS_DENIED_CODES,
     _platform_uid_from_device_name,
     portaudio_native_access,
 )
@@ -188,6 +189,7 @@ AudioStartFailureReason = Literal[
     "usb_ambiguous",
     "open_timeout",
     "device_in_use",
+    "device_access_denied",
     "format",
     "radio_not_connected",
     "other",
@@ -228,12 +230,59 @@ def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     return audio_start_failure_details(exc)[0]
 
 
+def _error_codes(error: BaseException) -> list[int]:
+    """The integer codes in an open error's args and ``errno`` (never text).
+
+    PortAudio reports its failures as ``(message, code[, host error])``;
+    an ``OSError`` carries the code in ``errno`` instead. Message text is
+    deliberately not read: on a localized Windows it is not English.
+    """
+    codes: list[int] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            codes.append(value)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                walk(item)
+
+    walk(error.args)
+    errno = getattr(error, "errno", None)
+    if isinstance(errno, int) and not isinstance(errno, bool):
+        codes.append(errno)
+    return codes
+
+
+def audio_start_failure_access_code(exc: BaseException) -> int | None:
+    """The E_ACCESSDENIED code in the failure chain, or ``None``.
+
+    HRESULT 0x80070005 shows up signed (``-2147024891``) or unsigned
+    (``2147942405``); both are the same refusal. Decided by codes only,
+    never by the (possibly localized) message text or the device name,
+    so every radio maps the same way.
+    """
+    for error in _exception_chain(exc):
+        for code in _error_codes(error):
+            if code in _ACCESS_DENIED_CODES:
+                return code
+    return None
+
+
 def audio_start_failure_details(
     exc: BaseException,
 ) -> tuple[AudioStartFailureReason, tuple[AudioCandidate, ...]]:
     from ._usb_pairing import WindowsAudioTopologyError
 
     chain = _exception_chain(exc)
+    # A privacy/permission refusal is its own actionable category (P22):
+    # the OS refusal code decides, never the message text or device name.
+    # Checked before the type mapping so wrapping never hides it; a chain
+    # the in-use verdict accepted can never carry this code (the busy
+    # classifier carves access-denied out first).
+    if audio_start_failure_access_code(exc) is not None:
+        return "device_access_denied", ()
     reasons: tuple[
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (

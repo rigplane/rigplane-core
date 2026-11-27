@@ -53,6 +53,9 @@ const SERVER_RX_DEVICE_REASONS = new Set([
 // MOR-4030 case C: another program holds the radio's codec exclusively, so
 // neither the exclusive open nor the shared fallback could start RX.
 const SERVER_RX_DEVICE_IN_USE = 'device_in_use';
+// P22: Windows refused the open with E_ACCESSDENIED — another program
+// holds the endpoint or the microphone privacy toggle blocks it.
+const SERVER_RX_ACCESS_DENIED = 'device_access_denied';
 // The server names the holding program by its executable FILE name only. Show
 // it only when it still looks like one (no path, no control characters, short).
 const HOLDER_PROGRAM_NAME = /^[^\\/\u0000-\u001f\u007f]{1,64}$/;
@@ -706,6 +709,12 @@ class AudioManager {
               'rxAudioDeviceInUse',
             );
           }
+        } else if (msg.reason === SERVER_RX_ACCESS_DENIED) {
+          this._operatorNotifier?.(
+            'error',
+            'Another program is using the radio\'s audio device, or Windows privacy settings block access to it. Close the other program or allow microphone access, then reconnect.',
+            'rxAudioAccessDenied',
+          );
         } else {
           this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
         }

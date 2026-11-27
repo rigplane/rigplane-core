@@ -64,6 +64,7 @@ const model: PeerSplitDisplayModel = {
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (component) unmount(component);
   component = null;
   document.body.innerHTML = '';
@@ -159,12 +160,16 @@ describe('DominantUnifiedDisplay', () => {
 
   it('does not invent reference-only clock, memory, temperature, or band-edge facts', () => {
     const target = render();
+    const styles = vi.spyOn(globalThis, 'getComputedStyle');
     const visibleText = [...target.querySelectorAll('*')]
+      .filter((node) => node.childNodes.length === 1 && node.textContent !== '')
       .filter((node) => getComputedStyle(node).visibility !== 'hidden')
-      .map((node) => node.childNodes.length === 1 ? node.textContent ?? '' : '')
+      .map((node) => node.textContent ?? '')
       .join(' ');
 
     expect(visibleText).not.toMatch(/UTC|LOC|DATE|TEMP|QSY|M-0\d|BAND\s*EDGE|14\.248|14\.252/i);
+    expect(styles).toHaveBeenCalledTimes([...target.querySelectorAll('*')]
+      .filter((node) => node.childNodes.length === 1 && node.textContent !== '').length);
   });
 
   it('ghosts unknown facts and structurally hides unsupported facts', () => {

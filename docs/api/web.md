@@ -1428,8 +1428,14 @@ appends only the failure category, and `reason` carries the same category
 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster._notify_relay_start_failure`).
 The category is one of the publishable `AudioStartFailureReason` values
 (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
-`open_timeout`, `device_in_use`, `format`, `radio_not_connected`, `other`)
+`open_timeout`, `device_in_use`, `device_access_denied`, `format`,
+`radio_not_connected`, `other`)
 classified by `src/rigplane/audio/usb_driver.py: audio_start_failure_reason`.
+`device_access_denied` means Windows refused the device open with
+E_ACCESSDENIED (0x80070005): another program is using the radio's audio
+device, or Windows privacy settings block access to it. It is decided by
+the refusal code, never by message text, and carries no `holder`.
+Receivers must tolerate unknown categories with the generic failure handling.
 `radio_not_connected` replaces `other` when Core already knows the control
 link is not connected/answering (the connect-time identity hold owns the
 radio — e.g. a powered-off rig whose serial port is open but whose identity

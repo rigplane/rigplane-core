@@ -37,19 +37,6 @@ export const NEVER_GUARDED = {
   unkey: { reason: 'Unkey is never gated: emergency receive/release must remain reachable.' },
 } as const;
 
-// Shared panel handlers called by marked controls. The source scan derives
-// keyboard action aliases from dispatchKeyboardRadioAction using this mapping.
-export const MARKED_CONTROL_HANDLERS = {
-  'makeModeHandlers().onDataModeChange(': TRANSMIT_CAPABILITIES.txSettings.id,
-  'makeVfoHandlers().onSplitToggle(': TRANSMIT_CAPABILITIES.split.id,
-  'makeVfoHandlers().onSwap(': TRANSMIT_CAPABILITIES.vfoTransfer.id,
-  'makeVfoHandlers().onEqual(': TRANSMIT_CAPABILITIES.vfoTransfer.id,
-  'makeRitXitHandlers().onRitToggle(': TRANSMIT_CAPABILITIES.ritXit.id,
-  'makeRitXitHandlers().onXitToggle(': TRANSMIT_CAPABILITIES.ritXit.id,
-  'makeRitXitHandlers().onClear(': TRANSMIT_CAPABILITIES.ritXit.id,
-  'makeTxHandlers().onMonToggle(': TRANSMIT_CAPABILITIES.txSettings.id,
-} as const;
-
 /** Non-DOM action inventory, not permission to bypass a policy:
  * the Pro guard must handle these separately (it cannot disable a keystroke by DOM).
  * Preserve key-up, pointer release, cancellation and emergency unkey paths.
@@ -98,5 +85,10 @@ export const NON_DOM_TX_PATHS = {
   ] },
   power_on: { reason: 'The extension host API can request power-on confirmation; the confirm operation carries power-on.', triggers: [
     { file: 'lib/local-extensions/LocalExtensionsHost.svelte', symbol: 'setRadioPower: requestPower' },
+  ] },
+  extension_commands: { reason: 'Local extensions can send transmit-affecting commands through sendCommand or dispatchCommand and the typed intent facade, without a DOM control.', triggers: [
+    { file: 'lib/local-extensions/host-api.ts', symbol: 'sendCommand(name, params) {' },
+    { file: 'lib/local-extensions/host-api.ts', symbol: 'dispatchCommand(name, params) {' },
+    { file: 'lib/local-extensions/host-api.ts', symbol: 'dispatchCommand: dispatchThroughIntentFacade' },
   ] },
 } as const;
