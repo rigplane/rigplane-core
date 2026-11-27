@@ -104,7 +104,7 @@ __all__ = [
 class ControlPhaseRuntime:
     """Composed control-phase runtime: connect, disconnect, token renewal, watchdog.
 
-    Holds a reference to the host (CoreRadio); all state remains on the host.
+    Holds a reference to the host (CoreRadio).
     """
 
     TOKEN_RENEWAL_INTERVAL = 60.0
@@ -164,6 +164,7 @@ class ControlPhaseRuntime:
         self._renewal_waiter: asyncio.Future[bool] | None = None
         self._renewal_sent_at: float | None = None
         self._renewal_answered_at: float | None = None
+        self._previous_session: tuple[int, int, int, int] | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -206,6 +207,8 @@ class ControlPhaseRuntime:
         h._civ_recovering = False
         h._last_status_error = 0
         h._last_auth_error = 0
+        # A discovery failure on this attempt must not claim the old token.
+        h._token = 0
         # Re-enable queue during setup — we need status packets from radio.
         # The notice callback stays clear so _receive_guid still reads the
         # first 0x90 from the queue.
@@ -216,6 +219,7 @@ class ControlPhaseRuntime:
         h._local_bind_host = local_bind_host
 
         _reconnect = getattr(h, "_has_connected_once", False)
+        h._ctrl_transport._before_handshake = self._release_previous_session
         try:
             if _reconnect:
                 await h._ctrl_transport.reconnect(
@@ -243,6 +247,8 @@ class ControlPhaseRuntime:
             await h._ctrl_transport.disconnect()
             h._conn_state = RadioConnectionState.DISCONNECTED
             raise
+        finally:
+            h._ctrl_transport._before_handshake = None
 
         h._ctrl_transport.start_ping_loop()
         h._ctrl_transport.start_retransmit_loop()
@@ -599,6 +605,7 @@ class ControlPhaseRuntime:
     async def _cleanup_data_port_discovery_timeout(self) -> None:
         """Release startup resources after data-port discovery times out."""
         h = self._host
+        self._remember_session_for_release()
         # Timeout happens after asyncio has consumed civ_sock; the datagram
         # transport owns closing it.  The audio socket has not been consumed.
         h._civ_sock_pending = None
@@ -613,12 +620,20 @@ class ControlPhaseRuntime:
                 )
             h._civ_transport = None
         try:
-            await h._ctrl_transport.disconnect()
+            if h._token:
+                await self._send_token(0x01)
         except Exception:
             logger.debug(
-                "data-port cooldown cleanup: control disconnect failed",
-                exc_info=True,
+                "data-port cooldown cleanup: token remove failed", exc_info=True
             )
+        finally:
+            try:
+                await h._ctrl_transport.disconnect()
+            except Exception:
+                logger.debug(
+                    "data-port cooldown cleanup: control disconnect failed",
+                    exc_info=True,
+                )
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
@@ -629,6 +644,7 @@ class ControlPhaseRuntime:
         self._renewal_waiter = None
         if h._conn_state != RadioConnectionState.CONNECTED:
             return
+        self._remember_session_for_release()
         h._conn_state = RadioConnectionState.DISCONNECTING
         h._civ_resume_seq = None
         h._audio_resume_seq = None
@@ -788,6 +804,7 @@ class ControlPhaseRuntime:
         Idempotent: safe to call when nothing is claimed.
         """
         h = self._host
+        self._remember_session_for_release()
         self._renewal_waiter = None
         h._civ_resume_seq = None
         h._audio_resume_seq = None
@@ -1484,24 +1501,78 @@ class ControlPhaseRuntime:
         h = self._host
         return h._conn_state == RadioConnectionState.CONNECTED
 
-    async def _send_token(self, magic: int) -> None:
+    def _remember_session_for_release(self) -> None:
+        h = self._host
+        ctrl = h._ctrl_transport
+        if h._token and ctrl.my_id and ctrl.remote_id:
+            self._previous_session = (
+                h._token,
+                ctrl.my_id,
+                ctrl.remote_id,
+                h._tok_request,
+            )
+
+    async def _release_previous_session(self) -> None:
+        previous = self._previous_session
+        # Consume once, including cancellation: a later attempt must never
+        # replay this release against a newly authenticated session.
+        self._previous_session = None
+        if previous is None:
+            return
+        token, my_id, remote_id, tok_request = previous
+        packet = self._build_token_packet(
+            0x01,
+            token=token,
+            my_id=my_id,
+            remote_id=remote_id,
+            tok_request=tok_request,
+        )
+        # These unacknowledged UDP releases are deliberately untracked: the
+        # old IDs/token must not enter the new session's retransmit buffer.
+        send = self._host._ctrl_transport._raw_send
+        send(packet)
+        await asyncio.sleep(0.2)
+        send(packet)
+        await asyncio.sleep(0.2)
+        send(packet)
+
+    def _build_token_packet(
+        self,
+        magic: int,
+        *,
+        token: int,
+        my_id: int,
+        remote_id: int,
+        tok_request: int,
+    ) -> bytes:
         h = self._host
         pkt = bytearray(self.TOKEN_PACKET_SIZE)
         struct.pack_into("<I", pkt, 0x00, self.TOKEN_PACKET_SIZE)
         struct.pack_into("<H", pkt, 0x04, 0x00)
-        struct.pack_into("<I", pkt, 0x08, h._ctrl_transport.my_id)
-        struct.pack_into("<I", pkt, 0x0C, h._ctrl_transport.remote_id)
+        struct.pack_into("<I", pkt, 0x08, my_id)
+        struct.pack_into("<I", pkt, 0x0C, remote_id)
         struct.pack_into(">I", pkt, 0x10, self.TOKEN_PACKET_SIZE - 0x10)
         pkt[0x14] = 0x01
         pkt[0x15] = magic
         struct.pack_into(">H", pkt, 0x16, h._auth_seq)
         h._auth_seq += 1
-        struct.pack_into("<H", pkt, 0x1A, h._tok_request)
+        struct.pack_into("<H", pkt, 0x1A, tok_request)
         struct.pack_into(">H", pkt, 0x24, 0x0798)
-        struct.pack_into("<I", pkt, 0x1C, h._token)
+        struct.pack_into("<I", pkt, 0x1C, token)
+        return bytes(pkt)
+
+    async def _send_token(self, magic: int) -> None:
+        h = self._host
+        pkt = self._build_token_packet(
+            magic,
+            token=h._token,
+            my_id=h._ctrl_transport.my_id,
+            remote_id=h._ctrl_transport.remote_id,
+            tok_request=h._tok_request,
+        )
         if magic == 0x05:
             self._renewal_sent_at = time.monotonic()
-        await h._ctrl_transport.send_tracked(bytes(pkt))
+        await h._ctrl_transport.send_tracked(pkt)
 
     def _start_watchdog(self) -> None:
         h = self._host

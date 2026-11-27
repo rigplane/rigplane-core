@@ -17,6 +17,7 @@ description: Troubleshooting RigPlane radio control — discovery timeouts, auth
 3. **Firewall blocking UDP** — allow UDP ports 50001–50003
 4. **Different subnet** — the client and radio must be on the same subnet (or have routing configured)
 5. **Network Control disabled** — enable **Network Control** in your radio's network settings (IC-7610: Menu → Set → Network → Network Control)
+6. **Previous LAN session still releasing** — after a disconnect, an Icom radio may hold the previous session and stay silent during discovery. Reconnect to retry its release, or allow about 90 seconds for the radio's hold to expire. During startup discovery retries, the connection status exposes a cooldown countdown; silence can also have any of the causes above.
 
 **Debug:**
 

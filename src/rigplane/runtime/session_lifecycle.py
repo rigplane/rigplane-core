@@ -762,8 +762,8 @@ class CoreRadioSessionLifecycle:
         self._connecting_started: float | None = None
         self._recovery_attempt: int | None = None
         # Start-up busy-hold signal (MOR-3391 part 2): set while a
-        # first-connect busy-pass cooldown owns the loop (a busy reject
-        # or, after one, a discovery timeout), cleared on
+        # first-connect busy or silent-discovery cooldown owns the loop,
+        # cleared on
         # CONNECTED/DISCONNECTED. Upper layers (CLI start-up, the web
         # wire) wait on / read this instead of the private lifecycle, so a
         # start-up hold can serve not-ready while the same connect keeps
@@ -982,7 +982,18 @@ class CoreRadioSessionLifecycle:
                         cooldown = self._first_connect_busy_cooldown_s
                         if cooldown is None:
                             cooldown = self._reject_cooldown_s
-                        await asyncio.sleep(cooldown)
+                        self._connecting_started = None
+                        self._cooldown_total_s = cooldown
+                        self._cooldown_deadline = time.monotonic() + cooldown
+                        self.startup_busy_hold_event.set()
+                        self._emit(
+                            LifecycleState.COOLDOWN,
+                            cooldown_remaining_s=cooldown,
+                        )
+                        try:
+                            await asyncio.sleep(cooldown)
+                        finally:
+                            self._cooldown_deadline = None
                         continue
                 raise
 

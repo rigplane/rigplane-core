@@ -1320,3 +1320,62 @@ async def test_silent_first_discovery_then_busy_uses_busy_rules(
     ]
     assert lines.count("discovery attempt 1/3 got no answer") == 1
     assert lc.state is LifecycleState.DISCONNECTED
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("finish", ["connect", "cancel", "exhaust"])
+async def test_silent_discovery_publishes_hold_countdown(
+    virtual_clock,
+    monkeypatch: pytest.MonkeyPatch,
+    finish: str,
+) -> None:
+    from types import SimpleNamespace
+    from rigplane.runtime import session_lifecycle
+
+    # Replace the module's clock view, never the process-wide time module.
+    monkeypatch.setattr(
+        session_lifecycle, "time", SimpleNamespace(monotonic=virtual_clock)
+    )
+    mech = FakeMechanism()
+    mech.queue_discovery_timeout()
+    if finish == "exhaust":
+        mech.queue_discovery_timeout()
+        mech.queue_discovery_timeout()
+    else:
+        mech.queue_ok()
+    lc = CoreRadioSessionLifecycle(
+        mechanism=mech,
+        first_connect_busy_budget_s=600.0,
+        first_connect_busy_cooldown_s=30.0,
+    )
+    task = asyncio.create_task(lc.connect())
+    try:
+        await virtual_clock.elapse(0)
+        assert lc.startup_busy_hold_event.is_set()
+        assert lc.state is LifecycleState.COOLDOWN
+        assert lc.startup_busy_hold_retry_in_seconds == pytest.approx(30.0)
+        assert lc.status.cooldown_remaining_s == pytest.approx(30.0)
+        await virtual_clock.elapse(12.0)
+        assert lc.startup_busy_hold_retry_in_seconds == pytest.approx(18.0)
+        assert lc.status.cooldown_remaining_s == pytest.approx(18.0)
+        if finish == "cancel":
+            await lc.disconnect()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif finish == "exhaust":
+            await virtual_clock.elapse(48.0)
+            with pytest.raises(DiscoveryTimeout):
+                await task
+            assert mech.connect_calls == 3
+        else:
+            await virtual_clock.elapse(18.0)
+            await task
+            assert mech.connect_calls == 2
+        assert not lc.startup_busy_hold_event.is_set()
+        assert lc.startup_busy_hold_retry_in_seconds is None
+        assert lc.status.cooldown_remaining_s is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await lc.disconnect()
