@@ -1,6 +1,80 @@
 import { describe, expect, it } from 'vitest';
-import { missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { readFileSync } from 'node:fs';
+import { URL } from 'node:url';
+import { createContext, runInContext } from 'node:vm';
+import ts from 'typescript';
+import { installSampler, stopSampler, missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 import type { ScopePassbandDiagnostics } from '../adapters/scope-passband-display';
+
+describe('passband sampler and renderer work', () => {
+  for (const activeRenderer of [false, true]) {
+    it(`quiesces the sampler while ${activeRenderer ? 'still rejecting a continuous' : 'accepting an idle'} renderer`, async () => {
+      const queued = new Map<number, FrameRequestCallback>();
+      let nextId = 0;
+      let observing = false;
+      const context = createContext({
+        performance: { now: () => 0 },
+        requestAnimationFrame: (callback: FrameRequestCallback) => {
+          const id = ++nextId;
+          queued.set(id, callback);
+          return id;
+        },
+        cancelAnimationFrame: (id: number) => queued.delete(id),
+        document: { querySelector: () => null },
+        HTMLElement: class {},
+        MutationObserver: class {
+          observe() { observing = true; }
+          disconnect() { observing = false; }
+        },
+        WebGL2RenderingContext: class { texImage2D() {} drawArrays() {} },
+        CanvasRenderingContext2D: class { fillText() {} },
+      });
+      context.window = context;
+      const execute = (callback: unknown) => runInContext(ts.transpileModule(`(${String(callback)})();`, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText, context);
+      // Execute the journey's work instrumentation with the sampler.
+      const path = new URL('../../../../tests/e2e/journey/panorama-settle.spec.ts', import.meta.url);
+      const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      let instrumentation: ts.Node | undefined;
+      const visit = (node: ts.Node) => {
+        if (!instrumentation && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+          && node.expression.name.text === 'addInitScript') instrumentation = node.arguments[0];
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      expect(instrumentation).toBeDefined();
+      execute(instrumentation!.getText(source));
+      const page = { addInitScript: execute, evaluate: execute };
+      await installSampler(page as never);
+      const advanceFrames = () => {
+        for (let frame = 0; frame < 20; frame++) {
+          const callbacks = [...queued.values()];
+          queued.clear();
+          for (const callback of callbacks) callback(frame * 16.67);
+        }
+      };
+      advanceFrames();
+      expect(context.passbandSamples).toHaveLength(20);
+      expect(context.panoramaWork.raf).toBe(20);
+      expect(observing).toBe(true);
+      if (activeRenderer) runInContext(`
+        function render() { requestAnimationFrame(render); }
+        requestAnimationFrame(render);
+      `, context);
+      await stopSampler(page as never);
+      expect(observing).toBe(false);
+      expect(queued.size).toBe(activeRenderer ? 1 : 0);
+      const start = context.panoramaWork.raf as number;
+      advanceFrames();
+      const idleRaf = (context.panoramaWork.raf as number) - start;
+      expect(idleRaf).toBe(activeRenderer ? 20 : 0);
+      expect(idleRaf <= 4).toBe(!activeRenderer);
+      expect(context.passbandSamples).toHaveLength(20);
+      expect(queued.size).toBe(activeRenderer ? 1 : 0);
+    });
+  }
+});
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {

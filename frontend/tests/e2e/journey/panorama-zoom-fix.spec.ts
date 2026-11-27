@@ -6,7 +6,7 @@ import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
-import { awaitRenderPipeline, clickPanorama, observePanorama, openPanorama, reloadPanorama } from './panorama-ready';
+import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, observePanorama, openPanorama, reloadPanorama } from './panorama-ready';
 import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // ── MOR-4392 ──
@@ -365,12 +365,13 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         expect(end - start).toBeLessThan(20_000);
       };
       await check();
+      const beforeArrowsHz = (await radioState()).main.freqHz;
       for (let i = 0; i < 12; i++) {
-        const beforeHz = (await radioState()).main.freqHz;
-        await page.keyboard.press('ArrowRight');
-        await expect.poll(async () => (await radioState()).main.freqHz).toBe(beforeHz + 1000);
-        await expectPassbandProbeReady(page, 1);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
+      await expect.poll(async () => (await radioState()).main.freqHz).toBe(beforeArrowsHz + 12_000);
+      await expectPanoramaFrequency(page, beforeArrowsHz + 12_000);
+      await expectPassbandProbeReady(page, 1);
       await check();
       await awaitRenderPipeline(page);
       const box = (await surface.boundingBox())!;

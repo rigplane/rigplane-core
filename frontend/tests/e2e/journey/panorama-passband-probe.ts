@@ -13,7 +13,7 @@ interface PassbandSample {
 }
 
 declare global {
-  interface Window { passbandSamples: PassbandSample[] }
+  interface Window { passbandSamples: PassbandSample[]; stopPassbandSampler: () => void }
 }
 
 /**
@@ -47,15 +47,26 @@ export async function installSampler(page: import('@playwright/test').Page): Pro
         && JSON.stringify(last.gates) === JSON.stringify(sample.gates)) return;
       window.passbandSamples.push(sample);
     };
+    let frame: number;
     const loop = () => {
       snapshot('frame');
-      requestAnimationFrame(loop);
+      frame = requestAnimationFrame(loop);
     };
-    requestAnimationFrame(loop);
-    new MutationObserver(() => snapshot('dom')).observe(document, {
+    frame = requestAnimationFrame(loop);
+    const observer = new MutationObserver(() => snapshot('dom'));
+    observer.observe(document, {
       subtree: true, childList: true, attributes: true,
     });
+    window.stopPassbandSampler = () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   });
+}
+
+/** Cancel the queued frame and disconnect DOM sampling before measuring renderer work. */
+export async function stopSampler(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => window.stopPassbandSampler());
 }
 
 interface Gap {

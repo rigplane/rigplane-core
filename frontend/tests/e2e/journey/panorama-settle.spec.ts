@@ -5,7 +5,7 @@ import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runt
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
 import type { WsCommand } from '../../../src/lib/types/protocol';
-import { installSampler, expectPassbandProbeReady, readPassbandDiagnostics } from './panorama-passband-probe';
+import { installSampler, stopSampler, expectPassbandProbeReady, readPassbandDiagnostics } from './panorama-passband-probe';
 import { awaitRenderPipeline, clickPanorama, expectPanoramaFrequency, observePanorama, openPanorama } from './panorama-ready';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
@@ -174,6 +174,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await expect(page.locator('.spectrum-panel').first())
           .toHaveAttribute('data-passband-state', 'current', { timeout: 15_000 });
         await expectPassbandProbeReady(page, zoom === 'span' ? zoomMode : 0);
+        await stopSampler(page);
         // Observation windows, not synchronization delays: 10 s after the
         // gesture has settled, with the final 5 s isolated from
         // gesture/acknowledgement work.
@@ -297,12 +298,9 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect.poll(radioState, { timeout: 10_000 }).toMatchObject({ main: { freqHz: clickTunes().at(-1) } });
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
-      // Each sequential step starts from the preceding confirmed readback.
+      // The 150 ms input cadence must overlap delayed readbacks.
       for (let i = 0; i < 12; i++) {
-        const beforeHz = (await radioState()).main!.freqHz!;
-        await page.keyboard.press('ArrowRight');
-        await expect.poll(async () => (await radioState()).main?.freqHz).toBe(beforeHz + 1000);
-        await expectPanoramaFrequency(page, beforeHz + 1000);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
       const arrowSteps = () => wsCommands.slice(commandsBeforeArrows)
         .filter(command => command.name === 'set_freq')
@@ -311,6 +309,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const steps = arrowSteps();
       for (let i = 1; i < steps.length; i++) expect(steps[i]! - steps[i - 1]!).toBe(1_000);
       await expect.poll(radioState).toMatchObject({ main: { freqHz: steps.at(-1) } });
+      await expectPanoramaFrequency(page, steps.at(-1)!);
       await expect(marker).toBeVisible();
       expect(state.sent - sentBefore).toBe(0);
       expectPanoramaSettled(watch);
@@ -332,7 +331,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
     const port = journeyPort(18890 + index);
     const server = await startJourneyServer(port, 14_250_000,
-      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+      ['--model', model, '--response-delay', '0.3', '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     try {
       const frames = { count: 0 };
       page.on('websocket', socket => {
@@ -366,13 +365,12 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(expectedHz);
       }
       const clickedHz = (await radioState()).main!.freqHz!;
+      await expectPanoramaFrequency(page, clickedHz);
       for (let i = 0; i < 12; i++) {
-        const beforeHz = (await radioState()).main!.freqHz!;
-        await page.keyboard.press('ArrowRight');
-        await expect.poll(async () => (await radioState()).main?.freqHz).toBe(beforeHz + 1000);
-        await expectPanoramaFrequency(page, beforeHz + 1000);
+        await page.keyboard.press('ArrowRight', { delay: 150 });
       }
       await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(clickedHz + 12_000);
+      await expectPanoramaFrequency(page, clickedHz + 12_000);
     } finally {
       await server.kill();
     }
