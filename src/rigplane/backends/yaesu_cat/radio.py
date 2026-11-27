@@ -29,6 +29,7 @@ from ...exceptions import (
     AudioFormatError,
     CatReplyValidationError,
     CommandError,
+    CommandNotSupportedError,
     CommandRejectedError,
     ModeReadbackError,
 )
@@ -1460,14 +1461,16 @@ class YaesuCatRadio:
     # -- Internal helpers ---------------------------------------------------
 
     def _get_spec(self, name: str) -> CatCommandSpec:
-        """Return the CatCommandSpec for *name*, raising CommandError if absent."""
+        """Return a CAT spec or raise CommandNotSupportedError before sending."""
         spec = self._config.commands.get(name)
         if spec is None:
-            raise CommandError(
+            raise CommandNotSupportedError(
                 f"Command {name!r} not found in profile {self._config.model!r}"
             )
         if not isinstance(spec, CatCommandSpec):
-            raise CommandError(f"Command {name!r} is not a CAT command spec")
+            raise CommandNotSupportedError(
+                f"Command {name!r} is not a CAT command spec"
+            )
         return spec
 
     def _require_connected(self) -> None:
@@ -1601,7 +1604,9 @@ class YaesuCatRadio:
         self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.write is None:
-            raise CommandError(f"Command {cmd_name!r} has no write template")
+            raise CommandNotSupportedError(
+                f"Command {cmd_name!r} has no write template"
+            )
 
         cmd = format_command(spec.write, **kwargs)
         try:
@@ -2189,17 +2194,6 @@ class YaesuCatRadio:
         else:
             return ActuationResult.REJECTED
 
-        if (
-            operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
-            and self.connected
-        ):
-            try:
-                spec = self._get_spec(command)
-                if spec.write is None:
-                    raise CommandError(f"Command {command!r} has no write template")
-            except CommandError as exc:
-                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
-
         try:
             await self._write(
                 command,
@@ -2208,6 +2202,13 @@ class YaesuCatRadio:
                 on_committed=on_committed,
                 **params,
             )
+        except CommandNotSupportedError as exc:
+            if operation in (
+                ActuationOperation.PTT_ON,
+                ActuationOperation.TRANSMIT_ON,
+            ):
+                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
+            return ActuationResult.REJECTED
         except CommandError:
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:

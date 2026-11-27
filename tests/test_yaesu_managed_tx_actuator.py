@@ -16,8 +16,8 @@ from rigplane.backends.yaesu_cat.transport import (
     CatTimeoutError,
     CatTransportError,
 )
-from rigplane.command_spec import CatCommandSpec
-from rigplane.core.exceptions import CommandError
+from rigplane.command_spec import CatCommandSpec, CivCommandSpec
+from rigplane.core.exceptions import CommandError, CommandNotSupportedError
 from rigplane.core.exceptions import ConnectionError as RadioConnectionError
 from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.runtime.managed_tx_effect_lane import (
@@ -94,6 +94,52 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
     # MOR-2862: an ON still returns right after the write, without a read.
     radio._transport.query.assert_not_awaited()
     assert radio.radio_state.ptt is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+async def test_managed_on_defers_profile_resolution_to_write(
+    operation: ActuationOperation,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = _profile_radio(omit="set_ptt")
+    write = AsyncMock()
+    monkeypatch.setattr(radio, "_write", write)
+
+    def current() -> bool:
+        return True
+
+    result = await radio.actuate(_token(), operation, is_current=current)
+
+    assert result is ActuationResult.ACCEPTED
+    write.assert_awaited_once_with(
+        "set_ptt",
+        is_current=current,
+        tier=ExchangeTier.ORDINARY,
+        on_committed=None,
+        state="1",
+    )
+    radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["missing", "not-cat", "no-write-template"])
+async def test_profile_write_gap_has_dedicated_pre_send_command_error(
+    case: str,
+) -> None:
+    radio = _profile_radio(omit="set_ptt")
+    if case == "no-write-template":
+        radio._config.commands["set_ptt"] = CatCommandSpec(read="TX;")
+    elif case == "not-cat":
+        radio._config.commands["set_ptt"] = CivCommandSpec(bytes=(0x1C, 0x00))
+
+    with pytest.raises(CommandNotSupportedError) as raised:
+        await radio._write("set_ptt", state="1")
+
+    assert isinstance(raised.value, CommandError)
+    radio._transport.write.assert_not_awaited()
 
 
 @pytest.mark.asyncio
