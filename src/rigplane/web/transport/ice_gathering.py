@@ -1,10 +1,10 @@
 """ICE gathering policy for the WebRTC transport.
 
-Default answerer posture is host-only with a hard total bound: VPN/tunnel
-and bridge interfaces are excluded from host-candidate enumeration unless
-the operator opts in, and gathering never runs longer than
-``GATHER_TIMEOUT_S`` — candidates found by then are used and the SDP answer
-is produced from them.
+VPN/tunnel and bridge interfaces are excluded from host-candidate
+enumeration unless the operator opts in. STUN/TURN gathering waits at most
+``GATHER_TIMEOUT_S`` for candidates, finishing earlier when a configured
+TURN server produces a relay. Completed candidates are retained and pending
+server tasks are cancelled and settled before gathering returns.
 
 Operating-system signals (one per OS, read where the kernel exposes them):
 
@@ -61,7 +61,7 @@ flag guards double install; they are never uninstalled): a patched
 ``aioice.ice.get_host_addresses`` (address allow-list) and a cap on
 ``Connection.get_component_candidates``' STUN/TURN wait at
 ``GATHER_TIMEOUT_S``. The component-candidates hook additionally restricts
-server-reflexive and relayed gathering to the default-route address(es):
+server-reflexive gathering to the default-route address(es):
 aioice queries STUN from every IPv4 host address it binds, so one
 interface that cannot reach the STUN server (a common multihomed case —
 a second interface without internet) stalls the whole wait at the cap,
@@ -69,15 +69,8 @@ while one srflx from the default-route address is all the peer needs.
 Host candidates still come from every policy-kept address; when the host
 has no default-route address the hook falls back to today's behaviour
 (all kept addresses may query the servers, bounded by the cap). This
-split is part of the upstream proposal: stop waiting once one srflx per
-family is obtained. Address families: aioice queries STUN for IPv4 host
-addresses only, so server-reflexive candidates are IPv4; the IPv6
-addresses on the default-route interface (Linux/macOS mark the whole
-interface) join the first call and IPv6 still contributes host candidates.
-Two default routes (a metric tie, or a full-tunnel VPN that becomes the
-default): every default-route address is in the first call and may query
-the servers; an unreachable one costs at most the ``GATHER_TIMEOUT_S`` cap,
-no further mechanism. The hooks read the active policy from a
+selection applies to STUN's IPv4 host protocols; IPv6 still contributes
+host candidates. The hooks read the active policy from a
 ``contextvars.ContextVar`` that each ``negotiate()`` sets for the duration
 of its gathering (token reset in ``finally``), so concurrent negotiations
 keep their own policies. When no policy is set in the current context
@@ -127,8 +120,7 @@ __all__ = [
     "parse_ice_servers",
 ]
 
-#: Total bound for one answerer-side ICE gather: candidates found by then
-#: are used and the answer is produced from them.
+#: Bound on waiting for STUN/TURN candidates under the gathering policy.
 GATHER_TIMEOUT_S: Final = 1.5
 
 #: ``IFF_POINTOPOINT`` — route-point flag: a tunnel/VPN interface on macOS.
@@ -954,7 +946,7 @@ _GATHER_LOCK_ATTR: Final = "_rigplane_gather_lock"
 
 
 def _gather_lock(connection: Any) -> asyncio.Lock:
-    """One lock per aioice Connection, serialising policy-driven gathers."""
+    """Serialize temporary server settings on one aioice Connection."""
     lock = getattr(connection, _GATHER_LOCK_ATTR, None)
     if lock is None:
         lock = asyncio.Lock()
@@ -969,11 +961,13 @@ def install_ice_gathering_policy() -> None:
     the current context's policy and caps
     ``Connection.get_component_candidates``' STUN/TURN wait at
     ``GATHER_TIMEOUT_S`` so one unresponsive server cannot stall the answer
-    past the total bound. The component-candidates hook further gathers
-    server-reflexive/relayed candidates from the default-route
+    past the candidate-wait bound. The component-candidates hook further gathers
+    server-reflexive candidates from the default-route
     address(es) only (host candidates still from every kept address),
     falling back to all kept addresses when there is no default-route
-    address. The ``TurnClientMixin.channel_bind`` hook (MOR-4677) refreshes
+    address. A successful relay ends the server wait early; pending tasks
+    are cancelled and awaited before returning the completed candidates.
+    The ``TurnClientMixin.channel_bind`` hook (MOR-4677) refreshes
     the nonce (and the realm on 401) from the LATEST error response when
     aioice's own single retry of a ChannelBind still gets 401/438, and runs
     the normal bind cycle ONE more time inside the same attempt — never a
@@ -1061,54 +1055,99 @@ def install_ice_gathering_policy() -> None:
         if active is None:
             return await original_component(self, component, addresses, timeout=timeout)
         bound = min(float(timeout), GATHER_TIMEOUT_S)
+        return await _await_component(
+            _policy_component_candidates(self, component, addresses, bound)
+        )
+
+    async def _policy_component_candidates(
+        self: Any, component: int, addresses: list[str], bound: float
+    ) -> Any:
         try:
             infos = _enumerate_local_addresses()
         except Exception:
-            # Same tracking as the normal path: a close racing this
-            # fallback gather must settle it before pc.close() (MOR-4671).
-            return await _await_component(
-                original_component(self, component, addresses, timeout=bound)
-            )
+            infos = []
         default_ips = {info.ip for info in infos if info.is_default_route}
-        first = [addr for addr in addresses if addr in default_ips]
-        rest = [addr for addr in addresses if addr not in default_ips]
-        if not first or not rest:
-            # No default-route address among the candidates (or nothing
-            # beyond it): today's behaviour — every kept address may query
-            # STUN/TURN, bounded by the cap.
-            return await _await_component(
-                original_component(self, component, addresses, timeout=bound)
-            )
-        # Server-reflexive and relayed candidates come from the
-        # default-route address(es) only: aioice queries STUN from EVERY
-        # IPv4 host address it binds, so one interface that cannot reach
-        # the STUN server stalls the whole wait at the cap even though one
-        # srflx from the working default route is all the peer needs.
-        # Host candidates still come from every kept address.
-        #
-        # Both calls run on the REAL Connection: the host sockets created
-        # here belong to it (``StunProtocol(self)``), and later ICE state
-        # (remote credentials, role switches, the event waiter) is set on
-        # it, so a copy would answer connectivity checks with stale state.
-        # The server settings are cleared only for the second call and
-        # restored in ``finally``. aioice's ``gather_candidates`` runs one
-        # call per component concurrently on the same Connection, so the
-        # per-Connection lock serialises them while a policy is active.
-        lock = _gather_lock(self)
-        async with lock:
-            first_candidates = await _await_component(
-                original_component(self, component, first, timeout=bound)
-            )
+        server_ips = set(addresses) & default_ips or set(addresses)
+        host_addresses = [addr for addr in addresses if addr in server_ips] + [
+            addr for addr in addresses if addr not in server_ips
+        ]
+        async with _gather_lock(self):
+            # Reuse aioice's host binding on this Connection. Serialize the
+            # temporary server settings across components, as in the route split.
             saved = (self.stun_server, self.turn_server)
             self.stun_server = None
             self.turn_server = None
             try:
-                rest_candidates = await _await_component(
-                    original_component(self, component, rest, timeout=bound)
+                candidates = await original_component(
+                    self, component, host_addresses, timeout=bound
                 )
             finally:
                 self.stun_server, self.turn_server = saved
-        return list(first_candidates) + list(rest_candidates)
+            host_protocols = [
+                protocol
+                for protocol in self._protocols
+                if protocol.local_candidate in candidates
+            ]
+
+        tasks: list[asyncio.Task[Any]] = []
+        if self.stun_server:
+            for protocol in host_protocols:
+                host = protocol.local_candidate.host
+                if host in server_ips and ipaddress.ip_address(host).version == 4:
+                    tasks.append(
+                        asyncio.create_task(
+                            aioice_ice.server_reflexive_candidate(
+                                protocol, self.stun_server
+                            )
+                        )
+                    )
+        if self.turn_server:
+            tasks.append(
+                asyncio.create_task(
+                    aioice_ice.relayed_candidate(
+                        component=component,
+                        hide_related_address=(
+                            self._transport_policy == aioice_ice.TransportPolicy.RELAY
+                        ),
+                        protocol_factory=lambda: aioice_ice.StunProtocol(self),
+                        turn_server=self.turn_server,
+                        turn_username=self.turn_username,
+                        turn_password=self.turn_password,
+                        turn_ssl=self.turn_ssl,
+                        turn_transport=self.turn_transport,
+                    )
+                )
+            )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + bound
+        pending = set(tasks)
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    timeout=max(0.0, deadline - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done or any(
+                    not task.cancelled()
+                    and task.exception() is None
+                    and task.result()[0].type == "relay"
+                    for task in done
+                ):
+                    break
+        finally:
+            # Recheck task state at cancellation: a result can arrive at the
+            # deadline or while the wait's completion callback is queued.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for result in await asyncio.gather(*tasks, return_exceptions=True):
+                if not isinstance(result, BaseException):
+                    candidate, relay_protocol = result
+                    candidates.append(candidate)
+                    if relay_protocol is not None:
+                        self._protocols.append(relay_protocol)
+        return candidates
 
     async def _channel_bind_with_nonce_refresh(
         self: Any, channel_number: int, addr: tuple[str, int]
