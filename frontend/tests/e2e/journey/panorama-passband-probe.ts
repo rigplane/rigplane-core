@@ -1,4 +1,5 @@
 import { expect } from '@playwright/test';
+import { awaitRenderPipeline, clickPanorama } from './panorama-ready';
 import type { ScopePassbandDiagnostics } from '../../../src/lib/runtime/adapters/scope-passband-display';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 
@@ -79,6 +80,7 @@ export function passbandProbeReady(samples: PassbandSample[], frameMode: number)
 export async function expectPassbandProbeReady(
   page: import('@playwright/test').Page, frameMode: number,
 ): Promise<void> {
+  await awaitRenderPipeline(page);
   await expect.poll(async () => passbandProbeReady(await page.evaluate(() => {
     const painted = window.passbandSamples.filter(sample => sample.kind === 'frame').at(-1);
     const latest = window.passbandSamples.at(-1);
@@ -187,7 +189,7 @@ export async function settlePassband(page: import('@playwright/test').Page, port
     main?: { freqHz?: number; mode?: string; filterWidth?: number };
   };
   await expect.poll(async () => (await radioState()).main?.filterWidth, { timeout: 30_000 }).toBe(2400);
-  await page.locator('[data-testid="standard-mode-LSB"]').getByRole('radio').click();
+  await clickPanorama(page, page.locator('[data-testid="standard-mode-LSB"]').getByRole('radio'));
   await page.locator('[data-testid="filter-width"] input[type=range]').fill('3000');
   await expect.poll(radioState).toMatchObject({ main: { mode: 'LSB', filterWidth: 3000 } });
   const overlay = page.locator('.waterfall-content .passband-overlay');

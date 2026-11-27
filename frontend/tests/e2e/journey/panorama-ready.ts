@@ -91,3 +91,34 @@ export async function openPanorama(page: Page, url: string): Promise<void> {
   await page.goto(url);
   await awaitRenderPipeline(page);
 }
+
+/** Drain render work on both sides of an action without extending its action budget. */
+export async function clickPanorama(page: Page, control: import('@playwright/test').Locator): Promise<void> {
+  await awaitRenderPipeline(page);
+  await control.click({ timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}
+
+export async function reloadPanorama(page: Page): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.reload({ waitUntil: 'commit', timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}
+
+/** Measurement duration, not a substitute for a readiness condition. */
+export async function observePanorama(page: Page, durationMs: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(({ start, duration }) => performance.now() - start >= duration,
+    { start: await page.evaluate(() => performance.now()), duration: durationMs },
+    { polling: 100, timeout: 0 });
+  await awaitRenderPipeline(page);
+}
+
+export async function expectPanoramaFrequency(page: Page, freqHz: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(expected => {
+    const readout = document.querySelector<HTMLElement>('.receiver-instrument [data-vfo-freq]');
+    return readout !== null && Number(readout.innerText.replace(/\D/g, '')) === expected;
+  }, freqHz, { timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}

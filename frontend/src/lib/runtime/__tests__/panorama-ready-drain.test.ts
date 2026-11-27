@@ -26,3 +26,50 @@ describe('panorama pipeline drain', () => {
     await expect(drainAfterFirstDraw(win, async () => { if (++frames > 50) throw new Error('gave up'); })).rejects.toThrow('gave up');
   });
 });
+
+// These entry points must drain before actionability and after the UI changes.
+describe('panorama action entry points', () => {
+  it('drains around a click without increasing the existing action timeout', async () => {
+    const events: string[] = [];
+    const page = { evaluate: async () => { events.push('drain'); } };
+    const control = { click: async (options: unknown) => { events.push(`click:${JSON.stringify(options)}`); } };
+    const { clickPanorama } = await import('../../../../tests/e2e/journey/panorama-ready');
+    await clickPanorama(page as never, control as never);
+    expect(events).toEqual(['drain', 'click:{"timeout":10000}', 'drain']);
+  });
+
+  it('reloads to commit before draining the new document instead of waiting for load', async () => {
+    const events: string[] = [];
+    const page = {
+      evaluate: async () => { events.push('drain'); },
+      reload: async (options: unknown) => { events.push(`reload:${JSON.stringify(options)}`); },
+    };
+    const { reloadPanorama } = await import('../../../../tests/e2e/journey/panorama-ready');
+    await reloadPanorama(page as never);
+    expect(events).toEqual(['drain', 'reload:{"waitUntil":"commit","timeout":10000}', 'drain']);
+  });
+
+  it('does not dispatch a click when the pre-action pipeline drain fails', async () => {
+    const page = { evaluate: async () => { throw new Error('renderer failed'); } };
+    let clicked = false;
+    const control = { click: async () => { clicked = true; } };
+    const { clickPanorama } = await import('../../../../tests/e2e/journey/panorama-ready');
+    await expect(clickPanorama(page as never, control as never)).rejects.toThrow('renderer failed');
+    expect(clicked).toBe(false);
+  });
+});
+
+describe('panorama frequency readiness', () => {
+  it('drains before waiting for the rendered VFO and retains the original 10 s condition budget', async () => {
+    const events: string[] = [];
+    const page = {
+      evaluate: async () => { events.push('drain'); },
+      waitForFunction: async (_predicate: unknown, hz: number, options: unknown) => {
+        events.push(`frequency:${hz}:${JSON.stringify(options)}`);
+      },
+    };
+    const { expectPanoramaFrequency } = await import('../../../../tests/e2e/journey/panorama-ready');
+    await expectPanoramaFrequency(page as never, 14_290_000);
+    expect(events).toEqual(['drain', 'frequency:14290000:{"timeout":10000}', 'drain']);
+  });
+});
