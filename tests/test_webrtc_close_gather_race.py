@@ -131,10 +131,14 @@ def _ice_servers(stun_port: int, turn_port: int) -> list[IceServer]:
 
 
 @pytest.mark.timeout(15)
+@pytest.mark.parametrize(
+    "retry_before_close", [False, True], ids=["first-send", "retry"]
+)
 async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
     monkeypatch: pytest.MonkeyPatch,
     virtual_clock: VirtualClock,
     capture: _Capture,
+    retry_before_close: bool,
 ) -> None:
     """After gathering, close while the answerer's first ICE check is pending."""
     from aioice import ice, stun
@@ -145,6 +149,8 @@ async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
         ice, "get_host_addresses", lambda use_ipv4, use_ipv6: ["127.0.0.1"]
     )
     check_sent = asyncio.Event()
+    check_protocols: list[ice.StunProtocol] = []
+    sends: list[float] = []
     pending_at_close: list[bool] = []
     ports = iter((40001, 40002))
 
@@ -162,7 +168,10 @@ async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
         def sendto(_data: bytes, _addr: tuple[str, int]) -> None:
             nonlocal sent
             assert not closed, "STUN retry sent on a closed transport"
+            if not sent:
+                check_protocols.append(protocol)
             sent = True
+            sends.append(virtual_clock.now)
             check_sent.set()
 
         def close() -> None:
@@ -181,18 +190,40 @@ async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
     offerer, sdp, typ = await _offer()
     try:
         answer = WebRtcAnswer.from_json(await manager.negotiate(sdp, typ))
-        # The real transaction has sent once and cannot finish on frozen time.
+        # StunProtocol.request registers the transaction before sendto;
+        # wait for both observations before closing (aioice/ice.py).
         await await_until(
-            check_sent.is_set, description="the first ICE check", clock=virtual_clock
+            lambda: (
+                check_sent.is_set()
+                and len(check_protocols) == 1
+                and bool(check_protocols[0].transactions)
+            ),
+            timeout=5,
+            description="the first pending ICE check transaction",
         )
+        (check_protocol,) = check_protocols
+        (check_task,) = [
+            pair.task
+            for pair in check_protocol.receiver._check_list  # noqa: SLF001
+            if pair.protocol is check_protocol and pair.task is not None
+        ]
+        assert not check_task.done()
+        assert len(check_protocol.transactions) == 1
+        if retry_before_close:
+            await virtual_clock.elapse(stun.RETRY_RTO)
+            assert len(sends) == 2
+            assert sends[1] - sends[0] == pytest.approx(stun.RETRY_RTO)
+            assert len(check_protocol.transactions) == 1
         await manager.close_session(answer.session_id)
+        assert check_task.cancelled()
+        assert not check_protocol.transactions
     finally:
         await manager.close_all()
         await offerer.close()
     del offerer
     assert pending_at_close == [False]
-    # Make the ICE driver's next tick and the first STUN retry due together.
-    virtual_clock.advance(stun.RETRY_RTO)
+    # Cross the next retry deadline after close without sending on the socket.
+    await virtual_clock.elapse(2 * stun.RETRY_RTO)
     await capture.assert_quiet(virtual_clock)
 
 
@@ -233,8 +264,8 @@ async def test_close_retrieves_gather_failure_before_snapshot(
     try:
         await await_until(
             gathering.is_set,
+            timeout=5,
             description="ICE gather endpoint creation",
-            clock=virtual_clock,
         )
         (session_id,) = manager.active_session_ids
         session = manager._sessions[session_id]  # noqa: SLF001 - observe gather ownership
@@ -294,10 +325,10 @@ async def test_close_during_gather_leaves_no_unretrieved_exceptions(
     )
     try:
         await await_until(
-            stun.received.is_set, description="the STUN datagram", clock=virtual_clock
+            stun.received.is_set, timeout=5, description="the STUN datagram"
         )
         await await_until(
-            turn.received.is_set, description="the TURN datagram", clock=virtual_clock
+            turn.received.is_set, timeout=5, description="the TURN datagram"
         )
         assert not negotiate.done()
         (session_id,) = manager.active_session_ids
