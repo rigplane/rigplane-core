@@ -259,6 +259,8 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
         "permission_denied",
         "initial_config",
         "initial_config_enoent",
+        "message_only",
+        "message_with_cause",
         "wrap",
         "busy",
         "timeout",
@@ -268,7 +270,7 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
 )
 @virtual_clock
 async def test_detach_uses_every_serial_open_outcome(
-    clock, terminal, tmp_path, backend, retry_outcome
+    clock, terminal, tmp_path, monkeypatch, backend, retry_outcome
 ):
     terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
     radio = backend(device=terminal.port)
@@ -295,7 +297,12 @@ async def test_detach_uses_every_serial_open_outcome(
             terminal.open_error = RuntimeError("unknown test error")
         elif retry_outcome == "permission_denied":
             terminal.open_error = PermissionError(errno.EACCES, "refused test port")
-        elif retry_outcome not in {"absent", "api_channel"}:
+        elif retry_outcome not in {
+            "absent",
+            "api_channel",
+            "message_only",
+            "message_with_cause",
+        }:
             terminal.open_error = None
             if retry_outcome == "initial_config_enoent":
                 terminal.set_attributes_error = FileNotFoundError(
@@ -309,8 +316,20 @@ async def test_detach_uses_every_serial_open_outcome(
             if isinstance(radio, Ic705SerialRadio)
             else radio.connect
         )
-        with pytest.raises((RadioConnectionError, CatTransportError)):
-            await reopen()
+        def reject_without_errno(instance):
+            terminal.open_attempts += 1
+            error = serial.SerialException(
+                f"could not open port {instance.port}: No such file or directory"
+            )
+            if retry_outcome == "message_with_cause":
+                raise error from FileNotFoundError(errno.ENOENT, "missing test port")
+            raise error
+
+        with monkeypatch.context() as patch:
+            if retry_outcome in {"message_only", "message_with_cause"}:
+                patch.setattr(serial.Serial, "open", reject_without_errno)
+            with pytest.raises((RadioConnectionError, CatTransportError)):
+                await reopen()
         assert terminal.open_attempts == 2
         expected_configurations = {
             "initial_config": [False],
@@ -349,7 +368,7 @@ async def test_detach_uses_every_serial_open_outcome(
         assert writer.status == 202
         projection = await composition.authority.snapshot()
         assert projection.provider_generation is None
-        if retry_outcome in {"absent", "permission_denied"}:
+        if retry_outcome in {"absent", "permission_denied", "message_with_cause"}:
             assert writer.payload["result"] == "accepted"
             assert writer.payload["releaseDisposition"] == "not_applicable"
             assert not projection.state.release_required
@@ -375,6 +394,86 @@ async def test_detach_uses_every_serial_open_outcome(
             )
             assert writer.status == 202
             assert writer.payload["result"] == "pending"
+    finally:
+        await radio.disconnect()
+        termination = asyncio.Event()
+        termination.set()
+        await composition.shutdown(termination)
+
+
+@pytest.mark.parametrize(
+    "backend", [Ic705SerialRadio, YaesuCatRadio], ids=["icom", "yaesu"]
+)
+@pytest.mark.parametrize(
+    "explicit_disconnect", [True, False], ids=["disconnect", "replug"]
+)
+@virtual_clock
+async def test_explicit_connect_after_detach_seal(
+    clock, terminal, tmp_path, monkeypatch, backend, explicit_disconnect
+):
+    terminal.open_error = FileNotFoundError(errno.ENOENT, "missing test port")
+    radio = backend(device=terminal.port)
+    composition = ManagedTxComposition(
+        RecordingActuator(), config_path=tmp_path / "managed-tx.json"
+    )
+    install_managed_tx_composition(radio, composition)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    attach_managed_tx_composition(server, composition)
+    await composition.bind_state_store(server.command_state_store)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_reader", terminal.add_reader)
+    monkeypatch.setattr(loop, "remove_reader", terminal.remove_reader)
+
+    async def no_identity(*args, **kwargs):
+        return None
+
+    if isinstance(radio, Ic705SerialRadio):
+        monkeypatch.setattr(radio, "_gate_serial_identity", no_identity)
+        reopen = radio.soft_reconnect
+    else:
+        monkeypatch.setattr(radio, "_read_identity_answer", no_identity)
+        monkeypatch.setattr(radio, "_sweep_identity_bauds", no_identity)
+        reopen = radio.connect
+
+    try:
+        with pytest.raises(RadioConnectionError):
+            await radio.connect()
+        radio.start_reconnect_recovery()
+
+        reader, headers = _reader({"operation": "force_off"})
+        headers["x-rigplane-release-for-detach"] = "1"
+        detach = _Writer()
+        await server._handle_http(
+            detach,  # type: ignore[arg-type]
+            "POST",
+            "/api/v1/managed-transmit/command",
+            headers=headers,
+            reader=reader,
+        )
+        assert detach.status == 202
+        assert detach.payload["releaseDisposition"] == "not_applicable"
+
+        terminal.open_error = None
+        if explicit_disconnect:
+            disconnect = _Writer()
+            await server._handle_http(
+                disconnect, "POST", "/api/v1/radio/disconnect"  # type: ignore[arg-type]
+            )
+            assert disconnect.status == 200
+
+        with pytest.raises(RadioConnectionError, match="detaching binding"):
+            await reopen()
+        assert terminal.open_attempts == 1
+
+        connect = _Writer()
+        await server._handle_http(
+            connect, "POST", "/api/v1/radio/connect"  # type: ignore[arg-type]
+        )
+        assert connect.status == 200
+        assert terminal.open_attempts == 2
+        assert terminal.instance.is_open
+        assert radio.control_connected
+        assert not (await composition.authority.snapshot()).state.release_required
     finally:
         await radio.disconnect()
         termination = asyncio.Event()

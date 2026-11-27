@@ -50,6 +50,13 @@ class _ProviderEvent:
     transport_identity: object
 
 
+@dataclass(slots=True, eq=False)
+class _TransportOpenBinding:
+    may_have_opened: bool | None = None
+    opens_in_flight: int = 0
+    sealed: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class _StartupRelease:
     """A startup release debt recorded before its provider is published."""
@@ -167,9 +174,7 @@ class ManagedTxComposition:
         self._unsubscribe: Callable[[], None] | None = None
         self._observation_generation: int | None = None
         self._live_transport_identity: object | None = None
-        self._transport_may_have_opened: bool | None = None
-        self._transport_opens_in_flight = 0
-        self._detach_claimed_before_open = False
+        self._transport_open_binding = _TransportOpenBinding()
         self._stale_transport_identities: list[object] = []
         self._active_provider: _ProviderEvent | None = None
         self._events: dict[int, _ProviderEvent] = {}
@@ -235,7 +240,8 @@ class ManagedTxComposition:
 
     @asynccontextmanager
     async def transport_open_attempt(self) -> AsyncIterator[None]:
-        if self._detach_claimed_before_open:
+        binding = self._transport_open_binding
+        if binding.sealed:
             raise ConnectionError("Serial port open refused for a detaching binding")
         task = asyncio.current_task()
         refusal: OSError | None = None
@@ -245,7 +251,7 @@ class ManagedTxComposition:
             refusal = error
 
         token = record_serial_open_refusal.set(record_refusal)
-        self._transport_opens_in_flight += 1
+        binding.opens_in_flight += 1
         try:
             yield
         except BaseException as error:
@@ -256,19 +262,19 @@ class ManagedTxComposition:
                 and refusal is not None
                 and (error is refusal or error.__cause__ is refusal)
             ):
-                if self._transport_may_have_opened is None:
-                    self._transport_may_have_opened = False
+                if binding.may_have_opened is None:
+                    binding.may_have_opened = False
             else:
-                self._transport_may_have_opened = True
+                binding.may_have_opened = True
             raise
         else:
-            self._transport_may_have_opened = True
+            binding.may_have_opened = True
         finally:
             record_serial_open_refusal.reset(token)
-            self._transport_opens_in_flight -= 1
+            binding.opens_in_flight -= 1
 
     async def transport_ready(self, identity: object) -> None:
-        self._transport_may_have_opened = True
+        self._transport_open_binding.may_have_opened = True
         async with self._transition_lock:
             if self._shutdown_task is not None:
                 return
@@ -284,15 +290,38 @@ class ManagedTxComposition:
             await self._join_transition_locked()
             await self._ensure_current_locked()
 
-    def claim_detach_before_transport_open(self, store: StateStore) -> bool:
-        """Close admission once every attempt has a proven OS open refusal."""
+    @property
+    def transport_open_binding(self) -> object:
+        return self._transport_open_binding
+
+    @property
+    def transport_open_sealed(self) -> bool:
+        return self._transport_open_binding.sealed
+
+    def begin_explicit_connect(self) -> None:
+        """Replace a sealed binding after its backend recovery has stopped."""
+        # A seal proves there were no successful, ambiguous or in-flight
+        # opens. Keep that history for every binding lacking such a proof.
         if (
-            self._state_store is not store
-            or self._transport_may_have_opened is not False
-            or self._transport_opens_in_flight
+            self._transport_open_binding.sealed
+            and self._transport_open_binding.may_have_opened is False
+            and self._shutdown_task is None
+        ):
+            self._transport_open_binding = _TransportOpenBinding()
+
+    def claim_detach_before_transport_open(
+        self, store: StateStore, expected_binding: object
+    ) -> bool:
+        """Close admission once every attempt has a proven OS open refusal."""
+        binding = self._transport_open_binding
+        if (
+            binding is not expected_binding
+            or self._state_store is not store
+            or binding.may_have_opened is not False
+            or binding.opens_in_flight
         ):
             return False
-        self._detach_claimed_before_open = True
+        binding.sealed = True
         return True
 
     async def transport_unavailable(self, identity: object) -> None:

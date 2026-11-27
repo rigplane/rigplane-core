@@ -1550,6 +1550,7 @@ class WebServer:
         # the radio reports connected again. No lifecycle or radio
         # record of intent exists, so the web seat keeps this one mark.
         self._operator_disconnected: bool = False
+        self._operator_radio_teardown_lock = asyncio.Lock()
         # Audio bridge (virtual device integration)
         self._audio_bridge: "AudioBridge | None" = None
         # MOR-3078: bridge kwargs armed by ``defer_audio_bridge_start``
@@ -5922,6 +5923,7 @@ class WebServer:
         self,
         authority: ManagedTxAuthority,
         writer: asyncio.StreamWriter,
+        expected_binding: object,
     ) -> bool:
         from .web_startup import _serial_port_unopened  # noqa: TID251
 
@@ -5943,7 +5945,9 @@ class WebServer:
             and getattr(self._radio, "control_connected", None) is False
             and project_observed_ptt(self.command_state_store.snapshot())
             is not ObservedPtt.ON
-            and port.claim_detach_before_transport_open(self.command_state_store)
+            and port.claim_detach_before_transport_open(
+                self.command_state_store, expected_binding
+            )
         )
 
     async def _handle_http_managed_tx(
@@ -6007,6 +6011,7 @@ class WebServer:
                 return
             pending_submission: asyncio.Task[Any] | None = None
             refusal_reason = ManagedTxRefusalReason.OTHER
+            port = self._production_managed_tx_port
             try:
                 if operation == "transmit_on":
                     loop = asyncio.get_running_loop()
@@ -6037,6 +6042,9 @@ class WebServer:
                             self._claim_managed_tx_detach_before_open,
                             authority,
                             writer,
+                            port.transport_open_binding
+                            if isinstance(port, ManagedTxComposition)
+                            else None,
                         )
                     )
                 else:
@@ -7268,19 +7276,34 @@ class WebServer:
             )
             return
 
+        async def disconnect_radio(bound_radio: Radio) -> None:
+            await bound_radio.disconnect()
+            # MOR-2615: a clean operator disconnect ends the provider
+            # epoch on the shared store so TTL-less fields cannot stay fresh.
+            self.command_state_store.begin_provider_generation()
+            self.note_operator_disconnect()
+
         try:
             if path == "/api/v1/radio/disconnect":
-                await radio.disconnect()
-                # MOR-2615: a clean operator disconnect ends the provider
-                # epoch on the shared store — the same invalidation the
-                # fallback-store teardown performs — so TTL-less SETTING
-                # and MENU fields cannot stay FRESH past the disconnect.
-                self.command_state_store.begin_provider_generation()
-                # MOR-3452: mark the intentional disconnect for the runtime.
-                self.note_operator_disconnect()
+                async with self._operator_radio_teardown_lock:
+                    await disconnect_radio(radio)
                 resp = {"status": "disconnected"}
             elif path == "/api/v1/radio/connect":
-                if self._control_handler_for()._backend_recovering():  # noqa: SLF001
+                async with self._operator_radio_teardown_lock:
+                    handler = self._control_handler_for()
+                    port = self._production_managed_tx_port
+                    recovering = handler._backend_recovering()  # noqa: SLF001
+                    if (
+                        recovering
+                        and isinstance(port, ManagedTxComposition)
+                        and port.transport_open_sealed
+                    ):
+                        # Retire recovery while the outgoing binding is still sealed.
+                        await disconnect_radio(radio)
+                        recovering = handler._backend_recovering()  # noqa: SLF001
+                    if not recovering and isinstance(port, ManagedTxComposition):
+                        port.begin_explicit_connect()
+                if recovering:
                     await refuse_while_recovering()
                     return
                 # MOR-3452: the operator asked back in — clear the

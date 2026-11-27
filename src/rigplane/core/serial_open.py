@@ -103,21 +103,16 @@ def serial_open_diagnostic(error: BaseException) -> str:
 def _is_os_open_refusal(error: OSError, url: str) -> bool:
     # pyserial uses this prefix only around os.open/CreateFile. Errno alone
     # cannot distinguish a failed OS open from a failed ioctl on an open port.
-    prefix = f"could not open port {url}: "
-    if error.errno is not None:
-        cause = error.__context__
-        return (
-            error.errno in _REFUSED_OPEN_ERRNOS
-            and isinstance(cause, OSError)
-            and cause.errno == error.errno
-            and isinstance(error.strerror, str)
-            and error.strerror.startswith(prefix)
+    cause = error.__cause__ if error.__cause__ is not None else error.__context__
+    message = str(error) if error.errno is None else error.strerror
+    return (
+        isinstance(cause, OSError)
+        and cause.errno in _REFUSED_OPEN_ERRNOS
+        and (error.errno is None or error.errno == cause.errno)
+        and isinstance(message, str)
+        and message.startswith(
+            (f"could not open port {url}: ", f"could not open port {url!r}: ")
         )
-    message = str(error)
-    # Windows also reports access denied for ports held exclusively.
-    return message == f"{prefix}No such file or directory" or (
-        message.startswith(f"could not open port {url!r}: ")
-        and _windows_open_code(error) == "serial_not_found"
     )
 
 
