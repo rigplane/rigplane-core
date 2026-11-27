@@ -243,7 +243,7 @@ async def test_real_constructor_environment_error_is_configuration_invalid(
         patch("rigplane.cli.guards_backend", return_value=False),
         patch("rigplane.cli.check_ports_available") as preflight,
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     preflight.assert_not_called()
     _failure(capsys, "configuration_invalid", "configuration")
 
@@ -257,7 +257,7 @@ async def test_factory_model_refusal_is_profile_unresolved(model, capsys):
         patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
         patch("rigplane.cli.guards_backend", return_value=False),
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, "profile_unresolved", "profile_resolution")
 
 
@@ -319,7 +319,7 @@ async def test_pending_radio_ownership_abort_wins_over_web_scope(
         patch("rigplane._platformdirs_migration.migrate_legacy_platformdirs"),
         patch("rigplane.web.server.WebServer", return_value=server),
     ):
-        assert await cli._run(args) == exit_code
+        assert await cli._run_with_startup_reporting(args) == exit_code
     assert web_stopped.is_set()
     server.finish_startup_busy_hold.assert_not_awaited()
     radio.__aexit__.assert_awaited_once()
@@ -341,7 +341,7 @@ async def test_profile_abort_emits_one_document(command, stage, capsys):
         ),
         patch("rigplane.cli.create_radio", side_effect=error),
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, "profile_unresolved", "profile_resolution")
 
 
@@ -362,7 +362,7 @@ async def test_listener_preflight_abort_uses_errno(number, cause, capsys):
         socket.return_value.__enter__.return_value.bind.side_effect = OSError(
             number, "synthetic-secret"
         )
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, cause, "listener_preflight")
 
 
@@ -381,7 +381,7 @@ async def test_serial_open_abort_emits_one_document(capsys):
         patch("rigplane.cli.install_managed_tx_composition"),
         patch("rigplane._platformdirs_migration.migrate_legacy_platformdirs"),
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, "serial_open_failed", "radio_open")
 
 
@@ -540,16 +540,66 @@ async def test_cli_profile_resolution_aborts_before_radio_creation(model, capsys
         argv = ["--model", model, *argv]
     args = cli._build_parser().parse_args(argv)
     with patch("rigplane.cli.create_radio") as create:
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     create.assert_not_called()
     _failure(capsys, "profile_unresolved", "profile_resolution")
 
 
 @pytest.mark.asyncio
-async def test_local_radio_ownership_abort_emits_once(capsys):
+@pytest.mark.parametrize("command", ["web", "station"])
+async def test_direct_run_lock_refusal_preserves_legacy_stderr(command, capsys):
     from rigplane.cli._instance_guard import ResidentAlreadyRunningError
 
-    args = cli._build_parser().parse_args(["web"])
+    args = cli._build_parser().parse_args([command])
+    config = SerialBackendConfig(device="/private/device")
+    error = ResidentAlreadyRunningError(None)
+    with (
+        patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
+        patch("rigplane.cli.acquire_resident_lock", side_effect=error),
+        patch("rigplane.cli.create_radio") as create,
+        patch("rigplane.cli.check_ports_available") as preflight,
+    ):
+        assert await cli._run(args) == 1
+    create.assert_not_called()
+    preflight.assert_not_called()
+    assert capsys.readouterr().err == f"Error: {error}\n"
+
+
+@pytest.mark.parametrize("command", ["web", "station"])
+def test_main_local_radio_ownership_abort_emits_once(command, monkeypatch, capsys):
+    from rigplane.cli._instance_guard import ResidentAlreadyRunningError
+
+    monkeypatch.setattr("sys.argv", ["rigplane", command])
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+    config = SerialBackendConfig(device="/private/device")
+    with (
+        patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
+        patch(
+            "rigplane.cli.acquire_resident_lock",
+            side_effect=ResidentAlreadyRunningError(None),
+        ),
+        patch("rigplane.cli.create_radio") as create,
+        patch("rigplane.cli.check_ports_available") as preflight,
+        patch("logging.basicConfig"),
+        patch("rigplane.diagnostics._logging.detach_diagnostic_logging"),
+        patch("rigplane.cli.signal.signal"),
+        patch("rigplane.cli.os._exit", side_effect=SystemExit(1)) as forced_exit,
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+    assert caught.value.code == 1
+    forced_exit.assert_called_once_with(1)
+    create.assert_not_called()
+    preflight.assert_not_called()
+    _failure(capsys, "radio_in_use", "radio_lock")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["web", "station"])
+async def test_local_radio_ownership_abort_emits_once(command, capsys):
+    from rigplane.cli._instance_guard import ResidentAlreadyRunningError
+
+    args = cli._build_parser().parse_args([command])
     config = SerialBackendConfig(device="/private/device")
     with (
         patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
@@ -559,7 +609,7 @@ async def test_local_radio_ownership_abort_emits_once(capsys):
         ),
         patch("rigplane.cli.create_radio") as create,
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     create.assert_not_called()
     _failure(capsys, "radio_in_use", "radio_lock")
 
@@ -584,7 +634,7 @@ async def test_lan_radio_open_abort_retains_exit_code(held, capsys):
         patch("rigplane.cli.install_managed_tx_composition"),
         patch("rigplane._platformdirs_migration.migrate_legacy_platformdirs"),
     ):
-        assert await cli._run(args) == (3 if held else 1)
+        assert await cli._run_with_startup_reporting(args) == (3 if held else 1)
     _failure(capsys, "radio_in_use" if held else "radio_open_failed", "radio_open")
 
 
@@ -601,7 +651,7 @@ async def test_managed_composition_abort_is_configuration_failure(capsys):
             side_effect=OSError("synthetic-secret"),
         ),
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, "configuration_invalid", "configuration")
 
 
@@ -618,7 +668,7 @@ async def test_unclassified_abort_emits_unknown_and_preserves_exception(
         "rigplane.cli._build_backend_config", new=AsyncMock(side_effect=original)
     ):
         with pytest.raises(type(original)) as caught:
-            await cli._run(args)
+            await cli._run_with_startup_reporting(args)
     assert caught.value is original
     _failure(capsys, "unknown", "configuration")
 
@@ -716,7 +766,7 @@ async def test_cli_and_server_abort_share_one_report(capsys):
             new=AsyncMock(side_effect=OSError(errno.EACCES, "synthetic-secret")),
         ),
     ):
-        assert await cli._run(args) == 1
+        assert await cli._run_with_startup_reporting(args) == 1
     _failure(capsys, "web_bind_failed", "web_bind")
 
 
@@ -735,7 +785,7 @@ async def test_discovery_abort_emits_once_without_radio_creation(serial, capsys)
         patch("rigplane.cli.create_radio") as create,
     ):
         with pytest.raises(SystemExit) as caught:
-            await cli._run(args)
+            await cli._run_with_startup_reporting(args)
     assert caught.value.code == 1
     create.assert_not_called()
     _failure(capsys, "discovery_failed", "discovery")

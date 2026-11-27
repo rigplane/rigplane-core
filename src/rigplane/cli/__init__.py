@@ -2809,11 +2809,11 @@ def _cmd_audio_usb_capture(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _run(args: argparse.Namespace) -> int:
+async def _run_with_startup_reporting(args: argparse.Namespace) -> int:
     if args.command not in ("web", "station"):
-        return await _run_command(args)
+        return await _run(args)
     with startup_failure_scope(StartupCause.UNKNOWN, StartupPhase.CONFIGURATION):
-        result = await _run_command(args)
+        result = await _run(args)
         if result != 0:
             record_startup_failure(
                 None, StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
@@ -2821,7 +2821,7 @@ async def _run(args: argparse.Namespace) -> int:
         return result
 
 
-async def _run_command(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
         return await _cmd_audio_caps(args)
@@ -5819,7 +5819,7 @@ def _main_with_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         try:
             loop = asyncio.new_event_loop()
             try:
-                exit_code = loop.run_until_complete(_run(args))
+                exit_code = loop.run_until_complete(_run_with_startup_reporting(args))
             except (KeyboardInterrupt, asyncio.CancelledError):
                 # MOR-2875: a cancelled shutdown ends with the signal exit
                 # code, not a CancelledError traceback.
