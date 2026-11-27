@@ -1,6 +1,6 @@
 'use strict';
 
-const RED = new Set(['failure', 'timed_out', 'startup_failure', 'action_required', 'cancelled']);
+const RED = new Set(['failure', 'timed_out', 'startup_failure']);
 const EVENTS = new Set(['push', 'schedule', 'workflow_dispatch']);
 const PATHS = new Set(['.github/workflows/full.yml', '.github/workflows/quick.yml']);
 const eligible = run => run.head_branch === 'main' && run.status === 'completed' && EVENTS.has(run.event);
@@ -27,18 +27,21 @@ function findEpisode(current, history) {
   const runs = history.filter(run => eligible(run) && run.run_number < current.run_number)
     .sort((a, b) => b.run_number - a.run_number);
   let firstRed = RED.has(current.conclusion) ? current : null;
+  let firstRedPush = firstRed?.event === 'push' ? firstRed : null;
   let green = null;
   for (const run of runs) {
     if (run.conclusion === 'success') { green = run; break; }
-    if (RED.has(run.conclusion)) firstRed = run;
+    if (RED.has(run.conclusion)) {
+      firstRed = run;
+      if (run.event === 'push') firstRedPush = run;
+    }
   }
-  return firstRed ? {firstRed, green} : null;
+  return firstRed ? {firstRed: firstRedPush || firstRed, green} : null;
 }
 
-function introducingMerge(sha, pulls) {
-  const matches = pulls.filter(pr => pr.merged_at && pr.merge_commit_sha === sha && pr.base.ref === 'main');
-  if (matches.length !== 1) throw new Error(`Cannot identify one introducing merge for ${sha}`);
-  return matches[0];
+function introducingMerge(sha, pulls = []) {
+  const matches = pulls.filter(pr => pr?.merged_at && pr.merge_commit_sha === sha && pr.base?.ref === 'main');
+  return matches.length === 1 ? matches[0] : null;
 }
 
 async function publish(issues, input, dryRun = false) {
@@ -134,15 +137,33 @@ async function run({github, context, core, env = process.env}) {
   const key = `episode:${channel}:green-${episode.green?.id || 'none'}`;
   const first = episode.firstRed;
   const details = recovery ? [`Green main run: ${recovery.html_url}`]
-    : [`Main is red.\nRun: ${current.html_url}`, `First red SHA: ${first.head_sha}`];
+    : [`Main is red.\nRun: ${current.html_url}`, `${first.event === 'push' ? 'First red' : 'Observed red'} SHA: ${first.head_sha}`];
   let author;
   if (!recovery) {
-    const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {...repo, commit_sha: first.head_sha, per_page: 100});
+    const pulls = first.event === 'push' ? await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+      ...repo, commit_sha: first.head_sha, per_page: 100,
+    }) : [];
     const pr = introducingMerge(first.head_sha, pulls);
-    author = pr.user.login;
-    details.push(`First red merge: #${pr.number} (${first.head_sha}); GitHub author: @${author}.`,
+    const merged = pulls.filter(item => item.merged_at && item.base?.ref === 'main'
+      && Date.parse(item.merged_at) <= Date.parse(first.updated_at));
+    const batch = !pr && merged.length > 1;
+    let ownerPr = pr;
+    if (!ownerPr) {
+      const candidates = batch ? merged : await github.paginate(github.rest.pulls.list, {
+        ...repo, state: 'closed', base: 'main', sort: 'updated', direction: 'desc', per_page: 100,
+      });
+      ownerPr = candidates.filter(item => item.merged_at && Date.parse(item.merged_at) <= Date.parse(first.updated_at))
+        .sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at))[0];
+    }
+    const owner = ownerPr ? (await github.rest.pulls.get({...repo, pull_number: ownerPr.number})).data.merged_by?.login : null;
+    author = pr?.user?.login;
+    details.push(pr ? `First red merge: #${pr.number} (${first.head_sha}); GitHub author: ${author ? `@${author}` : 'unknown'}.`
+      : batch ? `batch: PRs ${merged.map(item => `#${item.number}`).join(', ')}.` : 'introducing merge unknown.',
+      `SHA range: ${episode.green?.head_sha || 'unknown baseline'}...${first.head_sha}.`,
+      `Owner: ${owner ? `@${owner}` : 'unknown (no merger found in available history)'}.`,
       `Last green: ${episode.green ? `${episode.green.html_url || episode.green.id} (${episode.green.head_sha})` : 'not present in available history'}.`,
-      'Attribution uses the first red main run; intervening merges require diagnosis.',
+      first.event === 'push' ? 'Attribution uses the first red push run; intervening merges require diagnosis.'
+        : 'No red push run in available workflow history; introducing merge unknown.',
       `Target: green in under 4 h; deadline ${new Date(Date.parse(first.updated_at) + 4 * 3600000).toISOString()}.`);
     const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
       ...repo, run_id: current.id, attempt_number: current.run_attempt || 1, per_page: 100,

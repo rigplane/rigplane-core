@@ -9,7 +9,7 @@ const history = () => JSON.parse(fixture('history.json'));
 const repo = {owner: 'example', repo: 'repo'};
 const episodeMarker = '<!-- main-red:episode:example/repo/7:green-11 -->';
 
-function harness({logsFail = false, labelExists = true, failClose = false, dryRun = false, replay = false, issueReadFail = false, noFailedJobs = false} = {}) {
+function harness({logsFail = false, labelExists = true, failClose = false, dryRun = false, replay = false, issueReadFail = false, noFailedJobs = false, associatedPulls} = {}) {
   let current = {...history()[0], path: '.github/workflows/full.yml', workflow_id: 7, run_attempt: 1,
     html_url: 'https://github.com/example/repo/actions/runs/13', head_repository: {full_name: 'example/repo'}};
   let runs = history();
@@ -67,10 +67,18 @@ function harness({logsFail = false, labelExists = true, failClose = false, dryRu
       if (logsFail) throw Object.assign(new Error('logs expired'), {status: 410});
       return {data: new TextEncoder().encode(fixture('failure.txt')).buffer};
     },
-  }, repos: {listPullRequestsAssociatedWithCommit: 'pulls'}}};
+  }, repos: {listPullRequestsAssociatedWithCommit: 'pulls'}, pulls: {
+    list: 'recentPulls',
+    get: async params => ({data: {number: params.pull_number, merged_by: {login: `merger-${params.pull_number}`}}}),
+  }}};
   github.paginate = async (method, params) => {
-    if (method === 'pulls') return [{number: 42, merged_at: '2026-11-26', merge_commit_sha: params.commit_sha,
+    if (method === 'pulls') return associatedPulls ?? [{number: 42, merged_at: '2026-11-26', merge_commit_sha: params.commit_sha,
       base: {ref: 'main'}, user: {login: 'builder'}}];
+    if (method === 'recentPulls') return [
+      {number: 90, merged_at: '2026-11-26T05:00:00Z'},
+      {number: 39, merged_at: '2026-11-26T01:00:00Z'},
+      {number: 40, merged_at: '2026-11-26T02:30:00Z'},
+    ];
     if (method === 'jobs') return noFailedJobs ? [] : [{id: 99, name: 'test (3.12)', html_url: 'https://github.com/example/repo/actions/runs/13/job/99',
       conclusion: 'failure', steps: [{name: 'Run tests', conclusion: 'failure'}]}];
     return (await method(params)).data;
@@ -110,11 +118,43 @@ test('green identifies the preceding episode; an earlier green alone has no inci
   assert.equal(policy.findEpisode(history()[2], history()), null);
 });
 
-test('cancelled runs remain red and PR runs do not create incidents', () => {
-  const runs = history();
-  runs.push({...runs[0], id: 14, run_number: 14, conclusion: 'cancelled'});
-  assert.equal(policy.findEpisode(runs[0], runs).firstRed.id, 12);
-  assert.equal(policy.findEpisode(runs[3], runs), null);
+test('cancelled and action-required history is neutral between green and red and within a red episode', () => {
+  const runs = JSON.parse(fixture('neutral-history.json'));
+  const episode = policy.findEpisode(runs[0], runs);
+  assert.equal(episode.firstRed.id, 23);
+  assert.equal(episode.green.id, 11);
+  assert.equal(policy.findEpisode(history()[3], history()), null);
+  const neutralHistory = runs.filter(run => run.conclusion !== 'failure');
+  assert.equal(policy.findEpisode({...runs[0], conclusion: 'success'}, neutralHistory), null);
+});
+
+test('neutral fixture rows do not change issue attribution or its last-green episode key', async () => {
+  const runs = JSON.parse(fixture('neutral-history.json'));
+  const h = harness();
+  h.setCurrent(runs[0]);
+  h.setHistory(runs);
+  await h.run();
+  assert.ok(h.stored[0].body.includes(episodeMarker));
+  assert.match(h.stored[0].body, /First red SHA: c{40}/u);
+});
+
+test('neutral-only completions neither open nor close an incident, including replay', async () => {
+  for (const conclusion of ['cancelled', 'action_required']) {
+    for (const replay of [false, true]) {
+      const h = harness({replay});
+      h.setCurrent({conclusion});
+      assert.equal(policy.findEpisode({...history()[0], conclusion}, history()), null);
+      await h.run();
+      assert.equal(h.mutations.length, 0);
+      assert.equal(h.reads.length, 0);
+    }
+    const h = harness();
+    await h.run();
+    h.setCurrent({id: 14, run_number: 14, conclusion});
+    await h.run();
+    assert.deepEqual(h.mutations.map(item => item.method), ['create']);
+    assert.equal(h.stored[0].state, 'open');
+  }
 });
 
 test('missing green is explicit instead of inventing an introducing baseline', () => {
@@ -125,8 +165,53 @@ test('introducing merge must match first red SHA and main, not a later associate
   const sha = history()[1].head_sha;
   const pr = {number: 42, merged_at: '2026-11-26', merge_commit_sha: sha, base: {ref: 'main'}, user: {login: 'builder'}};
   assert.deepEqual(policy.introducingMerge(sha, [{...pr, merge_commit_sha: 'f'.repeat(40)}, pr]), pr);
-  assert.throws(() => policy.introducingMerge(sha, [{...pr, base: {ref: 'release/1.0.x'}}]), /introducing merge/u);
+  assert.equal(policy.introducingMerge(sha, [{...pr, base: {ref: 'release/1.0.x'}}]), null);
+  assert.equal(policy.introducingMerge(sha, []), null);
+  assert.equal(policy.introducingMerge(sha, [pr, {...pr, number: 43}]), null);
+  assert.equal(policy.introducingMerge(sha, [null, {}]), null);
 });
+
+for (const event of ['schedule', 'workflow_dispatch']) {
+  test(`${event} red completion attributes the first red push, skipping an earlier non-push failure`, async () => {
+    const h = harness();
+    h.setHistory([...history().map(run => ({...run, run_number: run.run_number * 10})),
+      {...history()[1], id: 111, run_number: 115, event,
+      head_sha: 'd'.repeat(40)}]);
+    h.setCurrent({event, run_number: 130, head_sha: 'e'.repeat(40)});
+    await h.run();
+    assert.match(h.stored[0].body, /First red SHA: b{40}/u);
+    assert.match(h.stored[0].body, /First red merge: #42 \(b{40}\)/u);
+    assert.doesNotMatch(h.stored[0].body, /First red SHA: [de]{40}/u);
+  });
+}
+
+test('a scheduled-only failure reports unknown attribution instead of inventing a push merge', async () => {
+  const h = harness();
+  h.setCurrent({event: 'schedule'});
+  h.setHistory([history()[2]]);
+  await h.run();
+  assert.match(h.stored[0].body, /introducing merge unknown/u);
+  assert.match(h.stored[0].body, /No red push run in available workflow history/u);
+});
+
+for (const scenario of ['direct push', 'batch', 'revert']) {
+  test(`${scenario} attribution still creates and updates an issue with its SHA range and last merger`, async () => {
+    const pr = {number: 41, merged_at: '2026-11-26T02:45:00Z',
+      merge_commit_sha: 'f'.repeat(40), base: {ref: 'main'}, user: {login: 'builder'}};
+    const associatedPulls = scenario === 'direct push' ? [] : scenario === 'batch'
+      ? [pr, {...pr, number: 42, merged_at: '2026-11-26T02:50:00Z'}] : [pr];
+    const h = harness({associatedPulls});
+    await h.run();
+    h.setCurrent({id: 14, run_number: 14});
+    await h.run();
+    assert.deepEqual(h.mutations.map(item => item.method), ['create', 'createComment']);
+    for (const report of [h.stored[0].body, h.stored[0].comments[0].body]) {
+      assert.match(report, /SHA range: a{40}\.\.\.b{40}/u);
+      assert.match(report, scenario === 'batch' ? /batch: PRs #41, #42/u : /introducing merge unknown/u);
+      assert.match(report, scenario === 'batch' ? /Owner: @merger-42/u : /Owner: @merger-40/u);
+    }
+  });
+}
 
 test('creates one labelled GitHub issue with first-red attribution, failure evidence and four-hour target', async () => {
   const h = harness();
@@ -141,6 +226,7 @@ test('creates one labelled GitHub issue with first-red attribution, failure evid
   assert.ok(issue.body.includes(episodeMarker));
   assert.match(issue.body, /#42 \(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\)/u);
   assert.match(issue.body, /GitHub (?:lane\/)?author: @?builder/u);
+  assert.match(issue.body, /Owner: @merger-42/u);
   assert.match(issue.body, /tests\/test_contract.py::test_main/u);
   assert.match(issue.body, /AssertionError: expected ready/u);
   assert.match(issue.body, /https:\/\/github.com\/example\/repo\/actions\/runs\/13/u);
