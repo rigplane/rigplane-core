@@ -14,7 +14,7 @@ from rigplane.backends.icom7610.drivers.serial_civ_link import (
     SerialFrameTimeoutError,
 )
 from rigplane.exceptions import CommandError
-from rigplane.exceptions import ConnectionError as RigplaneConnectionError
+from rigplane.testing.timing import await_until
 
 _ON = b"\x98\xe0\x1c\x00\x01"
 _OFF = b"\x98\xe0\x1c\x00\x00"
@@ -960,7 +960,10 @@ async def test_queued_key_before_link_drop_is_never_delivered_after_reconnect() 
     try:
         written = asyncio.create_task(link.send_written(_ON))
         tasks.append(written)
-        await asyncio.wait_for(old_writer.drain_started.wait(), timeout=1)
+        await await_until(
+            lambda: old_writer.drain_started.is_set(),
+            description="writer takes the keyed write",
+        )
         # Plain ``send()`` has no future: it returns once enqueued. Its pin
         # is the zero-bytes assertion on the replacement writer below.
         await link.send(_QUERY)
@@ -968,10 +971,15 @@ async def test_queued_key_before_link_drop_is_never_delivered_after_reconnect() 
         assert not written.done(), "send_written completed before drain"
 
         await link.disconnect()
-        with pytest.raises(RigplaneConnectionError):
-            await asyncio.wait_for(written, timeout=1)
+        await await_until(
+            lambda: written.done(), description="link drop fails the parked send"
+        )
+        # The link raises the builtin ConnectionError here, like every other
+        # retirement failure this file pins.
+        with pytest.raises(ConnectionError):
+            await written
         # A fresh send during the outage is refused, never parked for later.
-        with pytest.raises(RigplaneConnectionError):
+        with pytest.raises(ConnectionError):
             await link.send(_ON)
         assert old_writer.writes == [_wire(_ON)], "drop delivered queued bytes"
 
@@ -980,9 +988,12 @@ async def test_queued_key_before_link_drop_is_never_delivered_after_reconnect() 
         assert link.ready
         assert new_writer.writes == [], "pre-drop bytes reached the fresh writer"
         # The new session is live: fresh intent still flows.
-        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        revived = asyncio.create_task(link.send_written(_OFF))
+        tasks.append(revived)
+        await await_until(
+            lambda: revived.done(), description="fresh session drains the new write"
+        )
+        await revived
         assert new_writer.writes == [_wire(_OFF)]
     finally:
-        await asyncio.wait_for(
-            _cleanup_writes(link, tasks, old_writer, current["writer"]), timeout=1
-        )
+        await _cleanup_writes(link, tasks, old_writer, current["writer"])

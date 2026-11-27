@@ -20,6 +20,7 @@ from rigplane.runtime._poller_types import (
     SetFreq,
     SetMode,
 )
+from rigplane.testing.timing import await_until
 
 
 async def wait_for_event_or_exit(event, task):
@@ -491,18 +492,27 @@ async def test_queued_key_before_commander_stop_never_dispatches_after_restart()
     first = asyncio.create_task(commander.send(b"first"))
     second = asyncio.create_task(commander.send(b"later"))
     try:
-        await asyncio.wait_for(in_execute.wait(), timeout=1)
+        await await_until(
+            lambda: in_execute.is_set(), description="commander takes the first send"
+        )
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         await commander.stop()
+        await await_until(
+            lambda: second.done(), description="stop fails the queued send"
+        )
         with pytest.raises(StaleBeforeWireError):
-            await asyncio.wait_for(second, timeout=1)
+            await second
         assert dispatched == [b"first"], "stopped queue dispatched a later command"
 
         release.set()
         commander.start()
         try:
-            await asyncio.wait_for(commander.send(b"third"), timeout=1)
+            third = asyncio.create_task(commander.send(b"third"))
+            await await_until(
+                lambda: third.done(), description="fresh send dispatches after restart"
+            )
+            await third
         finally:
             await commander.stop()
         assert dispatched == [b"first", b"third"], "restart replayed the stale key"

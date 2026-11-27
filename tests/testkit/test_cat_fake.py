@@ -13,7 +13,6 @@ Three layers, mirroring the testkit's Icom serial fake split:
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 
 import pytest
@@ -469,7 +468,7 @@ async def test_queued_ptt_before_transport_reconnect_fails_currency_without_writ
             with pytest.raises(CommandError, match="connection generation changed"):
                 validate_command_queue_entry_currency(
                     drained,
-                    now=time.monotonic(),
+                    now=asyncio.get_running_loop().time(),
                     provider_generation=poller._captured_provider_generation(),  # noqa: SLF001
                     connection_generation=poller._current_tx_target_generation(),  # noqa: SLF001
                     session_is_live=queue.session_is_live,
