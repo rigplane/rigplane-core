@@ -18,11 +18,15 @@ from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.core.exceptions import ConnectionError, StaleBeforeWireError, TimeoutError
 from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import CivFrame
-from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
+from rigplane.runtime.managed_tx_effect_lane import (
+    ManagedTxActuator,
+    ManagedTxEffectLane,
+)
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
     ActuationResult,
+    ManagedTxEffect,
     ManagedTxActuationRefused,
     ManagedTxRefusalReason,
     EffectToken,
@@ -111,6 +115,7 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
 @pytest.mark.parametrize(
     "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
 )
@@ -123,8 +128,10 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
         (None, ActuationResult.ACCEPTED),
     ],
 )
-async def test_positive_tx_settles_on_the_radio_answer(operation, answer, expected):
-    radio = _profile_bound_radio()
+async def test_positive_tx_settles_on_the_radio_answer(
+    model, operation, answer, expected
+):
+    radio = IcomRadio("", model=model)
     radio._send_civ_raw = AsyncMock(
         return_value=None
         if answer is None
@@ -133,7 +140,18 @@ async def test_positive_tx_settles_on_the_radio_answer(operation, answer, expect
         ),
     )
 
-    assert await radio.actuate(_token(), operation, is_current=lambda: True) is expected
+    settled = await ManagedTxEffectLane(radio).settle(
+        ManagedTxEffect(operation, _token()),
+        deadline_monotonic=asyncio.get_running_loop().time() + 1,
+    )
+
+    assert settled is not None
+    assert settled.result is expected
+    if answer == 0xFA:
+        assert settled.rejection_reason is ManagedTxRefusalReason.RADIO_REFUSED
+    else:
+        assert settled.error is None
+        assert settled.refusal_reason is None
     assert radio._send_civ_raw.await_args.kwargs["wait_response"] is True
 
 
@@ -437,8 +455,12 @@ async def test_force_release_overtakes_queued_abort_without_preempting_active() 
 
 
 @pytest.mark.asyncio
-async def test_unsupported_profile_refuses_before_any_io() -> None:
-    radio = IcomRadio("", model="IC-7610")
+@pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+async def test_unsupported_profile_refuses_before_any_io(model, operation) -> None:
+    radio = IcomRadio("", model=model)
     radio._commands = BoundCommands(
         CommandMap({}),
         {"ptt_on": "test manufacturer command table"},
@@ -446,9 +468,7 @@ async def test_unsupported_profile_refuses_before_any_io() -> None:
     radio._send_civ_raw = AsyncMock(side_effect=AssertionError("I/O attempted"))
 
     with pytest.raises(ManagedTxActuationRefused) as refused:
-        await radio.actuate(
-            _token(), ActuationOperation.PTT_ON, is_current=lambda: True
-        )
+        await radio.actuate(_token(), operation, is_current=lambda: True)
 
     assert refused.value.reason is ManagedTxRefusalReason.OTHER
     radio._send_civ_raw.assert_not_awaited()

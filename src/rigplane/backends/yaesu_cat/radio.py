@@ -52,6 +52,8 @@ from ...runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
 )
 from ...types import AudioCodec, BreakInMode, Mode, RepeaterShiftDirection
 from .memory import memory_entry_from_cat
@@ -2195,7 +2197,11 @@ class YaesuCatRadio:
                 on_committed=on_committed,
                 **params,
             )
-        except CommandError:
+        except CommandRejectedError:
+            return ActuationResult.REJECTED
+        except CommandError as exc:
+            if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:
             return ActuationResult.ACCEPTED

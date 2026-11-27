@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -10,15 +11,20 @@ import pytest
 
 from rigplane.backends.yaesu_cat.parser import format_command
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.command_spec import CatCommandSpec
 from rigplane.core.priority_exchange import ExchangeTier
-from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
+from rigplane.runtime.managed_tx_effect_lane import (
+    ManagedTxActuator,
+    ManagedTxEffectLane,
+)
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxEffect,
+    ManagedTxRefusalReason,
 )
 from rigplane.rig_loader import load_rig
 
@@ -193,13 +199,11 @@ async def test_managed_abort_uses_urgent_profile_command(
 @pytest.mark.parametrize(
     ("operation", "missing_profile_key"),
     [
-        (ActuationOperation.PTT_ON, "set_ptt"),
-        (ActuationOperation.TRANSMIT_ON, "set_ptt"),
         (ActuationOperation.FORCE_RECEIVE, "set_ptt"),
         (AbortOperation.STOP_CW, "send_cw"),
         (AbortOperation.STOP_TUNE, "set_tuner"),
     ],
-    ids=["ptt_on", "transmit_on", "force_receive", "stop_cw", "stop_tune"],
+    ids=["force_receive", "stop_cw", "stop_tune"],
 )
 async def test_missing_profile_command_refuses_before_io(
     operation: ActuationOperation | AbortOperation,
@@ -211,6 +215,54 @@ async def test_missing_profile_command_refuses_before_io(
 
     assert result is ActuationResult.REJECTED
     radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["ftx1", "ft991a"])
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+@pytest.mark.parametrize("case", ["missing", "no-write-template", "nak", "written"])
+async def test_positive_tx_refusal_distinguishes_profile_gap_from_radio_reply(
+    profile: str, operation: ActuationOperation, case: str
+) -> None:
+    config = load_rig(_RIGS_DIR / f"{profile}.toml")
+    commands = dict(config.commands)
+    if case == "missing":
+        commands.pop("set_ptt")
+    elif case == "no-write-template":
+        commands["set_ptt"] = CatCommandSpec(read="TX;")
+    radio = YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock(
+        side_effect=CatCommandRejected("?;", command="TX1;") if case == "nak" else None
+    )
+    radio._transport.query = AsyncMock()
+
+    settled = await ManagedTxEffectLane(radio).settle(
+        ManagedTxEffect(operation, _token()),
+        deadline_monotonic=asyncio.get_running_loop().time() + 1,
+    )
+
+    assert settled is not None
+    assert settled.result is (
+        ActuationResult.ACCEPTED if case == "written" else ActuationResult.REJECTED
+    )
+    if case in ("missing", "no-write-template"):
+        assert settled.refusal_reason is ManagedTxRefusalReason.OTHER
+        assert settled.rejection_reason is ManagedTxRefusalReason.OTHER
+        radio._transport.write.assert_not_awaited()
+    else:
+        radio._transport.write.assert_awaited_once()
+        assert radio._transport.write.await_args.args == ("TX1;",)
+        assert radio._transport.write.await_args.kwargs["tier"] is ExchangeTier.ORDINARY
+        if case == "nak":
+            assert settled.rejection_reason is ManagedTxRefusalReason.RADIO_REFUSED
+        else:
+            assert settled.error is None
+            assert settled.refusal_reason is None
+    radio._transport.query.assert_not_awaited()
+    assert radio.radio_state.ptt is False
 
 
 @pytest.mark.asyncio
