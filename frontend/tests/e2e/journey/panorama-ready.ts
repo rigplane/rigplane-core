@@ -102,10 +102,13 @@ export async function drainAfterFirstDraw(
   win: GlDrainWindow = window as unknown as GlDrainWindow,
   nextFrame: () => Promise<void> = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
 ): Promise<void> {
-  while ((win.__journeyGlDraws ?? 0) === 0) await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
+  if (win.__journeyGlDraws === undefined || win.__journeyGlContexts === undefined) {
+    throw new Error('Panorama WebGL probe is not installed; navigate with openPanorama(page, url)');
+  }
+  while (win.__journeyGlDraws === 0) await nextFrame();
+  for (const context of win.__journeyGlContexts) context.finish();
   await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
+  for (const context of win.__journeyGlContexts) context.finish();
 }
 
 /** Resolves once the page has submitted its first draw and the GPU queue is empty. */

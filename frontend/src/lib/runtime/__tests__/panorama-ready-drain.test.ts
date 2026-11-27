@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { drainAfterFirstDraw, type GlDrainWindow } from '../../../../tests/e2e/journey/panorama-ready';
 
 describe('panorama pipeline drain', () => {
+  it.each([
+    {},
+    { __journeyGlContexts: [] },
+    { __journeyGlDraws: 1 },
+  ])('rejects a missing WebGL probe before waiting for an unobservable draw: %j', async (win) => {
+    let frames = 0;
+    await expect(drainAfterFirstDraw(win, async () => {
+      frames += 1;
+      throw new Error('waited for an unobservable draw');
+    })).rejects.toThrow('Panorama WebGL probe is not installed; navigate with openPanorama(page, url)');
+    expect(frames).toBe(0);
+  });
+
+  it('drains an already-drawn idle page without requiring another draw', async () => {
+    const events: string[] = [];
+    const win: GlDrainWindow = {
+      __journeyGlContexts: [{ finish: () => events.push('finish') }],
+      __journeyGlDraws: 1,
+    };
+    await drainAfterFirstDraw(win, async () => { events.push('frame'); });
+    expect(events).toEqual(['finish', 'frame', 'finish']);
+    expect(win.__journeyGlDraws).toBe(1);
+  });
+
   it('drains only after a draw was submitted, even when the first draw lands after several frames', async () => {
     const events: string[] = [];
     const win: GlDrainWindow = {
