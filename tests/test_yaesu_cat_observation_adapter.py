@@ -35,6 +35,7 @@ from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile, resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.testing.timing import ManualClock, VirtualClock
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.state_schema import ServerStatePublic, UnknownTxTargetPublic
 
@@ -4844,3 +4845,456 @@ async def test_sourceless_break_in_command_reaches_radio(
             while "BI1;" not in wire:
                 await asyncio.sleep(0.05)
         assert "BI1;" in wire
+
+
+def _mor4828_bad_wire(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, tuple[str | None, Any]],
+) -> tuple[YaesuCatRadio, YaesuCatSerialFake, list[str]]:
+    """Real FTX-1 backend on the CAT simulator with scripted bad replies.
+
+    Every wire line still reaches the radio except the overridden ones, so
+    the production parse path runs. Returns the radio, the fake and the
+    wire log. The caller owns connect/close.
+    """
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(_FTX1_RIG))
+    fake = YaesuCatSerialFake.from_profile(_ROOT, _FTX1_SIM, rig_path=_FTX1_RIG)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line: str) -> Any:
+        wire.append(line)
+        if line in overrides:
+            reply, outcome = overrides[line]
+            return reply, outcome
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args: Any, **kwargs: Any) -> Any:
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    return radio, fake, wire
+
+
+def _mor4828_scheduler(radio: YaesuCatRadio) -> AcquisitionScheduler:
+    scheduler = AcquisitionScheduler(profile=_profile_state_acquisition())
+    radio._acquisition_scheduler = scheduler
+    return scheduler
+
+
+@pytest.mark.asyncio
+async def test_mor4828_invalid_shift_skips_field_but_publishes_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4828: ``OS09;`` parses but is semantically invalid.
+
+    The MAIN shift read must go through the shared parse-failure contract
+    (field unavailable with a reason) instead of escaping ``_safe_read``
+    as ``CommandError`` and discarding the whole slow batch. The SUB side
+    still publishes, and the field recovers on a valid reply.
+    """
+    clock = ManualClock(start=100.0)
+    overrides: dict[str, tuple[str | None, Any]] = {"OS0;": ("OS09;", Ok())}
+    radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
+    await radio._transport.connect()
+    try:
+        scheduler = _mor4828_scheduler(radio)
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+
+    assert "OS0;" in wire
+    assert wire.count("OS0;") == 1
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.sub.operator_controls.repeater_shift"] == 3
+    assert "receiver.main.operator_controls.repeater_shift" not in by_path
+    assert scheduler.startup_defect is None
+    assert "receiver.main.operator_controls.repeater_shift" in {
+        str(path) for path in scheduler.refused_paths()
+    }
+    shift_path = FieldPath.receiver("main", "operator_controls", "repeater_shift")
+    assert shift_path not in scheduler.unobserved_startup_paths(())
+
+    del overrides["OS0;"]
+    # The refusal retry window (the 1 s slow-control idle ceiling) is still
+    # running: a poll on the same virtual instant must not re-read the line,
+    # even though the reply is valid again.
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("OS0;") == 1
+    assert "receiver.main.operator_controls.repeater_shift" not in {
+        str(item.path) for item in observations
+    }
+    assert "receiver.main.operator_controls.repeater_shift" in {
+        str(path) for path in scheduler.refused_paths()
+    }
+
+    # At the retry boundary the re-read happens: a new wire read, the
+    # restored observation and a cleared refusal.
+    clock.advance(1.0)
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("OS0;") == 2
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.main.operator_controls.repeater_shift"] == 3
+    assert "receiver.main.operator_controls.repeater_shift" not in {
+        str(path) for path in scheduler.refused_paths()
+    }
+
+
+@pytest.mark.asyncio
+async def test_mor4828_sql_receiver_mismatch_skips_side_but_publishes_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4828: ``CT0;`` answered ``CT11;`` (wrong receiver digit)."""
+    clock = ManualClock(start=100.0)
+    overrides: dict[str, tuple[str | None, Any]] = {"CT0;": ("CT11;", Ok())}
+    radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
+    await radio._transport.connect()
+    try:
+        scheduler = _mor4828_scheduler(radio)
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+
+    assert "CT0;" in wire
+    assert wire.count("CT0;") == 1
+    by_path = {str(item.path): item.value for item in observations}
+    assert "receiver.sub.operator_toggles.repeater_tone" in by_path
+    for path in (
+        "receiver.main.operator_toggles.repeater_tone",
+        "receiver.main.operator_toggles.repeater_tsql",
+        "receiver.main.operator_controls.tone_squelch_type",
+    ):
+        assert path not in by_path
+        assert path in {str(p) for p in scheduler.refused_paths()}
+    assert scheduler.startup_defect is None
+
+    del overrides["CT0;"]
+    # The refusal retry window (the 1 s slow-control idle ceiling) is still
+    # running: a poll on the same virtual instant must not re-read the line,
+    # even though the reply is valid again.
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CT0;") == 1
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_toggles.repeater_tone",
+        "receiver.main.operator_toggles.repeater_tsql",
+        "receiver.main.operator_controls.tone_squelch_type",
+    ):
+        assert path not in {str(item.path) for item in observations}
+        assert path in refused
+
+    # At the retry boundary the re-read happens: a new wire read, the
+    # restored observations and cleared refusals for every affected path.
+    clock.advance(1.0)
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CT0;") == 2
+    by_path = {str(item.path): item.value for item in observations}
+    for path in (
+        "receiver.main.operator_toggles.repeater_tone",
+        "receiver.main.operator_toggles.repeater_tsql",
+        "receiver.main.operator_controls.tone_squelch_type",
+    ):
+        assert path in by_path
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_toggles.repeater_tone",
+        "receiver.main.operator_toggles.repeater_tsql",
+        "receiver.main.operator_controls.tone_squelch_type",
+    ):
+        assert path not in refused
+
+
+@pytest.mark.asyncio
+async def test_mor4828_ctcss_receiver_mismatch_skips_side_but_publishes_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4828: ``CN00;`` answered ``CN10021;`` (wrong receiver digit)."""
+    clock = ManualClock(start=100.0)
+    overrides: dict[str, tuple[str | None, Any]] = {"CN00;": ("CN10021;", Ok())}
+    radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
+    await radio._transport.connect()
+    try:
+        scheduler = _mor4828_scheduler(radio)
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+
+    assert "CN00;" in wire
+    assert wire.count("CN00;") == 1
+    by_path = {str(item.path): item.value for item in observations}
+    assert "receiver.sub.operator_controls.tone_freq" in by_path
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in by_path
+        assert path in {str(p) for p in scheduler.refused_paths()}
+    assert scheduler.startup_defect is None
+
+    del overrides["CN00;"]
+    # The refusal retry window (the 1 s slow-control idle ceiling) is still
+    # running: a poll on the same virtual instant must not re-read the line,
+    # even though the reply is valid again.
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CN00;") == 1
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in {str(item.path) for item in observations}
+        assert path in refused
+
+    # At the retry boundary the re-read happens: a new wire read, the
+    # restored observations and cleared refusals for every affected path.
+    clock.advance(1.0)
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CN00;") == 2
+    by_path = {str(item.path): item.value for item in observations}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path in by_path
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in refused
+
+
+@pytest.mark.asyncio
+async def test_mor4828_invalid_tone_index_skips_field_but_publishes_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4828: ``CN00;`` answered ``CN00099;`` (index outside the domain)."""
+    clock = ManualClock(start=100.0)
+    overrides: dict[str, tuple[str | None, Any]] = {"CN00;": ("CN00099;", Ok())}
+    radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
+    await radio._transport.connect()
+    try:
+        scheduler = _mor4828_scheduler(radio)
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+
+    assert "CN00;" in wire
+    assert wire.count("CN00;") == 1
+    by_path = {str(item.path): item.value for item in observations}
+    assert "receiver.sub.operator_controls.tone_freq" in by_path
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in by_path
+        assert path in {str(p) for p in scheduler.refused_paths()}
+    assert scheduler.startup_defect is None
+
+    del overrides["CN00;"]
+    # The refusal retry window (the 1 s slow-control idle ceiling) is still
+    # running: a poll on the same virtual instant must not re-read the line,
+    # even though the reply is valid again.
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CN00;") == 1
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in {str(item.path) for item in observations}
+        assert path in refused
+
+    # At the retry boundary the re-read happens: a new wire read, the
+    # restored observations and cleared refusals for every affected path.
+    clock.advance(1.0)
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(
+            radio, clock=clock
+        ).poll_slow_controls()
+    finally:
+        await radio._transport.close()
+    assert wire.count("CN00;") == 2
+    by_path = {str(item.path): item.value for item in observations}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path in by_path
+    refused = {str(p) for p in scheduler.refused_paths()}
+    for path in (
+        "receiver.main.operator_controls.tone_freq",
+        "receiver.main.operator_controls.tsql_freq",
+    ):
+        assert path not in refused
+
+
+@asynccontextmanager
+async def _serve_yaesu_with_bad_shift(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    reply_latency_seconds: float = 0.009,
+) -> AsyncIterator[tuple[WebServer, YaesuCatRadio, list[str], VirtualClock]]:
+    """Serve the real FTX-1 backend with a persistently invalid shift reply.
+
+    ``OS0;`` always answers ``OS09;`` (parses, semantically invalid) while
+    every other line — including freq/mode — is answered normally.
+    During the production startup gate, the event loop's timers and the
+    gate's monotonic reads share one virtual clock. The simulator's delayed
+    replies and the poller therefore advance with the gate. Listener bind
+    and HTTP exchanges use the real loop clock again.
+    """
+    from rigplane.web import web_startup
+
+    overrides: dict[str, tuple[str | None, Any]] = {"OS0;": ("OS09;", Ok())}
+    radio, fake, wire = _mor4828_bad_wire(monkeypatch, overrides)
+    fake._reply_latency = reply_latency_seconds
+    gate_clock: VirtualClock | None = None
+    real_gate = web_startup._await_initial_state_acquisition
+
+    async def clocked_gate(server: WebServer, *, sweep: bool) -> None:
+        nonlocal gate_clock
+        async with VirtualClock.on_running_loop() as gate_clock:
+            with monkeypatch.context() as gate_patch:
+                # Keep asyncio.sleep timer-driven: scope_to() would jump only
+                # the gate's clock, outrunning the simulator's call_at replies.
+                gate_patch.setattr(
+                    web_startup, "time", SimpleNamespace(monotonic=gate_clock)
+                )
+                waiting = asyncio.create_task(real_gate(server, sweep=sweep))
+                try:
+                    deadline = gate_clock.now + 60.0
+                    while not waiting.done() and gate_clock.now < deadline:
+                        await gate_clock.elapse(0.005)
+                    assert waiting.done(), "startup gate exceeded 60 virtual seconds"
+                    await waiting
+                finally:
+                    if not waiting.done():
+                        waiting.cancel()
+                        await asyncio.gather(waiting, return_exceptions=True)
+
+    monkeypatch.setattr(web_startup, "_await_initial_state_acquisition", clocked_gate)
+    await radio._transport.connect()
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, await_initial_state=True)
+    )
+    try:
+        # A generous stuck-run bound (not a wall-clock assertion): a broken
+        # simulator that never answers the critical paths must fail, not hang.
+        await asyncio.wait_for(server.start(), timeout=60)
+        assert gate_clock is not None, "the production startup gate did not run"
+        yield server, radio, wire, gate_clock
+    finally:
+        try:
+            await server.stop()
+        finally:
+            await radio._transport.close()
+
+
+@pytest.mark.realtime(reason="real HTTP socket and the production Yaesu acquisition")
+@pytest.mark.timeout(60)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_latency_seconds", [0.009, 0.025])
+async def test_mor4828_bad_shift_still_binds_and_serves_critical_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    reply_latency_seconds: float,
+) -> None:
+    """MOR-4828 STEP 1: an invalid shift reply at startup must not block the bind.
+
+    Production path throughout: the real ``YaesuCatRadio`` on the committed
+    FTX-1 profile over the CAT simulator, real ``WebServer`` with
+    ``await_initial_state=True``, real ``/api/v1/state``. ``OS0;`` always
+    answers ``OS09;``; freq/mode answer normally. The server still binds
+    and serves, the startup-critical freq/mode pair is observed, and the
+    bind happens BEFORE the virtual 10 s non-critical deadline (the shift
+    field is refused on the first slow cycle instead of escaping
+    ``_safe_read`` and holding the initial-state gate). Fails before the
+    fix: ``start()`` returns only at the virtual 10 s deadline expiry.
+    """
+    async with _serve_yaesu_with_bad_shift(
+        monkeypatch, reply_latency_seconds=reply_latency_seconds
+    ) as (
+        web,
+        radio,
+        wire,
+        gate_clock,
+    ):
+        elapsed = gate_clock.now - gate_clock.start
+        assert elapsed < 10.0, (
+            f"startup held {elapsed:.1f}s virtual (>= 10s non-critical deadline)"
+        )
+        scheduler = radio._acquisition_scheduler
+        assert scheduler.startup_defect is None
+        shift_path = FieldPath.receiver("main", "operator_controls", "repeater_shift")
+        assert shift_path in scheduler.refused_paths()
+        assert shift_path not in scheduler.unobserved_startup_paths(())
+        host, port = _addr(web)
+
+        def freq_ready(state: ServerStatePublic) -> bool:
+            return state.main.freqHz == 147_225_000 and state.main.mode == "FM"
+
+        state = await _wait_served_state(
+            host, port, freq_ready, "freq/mode with bad shift"
+        )
+        assert "OS0;" in wire, "the invalid shift read never reached the wire"
+        status, _, raw = await _http_get(host, port, "/api/v1/state")
+        assert status == 200, f"GET /api/v1/state: HTTP {status}"
+        state = ServerStatePublic.model_validate_json(raw)
+        assert state.main.freqHz == 147_225_000
+        assert state.main.mode == "FM"
+        assert state.main.repeaterShift is None, "an invalid shift stays unknown"
