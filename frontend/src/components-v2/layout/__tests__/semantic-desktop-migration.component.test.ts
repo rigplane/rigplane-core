@@ -1436,12 +1436,13 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
    */
   const WIDE_PLACEMENTS = [
     ["> :global(.control-link-lost)", '1 / 1 / 2 / -1'],
-    ["> :global(.status-bar)", '2 / 1 / 3 / -1'],
-    [":global([data-zone-id='receiver-deck'])", '3 / 1 / 4 / -1'],
-    [":global(.desktop-controls-left)", '4 / 1 / 5 / 2'],
-    [":global(.desktop-controls-center)", '4 / 2 / 5 / 3'],
-    [":global(.desktop-controls-right)", '4 / 3 / 5 / 4'],
-    [":global([data-zone-id='meters'])", '5 / 1 / 6 / -1'],
+    ["> :global(.refusal-line)", '2 / 1 / 3 / -1'],
+    ["> :global(.status-bar)", '3 / 1 / 4 / -1'],
+    [":global([data-zone-id='receiver-deck'])", '4 / 1 / 5 / -1'],
+    [":global(.desktop-controls-left)", '5 / 1 / 6 / 2'],
+    [":global(.desktop-controls-center)", '5 / 2 / 6 / 3'],
+    [":global(.desktop-controls-right)", '5 / 3 / 6 / 4'],
+    [":global([data-zone-id='meters'])", '6 / 1 / 7 / -1'],
   ] as const;
 
   function expectPlacement(source: string, selector: string, area: string): void {
@@ -1453,7 +1454,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
   it('pins the wide warning, chrome, region, notice and meter row declarations', () => {
     const wide = RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
     expect(wide).toContain('grid-template-columns: 228px minmax(0, 1fr) 228px');
-    expect(wide).toContain('grid-template-rows: auto 28px auto minmax(min-content, 1fr) auto');
+    expect(wide).toContain('grid-template-rows: auto auto 28px auto minmax(min-content, 1fr) auto');
     expect(wide).toContain('min-height: 320px');
     for (const [selector, area] of WIDE_PLACEMENTS) expectPlacement(wide, selector, area);
   });
@@ -1473,7 +1474,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     const standardRule = wide.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/);
     expect(standardRule).not.toBeNull();
     const rows = standardRule![1].match(/grid-template-rows:\s*([^;]+);/)?.[1];
-    expect(rows).toBe('auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto');
+    expect(rows).toBe('auto auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto');
     expect(rows).not.toContain('minmax(0, 1fr)');
   });
 
@@ -1486,7 +1487,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     const standardRule = stacked.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/);
     expect(standardRule).not.toBeNull();
     const rows = standardRule![1].match(/grid-template-rows:\s*([^;]+);/)?.[1];
-    expect(rows).toBe('auto 28px auto auto minmax(min-content, 1fr) auto auto');
+    expect(rows).toBe('auto auto 28px auto auto minmax(min-content, 1fr) auto auto');
     expect(stacked).toContain('.desktop-control-face.standard-face .content-row { contain: inline-size; }');
     expect(RADIO_LAYOUT_SOURCE.slice(0, bandStart))
       .toContain('.desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }');
