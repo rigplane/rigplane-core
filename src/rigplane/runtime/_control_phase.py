@@ -164,7 +164,7 @@ class ControlPhaseRuntime:
         self._renewal_waiter: asyncio.Future[bool] | None = None
         self._renewal_sent_at: float | None = None
         self._renewal_answered_at: float | None = None
-        self._previous_session: tuple[int, int, int, int] | None = None
+        self._previous_session: tuple[int, int, int, int, tuple[str, int]] | None = None
 
     def _resolve_local_bind_host(self) -> str:
         """Resolve the routed local interface IP used to reach the radio."""
@@ -384,9 +384,7 @@ class ControlPhaseRuntime:
                             )
                         elif getattr(h, "_last_status_error", 0) == 0xFFFFFFFF:
                             # Mono also rejected outright — no busy-retry will help.
-                            self._close_pending_sockets()
-                            await h._ctrl_transport.disconnect()
-                            h._conn_state = RadioConnectionState.DISCONNECTED
+                            await self.release()
                             error_val = getattr(h, "_last_status_error", 0)
                             raise ConnectionError(
                                 f"Radio rejected session allocation with both "
@@ -414,9 +412,7 @@ class ControlPhaseRuntime:
                             h._audio_codec.name,
                         )
                     else:
-                        self._close_pending_sockets()
-                        await h._ctrl_transport.disconnect()
-                        h._conn_state = RadioConnectionState.DISCONNECTED
+                        await self.release()
                         raise ConnectionError(
                             f"Radio rejected session allocation (civ_port=0, "
                             f"error=0x{h._last_status_error:08X}). "
@@ -447,9 +443,7 @@ class ControlPhaseRuntime:
                     attempts = 0
                     while True:
                         if attempts >= 3:
-                            self._close_pending_sockets()
-                            await h._ctrl_transport.disconnect()
-                            h._conn_state = RadioConnectionState.DISCONNECTED
+                            await self.release()
                             error_val = getattr(h, "_last_status_error", 0)
                             raise ConnectionError(
                                 f"Radio rejected session allocation (civ_port=0, "
@@ -496,9 +490,7 @@ class ControlPhaseRuntime:
                 sock=civ_sock,
             )
         except OSError as exc:
-            # create_datagram_endpoint never ran — safe to close both sockets.
-            self._close_pending_sockets()
-            await h._ctrl_transport.disconnect()
+            await self.release()
             raise ConnectionError(
                 f"Failed to connect CI-V port {h._civ_port}: {exc}"
             ) from exc
@@ -1504,12 +1496,14 @@ class ControlPhaseRuntime:
     def _remember_session_for_release(self) -> None:
         h = self._host
         ctrl = h._ctrl_transport
-        if h._token and ctrl.my_id and ctrl.remote_id:
+        peer = getattr(ctrl, "_udp_peer_addr", None)
+        if h._token and ctrl.my_id and ctrl.remote_id and peer is not None:
             self._previous_session = (
                 h._token,
                 ctrl.my_id,
                 ctrl.remote_id,
                 h._tok_request,
+                peer,
             )
 
     async def _release_previous_session(self) -> None:
@@ -1519,7 +1513,10 @@ class ControlPhaseRuntime:
         self._previous_session = None
         if previous is None:
             return
-        token, my_id, remote_id, tok_request = previous
+        token, my_id, remote_id, tok_request, peer = previous
+        ctrl = self._host._ctrl_transport
+        if ctrl._udp_peer_addr != peer:
+            return
         packet = self._build_token_packet(
             0x01,
             token=token,
@@ -1529,7 +1526,7 @@ class ControlPhaseRuntime:
         )
         # These unacknowledged UDP releases are deliberately untracked: the
         # old IDs/token must not enter the new session's retransmit buffer.
-        send = self._host._ctrl_transport._raw_send
+        send = ctrl._raw_send
         send(packet)
         await asyncio.sleep(0.2)
         send(packet)

@@ -5,17 +5,109 @@ from __future__ import annotations
 import asyncio
 import struct
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.core.exceptions import DiscoveryTimeout
+from rigplane.core.exceptions import ConnectionError, DiscoveryTimeout
 from rigplane.radio import IcomRadio
 from rigplane.runtime import _control_phase
 from rigplane.testing.timing import VirtualClock, await_until
 from rigplane_testkit.icom import MockIcomRadio
 
 pytestmark = pytest.mark.timeout(30)
+
+
+@pytest.mark.parametrize(
+    ("next_peer", "cancel_replay", "expected_removes"),
+    [
+        (("192.0.2.1", 50001), False, 3),
+        (("192.0.2.2", 50001), False, 0),
+        (("192.0.2.1", 50002), False, 0),
+        (None, False, 0),
+        (("192.0.2.1", 50001), True, 1),
+    ],
+)
+async def test_replay_is_bound_to_resolved_peer_and_consumed_once(
+    monkeypatch: pytest.MonkeyPatch,
+    packet_clock: VirtualClock,
+    next_peer: tuple[str, int] | None,
+    cancel_replay: bool,
+    expected_removes: int,
+) -> None:
+    radio = IcomRadio("radio.example", model="IC-705")
+    ctrl = radio._ctrl_transport
+    phase = radio._control_phase
+    packet_clock.scope_to(monkeypatch, _control_phase)
+    original_peer = ("192.0.2.1", 50001)
+    resolved_peers = iter([original_peer, next_peer, original_peer])
+    sockets: list[MagicMock] = []
+    destinations: list[tuple[str, int]] = []
+
+    async def open_endpoint(factory, *, remote_addr, local_addr):
+        destinations.append(remote_addr)
+        protocol = factory()
+        udp = MagicMock(spec=asyncio.DatagramTransport)
+        info = {
+            "sockname": ("192.0.2.10", 53000 + len(sockets)),
+            "peername": next(resolved_peers),
+        }
+        udp.get_extra_info.side_effect = info.get
+        udp.close.side_effect = lambda: protocol.connection_lost(None)
+        protocol.connection_made(udp)
+        sockets.append(udp)
+        return udp, protocol
+
+    monkeypatch.setattr(
+        asyncio.get_running_loop(), "create_datagram_endpoint", open_endpoint
+    )
+    monkeypatch.setattr(ctrl, "_discover", AsyncMock())
+    monkeypatch.setattr(ctrl, "_ready_handshake", AsyncMock())
+    await ctrl.connect(radio._host, radio._port)
+    radio._token, radio._tok_request = 0x12345678, 0x1234
+    ctrl.remote_id = 0x11223344
+    old_ids = (ctrl.my_id, ctrl.remote_id)
+    phase._remember_session_for_release()
+    await ctrl.disconnect()
+    ctrl._before_handshake = phase._release_previous_session
+
+    if cancel_replay:
+        replay_task = asyncio.current_task()
+        assert replay_task is not None
+        send = ctrl._raw_send
+
+        def cancel_after_send(data: bytes) -> None:
+            send(data)
+            if len(data) == 0x40 and data[0x15] == 0x01:
+                replay_task.cancel()
+
+        monkeypatch.setattr(ctrl, "_raw_send", cancel_after_send)
+
+    try:
+        if cancel_replay:
+            with pytest.raises(asyncio.CancelledError):
+                await ctrl.connect(radio._host, radio._port)
+        else:
+            await ctrl.connect(radio._host, radio._port)
+        removes = [
+            call.args[0]
+            for call in sockets[1].sendto.call_args_list
+            if len(call.args[0]) == 0x40 and call.args[0][0x15] == 0x01
+        ]
+        assert len(removes) == expected_removes
+        for packet in removes:
+            assert struct.unpack_from("<II", packet, 0x08) == old_ids
+            assert struct.unpack_from("<I", packet, 0x1C)[0] == 0x12345678
+            assert struct.unpack_from("<H", packet, 0x1A)[0] == 0x1234
+        assert phase._previous_session is None
+        assert ctrl.tx_buffer == {}
+        assert packet_clock.sleeps == ([0.2] * min(expected_removes, 2))
+        await ctrl.disconnect()
+        await ctrl.connect(radio._host, radio._port)
+        assert sockets[2].sendto.call_args_list == []
+        assert destinations == [("radio.example", 50001)] * 3
+    finally:
+        await ctrl.disconnect()
 
 
 class HeldSessionRadio(MockIcomRadio):
@@ -219,3 +311,37 @@ async def test_data_port_timeout_removes_token_before_control_close(
     monkeypatch.setattr(ctrl, "disconnect", record_close)
     await radio._control_phase._cleanup_data_port_discovery_timeout()
     assert events == ["remove", "close"]
+
+
+async def test_civ_open_error_releases_before_control_close(
+    lan: tuple[IcomRadio, HeldSessionRadio],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, sim = lan
+    ctrl = radio._ctrl_transport
+    events: list[str] = []
+    send, disconnect = ctrl._raw_send, ctrl.disconnect
+
+    def record_send(data: bytes) -> None:
+        if len(data) == 0x40 and data[0x15] == 0x01:
+            events.append("remove")
+        send(data)
+
+    async def record_close() -> None:
+        events.append("close")
+        await disconnect()
+
+    monkeypatch.setattr(ctrl, "_raw_send", record_send)
+    monkeypatch.setattr(ctrl, "disconnect", record_close)
+    monkeypatch.setattr(
+        "rigplane.transport.IcomCivTransport.connect",
+        AsyncMock(side_effect=OSError("simulated CI-V socket open failure")),
+    )
+    with pytest.raises(ConnectionError, match="Failed to connect CI-V port"):
+        await radio._control_phase._connect_once()
+    assert sim.login_count == 1
+    assert events == ["remove", "close"]
+    assert radio._control_phase._previous_session is not None
+    assert radio._civ_transport is None
+    assert radio._civ_sock_pending is None
+    assert radio._audio_sock_pending is None

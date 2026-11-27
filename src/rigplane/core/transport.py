@@ -124,6 +124,7 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         # inherit from asyncio.DatagramTransport (CPython quirk), but it
         # has sendto() — so we skip the isinstance check.
         self._owner._udp_transport = transport  # type: ignore[assignment]
+        self._owner._udp_peer_addr = None
         peer = transport.get_extra_info("peername")
         if isinstance(peer, tuple) and len(peer) >= 2:
             self._owner._udp_peer_addr = (str(peer[0]), int(peer[1]))
