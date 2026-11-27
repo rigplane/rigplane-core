@@ -24,6 +24,7 @@ import sveltePlugin from 'eslint-plugin-svelte';
 import svelteParser from 'svelte-eslint-parser';
 import radioAuthorityPlugin from './scripts/radio-authority-eslint-plugin.mjs';
 import controlFeedbackOwnershipPlugin from './scripts/control-feedback-ownership-eslint-plugin.mjs';
+import journeyWaitsPlugin from './scripts/journey-waits-eslint-plugin.mjs';
 
 /** Modules that only the runtime/wiring layer may import. */
 const FORBIDDEN_RUNTIME_IMPORTS = {
@@ -327,6 +328,13 @@ export default [
       reportUnusedDisableDirectives: 'off',
     },
     rules: {},
+  },
+
+  {
+    files: ['tests/e2e/journey/**/*.ts'],
+    languageOptions: { parser: tsParser },
+    plugins: { 'journey-waits': journeyWaitsPlugin },
+    rules: { 'journey-waits/condition-waits': 'error' },
   },
 
   // ── Svelte files ──
