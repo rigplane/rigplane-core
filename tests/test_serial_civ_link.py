@@ -14,6 +14,7 @@ from rigplane.backends.icom7610.drivers.serial_civ_link import (
     SerialFrameTimeoutError,
 )
 from rigplane.exceptions import CommandError
+from rigplane.testing.timing import await_until
 
 _ON = b"\x98\xe0\x1c\x00\x01"
 _OFF = b"\x98\xe0\x1c\x00\x00"
@@ -928,3 +929,71 @@ async def test_stacked_retirement_joins_prior_before_current_close_error() -> No
         await asyncio.wait_for(
             _cleanup_writes(link, tasks, writer_a, writer_b, newer), timeout=1
         )
+
+
+@pytest.mark.asyncio
+async def test_queued_key_before_link_drop_is_never_delivered_after_reconnect() -> None:
+    """A key queued before a link drop is never delivered after the reconnect.
+
+    Pins the teardown contract: ``disconnect()`` fails the pending
+    ``send_written`` future with ``ConnectionError`` and drops the old queue
+    outright, so ``connect()`` starts from an empty queue and the replacement
+    writer observes zero bytes from the pre-drop generation.
+    """
+    gate = asyncio.Event()
+    old_writer = _FakeWriter(drain_gate=gate)
+    current = {"writer": old_writer}
+
+    async def _open() -> tuple[_FakeReader, _FakeWriter]:
+        # The repluggable writer is what makes this a reconnect test: the
+        # second ``connect()`` opens a fresh fake writer, like a new session.
+        return _FakeReader(), current["writer"]
+
+    link = SerialCivLink(
+        device="/dev/tty.usbmodem-IC7610",
+        baudrate=19200,
+        max_write_queue=8,
+        open_serial_connection=_open,
+    )
+    await link.connect()
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        written = asyncio.create_task(link.send_written(_ON))
+        tasks.append(written)
+        await await_until(
+            lambda: old_writer.drain_started.is_set(),
+            description="writer takes the keyed write",
+        )
+        # Plain ``send()`` has no future: it returns once enqueued. Its pin
+        # is the zero-bytes assertion on the replacement writer below.
+        await link.send(_QUERY)
+        assert old_writer.writes == [_wire(_ON)]
+        assert not written.done(), "send_written completed before drain"
+
+        await link.disconnect()
+        await await_until(
+            lambda: written.done(), description="link drop fails the parked send"
+        )
+        # The link raises the builtin ConnectionError here, like every other
+        # retirement failure this file pins.
+        with pytest.raises(ConnectionError):
+            await written
+        # A fresh send during the outage is refused, never parked for later.
+        with pytest.raises(ConnectionError):
+            await link.send(_ON)
+        assert old_writer.writes == [_wire(_ON)], "drop delivered queued bytes"
+
+        current["writer"] = new_writer = _FakeWriter()
+        await link.connect()
+        assert link.ready
+        assert new_writer.writes == [], "pre-drop bytes reached the fresh writer"
+        # The new session is live: fresh intent still flows.
+        revived = asyncio.create_task(link.send_written(_OFF))
+        tasks.append(revived)
+        await await_until(
+            lambda: revived.done(), description="fresh session drains the new write"
+        )
+        await revived
+        assert new_writer.writes == [_wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, tasks, old_writer, current["writer"])
