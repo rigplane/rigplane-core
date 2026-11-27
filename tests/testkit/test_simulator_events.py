@@ -22,8 +22,10 @@ from rigplane.radio import IcomRadio
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.icom import simulator
 
 from _perf_helpers import fast_connect
 
@@ -59,17 +61,28 @@ async def _states_until(
     radio: IcomRadio,
     deadline_s: float,
     done: Callable[[list[RadioConnectionState]], bool] = lambda _: False,
+    *,
+    clock: VirtualClock | None = None,
 ) -> list[RadioConnectionState]:
-    """Sample ``conn_state`` every 20 ms until ``done`` or the deadline."""
     seen: list[RadioConnectionState] = []
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
+    now = clock if clock is not None else time.monotonic
+    end = now() + deadline_s
+
+    def sample() -> bool:
+        if clock is not None:
+            clock.advance(min(0.02, max(0.0, end - clock())))
         state = radio.conn_state
         if not seen or seen[-1] is not state:
             seen.append(state)
-        if done(seen):
-            break
-        await asyncio.sleep(0.02)
+        return done(seen) or now() >= end
+
+    await await_until(
+        sample,
+        timeout=deadline_s,
+        interval=0.001 if clock is not None else 0.02,
+        description="the expected connection states",
+        clock=clock,
+    )
     return seen
 
 
@@ -81,17 +94,19 @@ async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
     gate; ``connected`` is false until the radio has answered its ``19 00``
     identification.
     """
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        if radio.connected:
-            return
-        await asyncio.sleep(0.02)
+    await await_until(
+        lambda: radio.connected,
+        timeout=deadline_s,
+        description="the reconnect identity gate",
+    )
 
 
+@pytest.mark.timeout(30)
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    assert not isinstance(asyncio.get_running_loop().time, VirtualClock)
     radio = _client(sim)
     statuses: list[dict] = []
     radio.set_reconnect_status_callback(statuses.append)
@@ -116,7 +131,6 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
                 "._STATUS_REJECT_COOLDOWN",
                 busy_for,
             )
-            sim.reboot(at=0.1, down_for=3.0, busy_for=busy_for)
 
             def reconnected(seen: list[RadioConnectionState]) -> bool:
                 # The RECONNECTING window can be shorter than the 20 ms
@@ -128,7 +142,13 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
                     and statuses[-1]["state"] == "connected"
                 )
 
-            seen = await _states_until(radio, 20.0, reconnected)
+            # Connect/flush on the real loop before installing virtual timers.
+            async with VirtualClock.on_running_loop() as clock:
+                for module in (simulator, radio_reconnect):
+                    clock.scope_to(monkeypatch, module)
+                    monkeypatch.setattr(module, "asyncio", asyncio)
+                sim.reboot(at=0.1, down_for=3.0, busy_for=busy_for)
+                seen = await _states_until(radio, 20.0, reconnected, clock=clock)
             assert reconnected(seen), seen
             assert any(s["state"] == "reconnecting" for s in statuses), statuses
             assert statuses[-1]["state"] == "connected", statuses
