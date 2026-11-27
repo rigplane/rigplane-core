@@ -147,6 +147,7 @@ polling_only = [
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
     "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_toggles.dcd",
     "receiver.sub.operator_controls.af_level",
     "receiver.sub.operator_controls.rf_gain",
     "receiver.sub.operator_controls.squelch",
@@ -332,6 +333,16 @@ freshness_ttl_seconds = 2.0
 [state_acquisition.field_policies."global.meters.id"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
+
+# CAT RI has a fixed selector. MAIN in single receive is the verified route.
+[state_acquisition.field_policies."receiver.main.operator_toggles.dcd"]
+cadence_seconds = 0.075
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+available_when = [
+    { field = "global.slow_state.active", equals = "MAIN" },
+    { field = "global.tx_state.dual_watch", equals = false },
+]
 
 # --- Slow-control tier ------------------------------------------------------
 # MOR-2425 (owner ruling, 2026-09-07): 30.0s/120.0s -> 1.0s/2.0s. These
@@ -1420,6 +1431,8 @@ set_rf_gain        = { cat = { write = "RG0{level:03d};" } }
 get_rf_gain_sub    = { cat = { read = "RG1;", parse = "RG1{level:03d};" } }
 set_rf_gain_sub    = { cat = { write = "RG1{level:03d};" } }
 get_squelch        = { cat = { read = "SQ0;", parse = "SQ0{level:03d};" } }
+# CAT reference 2507-B, p.22. P1 and P5 are fixed at 0 and P8 is SQL open.
+get_dcd            = { cat = { read = "RI0;", parse = "RI0{value}{val}{tx}0{func}{mode}{state:bool};" } }
 set_squelch        = { cat = { write = "SQ0{level:03d};" } }
 get_squelch_sub    = { cat = { read = "SQ1;", parse = "SQ1{level:03d};" } }
 set_squelch_sub    = { cat = { write = "SQ1{level:03d};" } }

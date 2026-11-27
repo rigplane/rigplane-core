@@ -29,11 +29,15 @@ from ...audio.usb_driver import (
     audio_start_failure_holder,
     audio_start_failure_reason,
 )
+from ...core.acquisition_scheduler import derive_active_receiver_value
 from ...core.radio_protocol import serial_identity_hold
+from ...core.state_pipeline_contracts import FieldPath
+from ...core.state_store import FreshnessState, StateStore
 from ...dsp.tap_registry import TapHandle, TapRegistry
 from ...env_config import (
     get_audio_broadcaster_high_watermark,
 )
+from ...profiles import RadioProfile
 from ...runtime.managed_tx_state import ManagedTxIntentKind
 from ...types import AudioCodec
 from ..api_contract import (  # noqa: TID251
@@ -74,6 +78,18 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_MAIN_DCD_PATHS = tuple(
+    FieldPath.receiver(receiver, "operator_toggles", "dcd")
+    for receiver in ("main", "0")
+)
+_MAIN_MODE_PATHS = tuple(
+    FieldPath.active(receiver, "freq_mode", "mode") for receiver in ("main", "0")
+)
+_MAIN_DATA_MODE_PATHS = tuple(
+    FieldPath.active(receiver, "freq_mode", "data_mode") for receiver in ("main", "0")
+)
+_DUAL_WATCH_PATH = FieldPath.global_("tx_state", "dual_watch")
 
 _PLAYBACK_COUNTERS = {
     "receivedFrames",
@@ -474,12 +490,14 @@ class AudioBroadcaster:
         self,
         radio: "Radio | None",
         *,
+        state_store: StateStore | None = None,
         on_client_count_change: Callable[[], None] | None = None,
         on_rx_start_status_change: Callable[[], None] | None = None,
         adaptive_egress: bool = False,
     ) -> None:
         self.HIGH_WATERMARK = get_audio_broadcaster_high_watermark()
         self._radio = radio
+        self._state_store = state_store
         self._on_client_count_change = on_client_count_change
         # MOR-4279: fired when a relay/RX start sets or drops the retained
         # failure, so the web server re-delivers the ``audioReceive`` state
@@ -1538,6 +1556,43 @@ class AudioBroadcaster:
                     exc_info=True,
                 )
 
+    def _monitor_squelch_closed(self) -> bool:
+        store = self._state_store
+        profile = getattr(self._radio, "profile", None)
+        if store is None or not isinstance(profile, RadioProfile):
+            return False
+        acquisition = profile.state_acquisition
+        if (
+            acquisition is None
+            or not acquisition.capability_for(_MAIN_DCD_PATHS[0]).can_poll
+        ):
+            return False
+
+        if profile.receiver_count > 1:
+            # A mixed or ambiguous stream cannot use MAIN's status for SUB.
+            if self._channels != 1 or derive_active_receiver_value(store) != "MAIN":
+                return False
+            if self._fresh_monitor_value(_DUAL_WATCH_PATH) is not False:
+                return False
+
+        if self._fresh_monitor_value(*_MAIN_DCD_PATHS) is not False:
+            return False
+        mode = self._fresh_monitor_value(*_MAIN_MODE_PATHS)
+        data_mode = self._fresh_monitor_value(*_MAIN_DATA_MODE_PATHS)
+        return mode in ("FM", "FM-N") and data_mode in (None, 0)
+
+    def _fresh_monitor_value(self, *paths: FieldPath) -> object:
+        store = self._state_store
+        assert store is not None
+        for path in paths:
+            try:
+                field = store.field(path)
+            except KeyError:
+                continue
+            if field.freshness is FreshnessState.FRESH:
+                return field.value
+        return None
+
     async def _relay_loop(self) -> None:
         """Read packets from AudioBus subscription and fan out to WS clients."""
         if self._subscription is None:
@@ -1591,6 +1646,14 @@ class AudioBroadcaster:
                     AudioCodec.OPUS_2CH,
                 ):
                     self._tap_registry.feed(audio_data)
+
+                if (
+                    self._clients
+                    and self._radio_codec
+                    not in (AudioCodec.OPUS_1CH, AudioCodec.OPUS_2CH)
+                    and self._monitor_squelch_closed()
+                ):
+                    audio_data = bytes(len(audio_data))
 
                 # frame_ms is derived from the actual payload size (issue #765).
                 # The hardcoded 20 ms here was the root cause of the 2026-04-16

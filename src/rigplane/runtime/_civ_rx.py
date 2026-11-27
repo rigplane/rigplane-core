@@ -3163,22 +3163,19 @@ class CivRuntime:
                             frame=frame,
                         )
                     )
-        elif (
-            frame.command == 0x15
-            and frame.sub in _OBSERVABLE_CMD15_SQL_OPEN_SUBS
-            and frame.data
-        ):
+        elif frame.command == 0x15 and frame.sub in _OBSERVABLE_CMD15_SQL_OPEN_SUBS:
             # Squelch-open / DCD (RX-busy): single-byte bool under sub 0x01 and
             # sub 0x05, both promoted to the neutral receiver ``dcd`` toggle
             # (MOR-466). The legacy ``RadioState.s_meter_sql_open`` mirror write
             # in ``_handle_15`` is removed; the StateStore is the source of truth.
-            observations.append(
-                self._observation(
-                    self._field_path(_CMD15_DCD_FIELD, receiver_id=receiver_id),
-                    bool(frame.data[0]),
-                    frame=frame,
+            if frame.data in (b"\x00", b"\x01"):
+                observations.append(
+                    self._observation(
+                        self._field_path(_CMD15_DCD_FIELD, receiver_id=receiver_id),
+                        frame.data == b"\x01",
+                        frame=frame,
+                    )
                 )
-            )
         elif frame.command == 0x15 and len(frame.data) >= 2:
             mapping = _OBSERVABLE_CMD15_FIELDS.get(frame.sub or 0)
             if mapping is not None:

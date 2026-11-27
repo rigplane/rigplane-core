@@ -72,6 +72,7 @@ _TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 _MAIN_AF = FieldPath.receiver("main", "operator_controls", "af_level")
 _MAIN_RF = FieldPath.receiver("main", "operator_controls", "rf_gain")
 _MAIN_SQL = FieldPath.receiver("main", "operator_controls", "squelch")
+_MAIN_DCD = FieldPath.receiver("main", "operator_toggles", "dcd")
 _SUB_AF = FieldPath.receiver("sub", "operator_controls", "af_level")
 _SUB_RF = FieldPath.receiver("sub", "operator_controls", "rf_gain")
 _SUB_SQL = FieldPath.receiver("sub", "operator_controls", "squelch")
@@ -295,6 +296,8 @@ class YaesuObservationRadio(Protocol):
     async def read_rf_gain(self, receiver: int = 0) -> int: ...
 
     async def read_squelch(self, receiver: int = 0) -> int: ...
+
+    async def read_dcd(self) -> bool | None: ...
 
     async def read_attenuator(self, receiver: int = 0) -> bool: ...
 
@@ -820,6 +823,16 @@ class YaesuObservationAdapter:
     ) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
+        if self._can_poll(_MAIN_DCD) and self._available(_MAIN_DCD):
+            read_dcd = getattr(self.radio, "read_dcd", None)
+            if read_dcd is not None:
+                ok, opened = await self._safe_read(
+                    "main.dcd", read_dcd, paths=(_MAIN_DCD,), contain_timeout=True
+                )
+                if ok and isinstance(opened, bool):
+                    observations.append(
+                        adapter.observation(_MAIN_DCD, opened, native_id="get_dcd")
+                    )
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
             ok, raw = await self._safe_read(
                 "main.s_meter",

@@ -175,6 +175,7 @@ meter_coalescing_window_seconds = 0.2
 
 [state_acquisition.capabilities]
 polling_only = [
+    "receiver.main.operator_toggles.dcd",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.unselected.freq_mode.freq_hz",
@@ -295,6 +296,11 @@ supported_controls = [
     "receiver.main.active.freq_mode.mode",
     "global.tx_state.ptt",
 ]
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.dcd"]
+cadence_seconds = 0.4
+freshness_ttl_seconds = 1.2
+adaptive_decay = false
 
 # MOR-2540: Po/SWR/ALC/COMP are TX-only 0x15 meters, gated exactly as
 # rigs/ic7610.toml (same Icom LAN/WiFi link family) and rigs/ic7300.toml's

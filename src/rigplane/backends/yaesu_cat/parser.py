@@ -125,6 +125,7 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     "mode:02d": (r"(?P<mode>\d{2})", int),
     "state": (r"(?P<state>.)", str),
     "state:03d": (r"(?P<state>\d{3})", int),
+    "state:bool": (r"(?P<state>[01])", lambda digit: digit == "1"),
     "sign": (r"(?P<sign>[+\-])", str),
     "value": (r"(?P<value>.)", str),
     "value:02d": (r"(?P<value>\d{2})", int),
