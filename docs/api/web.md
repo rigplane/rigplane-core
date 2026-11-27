@@ -139,16 +139,14 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 
-The managed-runtime supervisor can authorize detach by providing a fresh
-256-bit secret as 64 lowercase hex digits in `RIGPLANE_STATION_OWNER_TOKEN`
-at launch. To request detach, send `force_off` directly over loopback HTTP
-with `X-Rigplane-Release-For-Detach: 1`, the matching
-`X-Rigplane-Station-Owner` credential, and no controller key. The HTTP 202
-receipt can include `releaseDisposition: "not_applicable"` when at least one
-serial open was attempted, every attempt proves the OS refused to open the
-device, no open is in progress, and no release debt exists. Core then
-prevents further opens for that binding. Ordinary `force_off` remains
-available without a station-owner credential.
+To request detach, send `force_off` directly over loopback HTTP with
+`X-Rigplane-Release-For-Detach: 1` and no controller key. The remote API
+channel does not honor the detach header. The HTTP 202 receipt can include
+`releaseDisposition: "not_applicable"` when at least one serial open was
+attempted, the OS provably refused every attempt before the device opened,
+no open is in progress, no provider was ever attached, no release is owed,
+and observed PTT is not ON. Core then prevents further opens for that
+binding. A fresh Connect starts with open admission.
 For an absent or unrecognized disposition, use the existing managed-transmit
 status and observed PTT to confirm release.
 

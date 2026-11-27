@@ -24,7 +24,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.testing.timing import virtual_clock
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
-from test_managed_tx_http_route import OWNER_TOKEN, _reader, _Writer
+from test_managed_tx_http_route import _reader, _Writer
 from test_managed_tx_production_composition import RecordingActuator
 
 if os.name != "posix":
@@ -263,7 +263,7 @@ async def test_wrap_reconfiguration_failure_closes_before_error_return(terminal)
         "busy",
         "timeout",
         "unknown",
-        "proxy",
+        "api_channel",
     ],
 )
 @virtual_clock
@@ -276,15 +276,7 @@ async def test_detach_uses_every_serial_open_outcome(
         RecordingActuator(), config_path=tmp_path / "managed-tx.json"
     )
     install_managed_tx_composition(radio, composition)
-    server = WebServer(
-        radio,
-        WebConfig(
-            host="127.0.0.1",
-            port=0,
-            station_owner_token=OWNER_TOKEN,
-            trusted_origins=("https://station.example",),
-        ),
-    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     attach_managed_tx_composition(server, composition)
     await composition.bind_state_store(server.command_state_store)
     try:
@@ -303,7 +295,7 @@ async def test_detach_uses_every_serial_open_outcome(
             terminal.open_error = RuntimeError("unknown test error")
         elif retry_outcome == "permission_denied":
             terminal.open_error = PermissionError(errno.EACCES, "refused test port")
-        elif retry_outcome not in {"absent", "proxy"}:
+        elif retry_outcome not in {"absent", "api_channel"}:
             terminal.open_error = None
             if retry_outcome == "initial_config_enoent":
                 terminal.set_attributes_error = FileNotFoundError(
@@ -346,13 +338,7 @@ async def test_detach_uses_every_serial_open_outcome(
 
         reader, headers = _reader({"operation": "force_off"})
         headers["x-rigplane-release-for-detach"] = "1"
-        if retry_outcome == "proxy":
-            headers["host"] = "127.0.0.1:8080"
-            headers["origin"] = "https://station.example"
-            headers["x-forwarded-for"] = "192.0.2.1"
-        else:
-            headers["x-rigplane-station-owner"] = OWNER_TOKEN
-        writer = _Writer()
+        writer = _Writer(api_channel=retry_outcome == "api_channel")
         await server._handle_http(
             writer,  # type: ignore[arg-type]
             "POST",
@@ -371,8 +357,8 @@ async def test_detach_uses_every_serial_open_outcome(
             assert writer.payload["result"] == "pending"
             assert "releaseDisposition" not in writer.payload
             assert projection.state.release_required
-        if retry_outcome == "proxy":
-            # An uncredentialed proxy request leaves serial recovery admitted.
+        if retry_outcome == "api_channel":
+            # An API-channel request leaves serial recovery admitted.
             with pytest.raises(RadioConnectionError):
                 await reopen()
             assert terminal.open_attempts == 4

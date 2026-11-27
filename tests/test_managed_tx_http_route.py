@@ -40,9 +40,6 @@ from test_managed_tx_production_composition import LegacyRadio, RecordingActuato
 from test_yaesu_cat_transport import FakeStreamWriter
 
 
-OWNER_TOKEN = "1" * 64
-
-
 class _Writer:
     def __init__(self, peer: str = "127.0.0.1", *, api_channel: bool = False) -> None:
         self.buffer = bytearray()
@@ -225,9 +222,7 @@ async def test_detach_force_off_uses_attachment_history(
         actuator, config_path=tmp_path / "managed-tx.json"
     )
     install_managed_tx_composition(radio, composition)
-    server = WebServer(
-        radio, WebConfig(host="127.0.0.1", port=0, station_owner_token=OWNER_TOKEN)
-    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     attach_managed_tx_composition(server, composition)
     authority = composition.authority
     await composition.bind_state_store(server.command_state_store)
@@ -246,8 +241,6 @@ async def test_detach_force_off_uses_attachment_history(
     reader, headers = _reader({"operation": "force_off"})
     if detach:
         headers["x-rigplane-release-for-detach"] = "1"
-    if not scenario.startswith("remote_"):
-        headers["x-rigplane-station-owner"] = OWNER_TOKEN
     if scenario == "remote_controller_detach":
         headers["x-rigplane-controller"] = "0" * 64
     remote_peer = scenario in {"remote_force_off", "remote_detach"}
@@ -307,14 +300,12 @@ async def test_detach_force_off_during_first_serial_open(
         return asyncio.StreamReader(), wire
 
     monkeypatch.setattr(serial_open, "_open_with_idle_lines", open_port)
-    radio = backend(device=str(tmp_path / "missing-test-port"))
-    composition = ManagedTxComposition(
-        RecordingActuator(), config_path=tmp_path / "managed-tx.json"
-    )
+    device = str(tmp_path / "missing-test-port")
+    config_path = tmp_path / "managed-tx.json"
+    radio = backend(device=device)
+    composition = ManagedTxComposition(RecordingActuator(), config_path=config_path)
     install_managed_tx_composition(radio, composition)
-    server = WebServer(
-        radio, WebConfig(host="127.0.0.1", port=0, station_owner_token=OWNER_TOKEN)
-    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     attach_managed_tx_composition(server, composition)
     await composition.bind_state_store(server.command_state_store)
     reopen = (
@@ -348,7 +339,7 @@ async def test_detach_force_off_during_first_serial_open(
         )
         reader, headers = _reader({"operation": "force_off"})
         headers["x-rigplane-release-for-detach"] = "1"
-        headers["x-rigplane-station-owner"] = OWNER_TOKEN
+        # A separate loopback client sends a stray detach header during Connect.
         writer = _Writer()
         await server._handle_http(
             writer,  # type: ignore[arg-type]
@@ -385,6 +376,24 @@ async def test_detach_force_off_during_first_serial_open(
         termination = asyncio.Event()
         termination.set()
         await composition.shutdown(termination)
+
+    if retry_state == "idle":
+        fresh_radio = backend(device=device)
+        fresh_composition = ManagedTxComposition(
+            RecordingActuator(), config_path=config_path
+        )
+        install_managed_tx_composition(fresh_radio, fresh_composition)
+        finish_open.set()
+        connect = asyncio.create_task(fresh_radio.connect())
+        try:
+            await clock.elapse(0)
+            assert port_opened.is_set()
+            assert fresh_radio.control_connected is True
+        finally:
+            connect.cancel()
+            await asyncio.gather(connect, return_exceptions=True)
+            await fresh_radio.disconnect()
+            await fresh_composition.shutdown(termination)
 
 
 @pytest.mark.asyncio

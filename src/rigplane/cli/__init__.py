@@ -4844,9 +4844,6 @@ async def _cmd_web(
     managed_runtime = getattr(args, "managed_runtime", False)
     if managed_runtime:
         config_kwargs["emit_startup_event"] = True
-        config_kwargs["station_owner_token"] = os.environ.get(
-            "RIGPLANE_STATION_OWNER_TOKEN", ""
-        )
 
     tls_cert = getattr(args, "tls_cert", "")
     tls_key = getattr(args, "tls_key", "")

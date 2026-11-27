@@ -64,10 +64,6 @@ loopback upstream and HTTPS to your browser. Say the proxy serves
 `https://station.example` (a fictional name; use your own) and forwards to
 `http://127.0.0.1:8080` on the station machine.
 
-The station-owner credential for [managed transmit detach](../api/web.md#stable-supervisor-endpoints)
-belongs to the local supervisor. Keep it out of reverse-proxy configuration
-and browser requests. Proxied clients can still send ordinary `force_off`.
-
 The browser then sends `Origin: https://station.example`, which is neither
 same-origin with RigPlane's own HTTP upstream nor a local name. Pass it
 explicitly:
