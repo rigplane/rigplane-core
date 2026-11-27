@@ -155,7 +155,10 @@ describe('MobileRadioLayout refused-fields line (MOR-4828)', () => {
     const row = legacy.data.fieldStatus.micGain;
     delete row.messageKey;
     delete row.messageParams;
-    socket.simulateMessage(JSON.stringify({ type: 'state_update', data: legacy.data }));
+    // The envelope stays intact: ws-client only accepts a full/delta
+    // envelope (type + stateContractVersion + providerGeneration), so the
+    // legacy row must travel inside it, not as the bare inner state.
+    socket.simulateMessage(JSON.stringify({ type: 'state_update', data: legacy }));
     flushSync();
     expect(phone.querySelector('[data-testid="refused-fields-line"]')!.textContent).toBe(EN_REFUSED);
   });
