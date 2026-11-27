@@ -1684,14 +1684,14 @@ def _build_public_state_payload_from_dict(
         stored_ready if isinstance(stored_ready, bool) else radio_ready(radio)
     )
     runtime_control_connected = (
-        getattr(radio, "control_connected", False) if radio else False
+        getattr(radio, "control_connected", None) if radio else None
     )
     raw_control_connected = state.get("control_connected")
     state["control_connected"] = (
-        raw_control_connected
-        if isinstance(raw_control_connected, bool)
-        else runtime_control_connected
+        runtime_control_connected
         if isinstance(runtime_control_connected, bool)
+        else raw_control_connected
+        if isinstance(raw_control_connected, bool)
         else False
     )
     state["revision"] = revision

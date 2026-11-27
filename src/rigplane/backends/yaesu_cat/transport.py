@@ -235,7 +235,7 @@ class YaesuCatTransport:
 
     @property
     def connected(self) -> bool:
-        return self.io_available and not self._link_health.io_failed
+        return self.io_available and self._link_health.responding
 
     @property
     def io_available(self) -> bool:
@@ -654,6 +654,14 @@ class YaesuCatTransport:
                 try:
                     response = await self.readline(timeout=timeout)
                 except CatTimeoutError as exc:
+                    if response_is_current():
+                        self._link_health.observe_poll(
+                            now=time.monotonic(),
+                            pending=False,
+                            timeout_delta=1,
+                            answer_window=timeout,
+                            watchdog_interval=0.0,
+                        )
                     # Silence after *command* — name it, so a caller counting
                     # unanswered reads (MOR-2757) can name it back.
                     raise CatTimeoutError(str(exc), command=command) from exc
