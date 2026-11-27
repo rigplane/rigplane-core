@@ -15,7 +15,7 @@ from rigplane.core.acquisition_scheduler import (
     DeclaredReadFailure,
     resolve_available_when,
 )
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CatReplyValidationError, CommandError
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
@@ -1543,43 +1543,39 @@ class YaesuObservationAdapter:
                 cn_routes += ((_SUB_TONE_FREQ, _SUB_TSQL_FREQ, 1, "sub"),)
             for tone_path, tsql_path, receiver, label in cn_routes:
 
-                async def _remake_tone_index() -> int:
-                    return await self.radio.read_ctcss_tone_index(receiver)
+                async def _remake_tone_centihz() -> int:
+                    # MOR-4828: the domain mapping runs INSIDE the shared
+                    # parse-failure contract, so an out-of-range index the
+                    # radio reports marks the field unavailable with a
+                    # reason (and recovers on the next valid reply) exactly
+                    # like a malformed frame — no second mechanism.
+                    return _ctcss_index_to_centihz(
+                        await self.radio.read_ctcss_tone_index(receiver),
+                        domain=self.radio.profile.ctcss_tones_centihz,
+                    )
 
-                ok, tone_index = await self._safe_read(
+                ok, tone_centihz = await self._safe_read(
                     f"{label}.ctcss_tone_index",
-                    _remake_tone_index,
+                    _remake_tone_centihz,
                     paths=(tone_path, tsql_path),
                 )
-                if ok and tone_index is not None:
-                    try:
-                        tone_centihz = _ctcss_index_to_centihz(
-                            tone_index,
-                            domain=self.radio.profile.ctcss_tones_centihz,
-                        )
-                    except ValueError as exc:
-                        logger.warning(
-                            "Skipping CTCSS observations for invalid profile domain: %s",
-                            exc,
-                        )
-                        tone_centihz = None
-                    if tone_centihz is not None:
-                        if self._can_poll(tone_path):
-                            observations.append(
-                                adapter.observation(
-                                    tone_path,
-                                    tone_centihz,
-                                    native_id="read_ctcss_tone_index",
-                                )
+                if ok and tone_centihz is not None:
+                    if self._can_poll(tone_path):
+                        observations.append(
+                            adapter.observation(
+                                tone_path,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
                             )
-                        if self._can_poll(tsql_path):
-                            observations.append(
-                                adapter.observation(
-                                    tsql_path,
-                                    tone_centihz,
-                                    native_id="read_ctcss_tone_index",
-                                )
+                        )
+                    if self._can_poll(tsql_path):
+                        observations.append(
+                            adapter.observation(
+                                tsql_path,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
                             )
+                        )
         # Repeater shift direction (MOR-2111/MOR-2160). OS0 and OS1 are read
         # independently so one side's malformed/rejected answer never hides
         # or relabels the other side. P2 is already the neutral 0-3 value.
@@ -1994,9 +1990,20 @@ class YaesuObservationAdapter:
             if contain_timeout:
                 return False, None
             raise
-        except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
+        except (
+            CatParseError,
+            CatFormatError,
+            CatReplyValidationError,
+            ValueError,
+            KeyError,
+        ) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
+            # CatReplyValidationError (MOR-4828) is a CommandError subclass for
+            # replies that parsed but are semantically invalid (bad enum code,
+            # receiver mismatch): the same field-level contract as a malformed
+            # frame. Transport/connection failures are never CommandError here
+            # (RadioConnectionError/CatTransportError), so they still propagate.
             if not self._record_declared_failure(label, exc, paths):
                 self._log_field_skip(
                     label, "Skipping field %s — malformed CAT response: %s", exc
@@ -2019,7 +2026,13 @@ class YaesuObservationAdapter:
                         retry_exc,
                     )
                 return False, None
-            except (CatParseError, CatFormatError, ValueError, KeyError) as retry_exc:
+            except (
+                CatParseError,
+                CatFormatError,
+                CatReplyValidationError,
+                ValueError,
+                KeyError,
+            ) as retry_exc:
                 if not self._record_declared_failure(label, retry_exc, paths):
                     self._log_field_skip(
                         label,

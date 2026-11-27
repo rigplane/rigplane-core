@@ -1436,8 +1436,14 @@ appends only the failure category, and `reason` carries the same category
 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster._notify_relay_start_failure`).
 The category is one of the publishable `AudioStartFailureReason` values
 (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
-`open_timeout`, `device_in_use`, `format`, `other`) classified by
-`src/rigplane/audio/usb_driver.py: audio_start_failure_reason`. Exception text
+`open_timeout`, `device_in_use`, `format`, `radio_not_connected`, `other`)
+classified by `src/rigplane/audio/usb_driver.py: audio_start_failure_reason`.
+`radio_not_connected` replaces `other` when Core already knows the control
+link is not connected/answering (the connect-time identity hold owns the
+radio — e.g. a powered-off rig whose serial port is open but whose identity
+read never answered); it is assigned by the shared RX admission
+(`AudioBroadcaster._start_relay`), never per radio. Receivers must tolerate
+unknown categories with the generic failure handling. Exception text
 is never sent, so the frame is safe to show a remote client (the one deliberate detail is `holder`, the executable file name of the program holding the radio's audio input, present only with `device_in_use` and only when it could be found); the same category
 appears under `audioReceive.failure.reason` in `GET /api/v1/info`.
 

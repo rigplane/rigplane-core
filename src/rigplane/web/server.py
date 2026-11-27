@@ -105,6 +105,7 @@ from ..runtime.controller_authority import (
 from ..runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 from ..runtime.managed_tx_composition import ManagedTxComposition
 from ..runtime.managed_tx_state import (
+    ManagedTxActuationRefused,
     ManagedTxIntentKind,
     ManagedTxRefusalReason,
     submission_refusal_reason,
@@ -6044,6 +6045,8 @@ class WebServer:
                 # The queue reports a refused or no-longer-current transmit_on
                 # (another owner holds TX, MOR-3534) as a command error.
                 submission = None
+                if isinstance(exc, ManagedTxActuationRefused):
+                    refusal_reason = exc.reason
                 if (
                     type(exc) is CommandError
                     and str(exc) == POSITIVE_TX_ADMISSION_REJECTED

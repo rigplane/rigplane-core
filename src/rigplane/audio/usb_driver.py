@@ -189,6 +189,7 @@ AudioStartFailureReason = Literal[
     "open_timeout",
     "device_in_use",
     "format",
+    "radio_not_connected",
     "other",
 ]
 
