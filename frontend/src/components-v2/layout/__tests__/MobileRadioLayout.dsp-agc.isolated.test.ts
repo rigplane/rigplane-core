@@ -21,18 +21,19 @@
  * `src/rigplane/web/handlers/control.py`) and the next state envelope come
  * back, and the lit key moves only when that envelope arrives.
  *
- * Named `*.isolated.test.ts`: it mocks `http-client` and needs a fresh
- * module graph per test, so the components and the stores share one graph.
+ * Named `*.isolated.test.ts`: it mocks `http-client`. Components and stores
+ * share one module graph for this file; each session resets its store state.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll, afterEach } from 'vitest';
 import { validateCapabilities, type Capabilities } from '$lib/types/capabilities';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import type { ServerState } from '$lib/types/state';
 import goldenFile from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
+import * as phoneModule from '../MobileRadioLayout.svelte';
+import * as desktopAgcModule from '../../panels/AgcPanel.svelte';
 
-// A plain function, not a compiled stub: a mock factory's result outlives
-// `vi.resetModules()`, and a compiled component would keep the first test's
-// Svelte runtime.
+vi.hoisted(() => { vi.useFakeTimers(); });
+
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('lucide-svelte', () => {
   const S = function () { return {}; };
@@ -136,7 +137,7 @@ interface Session {
 
 let loadedWsClient: typeof import('$lib/transport/ws-client') | null = null;
 let originalWebSocket: typeof WebSocket;
-let mounted: (() => void)[] = [];
+let mounted: (() => Promise<void>)[] = [];
 
 /** Bring one radio up through the production path: capabilities into the
  *  store, the socket open, the first state envelope delivered. */
@@ -147,8 +148,6 @@ async function connectRadio(caps: Capabilities, envelope: Envelope): Promise<Ses
   const store = await import('$lib/stores/radio.svelte');
   const capabilities = await import('$lib/stores/capabilities.svelte');
   const { resetCommandLifecycle } = await import('$lib/stores/commands.svelte');
-  // `svelte` joins the post-reset module graph too: a component compiled
-  // against one runtime instance must be mounted by the same one.
   const { mount, unmount, flushSync } = await import('svelte');
   const { ManagedAppTxHarness } = await import(
     '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness');
@@ -185,11 +184,13 @@ async function connectRadio(caps: Capabilities, envelope: Envelope): Promise<Ses
 }
 
 const loadPhone = () => import('../MobileRadioLayout.svelte');
+afterAll(() => { vi.useRealTimers(); });
 /** The desktop control: the sidebar's own `AgcPanel`, mounted bare. */
-const loadDesktopAgc = () => import('../../panels/AgcPanel.svelte');
+const loadDesktopAgc = async () => desktopAgcModule;
 
 /** Mount the phone layout in portrait and open its DSP tab. */
 async function openPhoneDspTab(session: Session): Promise<HTMLElement> {
+  expect(await loadPhone()).toBe(phoneModule);
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 390 });
   Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 844 });
   const root = await session.mount(loadPhone);
@@ -230,17 +231,22 @@ beforeEach(() => {
   originalWebSocket = globalThis.WebSocket;
   // @ts-expect-error install the mock as the global WebSocket constructor
   globalThis.WebSocket = MockWebSocket;
-  vi.resetModules();
 });
 
-afterEach(() => {
-  for (const unmountComponent of mounted) unmountComponent();
+afterEach(async () => {
+  for (const unmountComponent of mounted) await unmountComponent();
   while (document.body.firstChild) document.body.removeChild(document.body.firstChild);
   loadedWsClient?.disconnect();
   loadedWsClient = null;
+  const { resetRadioState } = await import('$lib/stores/radio.svelte');
+  const { clearCapabilities } = await import('$lib/stores/capabilities.svelte');
+  const { resetCommandLifecycle } = await import('$lib/stores/commands.svelte');
+  resetRadioState();
+  clearCapabilities();
+  resetCommandLifecycle();
+  txHost.current = undefined;
   globalThis.WebSocket = originalWebSocket;
   vi.restoreAllMocks();
-  vi.resetModules();
 });
 
 describe('phone DSP tab AGC choice (MOR-4528)', () => {
