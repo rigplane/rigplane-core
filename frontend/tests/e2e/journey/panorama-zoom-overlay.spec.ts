@@ -3,6 +3,7 @@ import { journeyPort, startJourneyServer } from './server-process';
 import { expectFollowWindowOnVfo, settlePassband, watchScopeFrames } from './panorama-passband-probe';
 import { expectPanoramaClean, watchPanoramaErrors } from './panorama-guards';
 import { readScopeWriteReceipts } from './panorama-receipt';
+import { openPanorama } from './panorama-ready';
 
 /**
  * MOR-4386: the panorama zoom cluster ([-] [+] over [S] [B], bottom-right of
@@ -19,7 +20,7 @@ async function boot(page: import('@playwright/test').Page, info: import('@playwr
   const server = await startJourneyServer(PORT, 7_200_000,
     ['--model', 'IC-705', '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
   const frames = watchScopeFrames(page);
-  await page.goto(`http://127.0.0.1:${PORT}/?ui=v2`);
+  await openPanorama(page, `http://127.0.0.1:${PORT}/?ui=v2`);
   await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
   await settlePassband(page, PORT);
   return { server, frames };
@@ -89,7 +90,7 @@ test('IC-7610: the lit B key returns a pinned band to follow and writes CTR, and
   const radioFreq = async () => ((await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as
     { main: { freqHz: number } }).main.freqHz;
   try {
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     await settlePassband(page, port);
     const bandKey = page.getByTestId('scope-zoom-band').first();

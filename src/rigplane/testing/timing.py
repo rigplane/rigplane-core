@@ -36,17 +36,17 @@ the runtime path imports it: ``import rigplane`` must not load ``rigplane.testin
   stay the real functions and every other loop or thread keeps real time
   (``tests/testkit/test_timing.py`` pins it). Never patch them process-wide.
 * :func:`wait_until` / :func:`await_until` wait for a REAL event (child process,
-  socket, worker thread) against the real clock with one bound. They also work on a
-  loop that carries a virtual clock (the virtual clock does not move while they wait).
+  socket, worker thread). Polling never advances an installed :class:`VirtualClock`.
+  Deadlines use real time unless the caller passes ``clock=`` explicitly
+  (``tests/testkit/test_timing.py``).
 
 Inside a :func:`virtual_clock` test, ``run_in_executor`` / ``asyncio.to_thread`` run
 inline on the loop thread, so a thread hop cannot make the order depend on
 scheduling (switch it off with ``inline_threads=False``).
 
 Real I/O on a virtual loop: ``elapse`` settles the loop's own callbacks, not bytes
-still in the kernel. Wait for the event that proves a socket round trip happened
-(``await_until``, an ``asyncio.Event``) before advancing time past the timer that
-depends on it.
+still in the kernel. Wait for the delivery condition with ``await_until`` before
+advancing time past the timer that depends on it.
 
 Example::
 
@@ -408,26 +408,66 @@ def virtual_clock(
     return decorate if test is None else decorate(test)
 
 
+def _wait_clock(clock: VirtualClock | None, interval: float) -> Clock:
+    if clock is not None:
+        if not isfinite(interval) or interval <= 0:
+            raise ValueError("virtual wait interval must be finite and positive")
+        return clock
+    return time.monotonic
+
+
+async def _real_poll_delay(delay: float) -> None:
+    """Park on real time without adding a timer to the virtual loop."""
+    loop = asyncio.get_event_loop()
+    ready: asyncio.Future[None] = loop.create_future()
+
+    def wake() -> None:
+        if not ready.done():
+            ready.set_result(None)
+
+    timer = threading.Timer(delay, loop.call_soon_threadsafe, args=(wake,))
+    timer.daemon = True
+    timer.start()
+    try:
+        await ready
+    finally:
+        timer.cancel()
+        timer.join()
+
+
 def wait_until(
     condition: Callable[[], T],
     timeout: float = 5.0,
     *,
     interval: float = 0.01,
     description: str = "the condition",
+    clock: VirtualClock | None = None,
 ) -> T:
-    """Block until ``condition()`` is truthy and return its value (REAL time).
+    """Block until ``condition()`` is truthy and return its value.
 
     For an event that really happens elsewhere (child process, socket, worker
     thread). Fails with an ``AssertionError`` naming ``description`` when the
     ``timeout`` runs out. Give the timeout generously: it is a bound for a
     stuck run, not the expected wait.
+
+    The default deadline uses real monotonic time, including on a virtual loop.
+    Pass ``clock=`` to measure the bound only in virtual time; the caller must
+    advance that clock. Polling never advances it. An opt-in wait requires a
+    finite, positive ``interval``. This synchronous form sleeps in real time and
+    cannot run loop callbacks; use :func:`await_until` for loop-delivered events.
     """
-    deadline = time.monotonic() + timeout
+    now = _wait_clock(clock, interval)
+    deadline = now() + timeout
     while True:
         value = condition()
         if value:
             return value
-        if time.monotonic() >= deadline:
+        if now() >= deadline:
+            if clock is not None:
+                raise AssertionError(
+                    f"condition not met after {timeout}s of virtual time waiting for "
+                    f"{description}; virtual clock not advanced?"
+                )
             raise AssertionError(
                 f"timed out after {timeout}s waiting for {description}"
             )
@@ -440,24 +480,35 @@ async def await_until(
     *,
     interval: float = 0.01,
     description: str = "the condition",
+    clock: VirtualClock | None = None,
 ) -> T:
-    """:func:`wait_until` for async tests: polls on the loop, in REAL time.
+    """:func:`wait_until` for async tests, including loop callbacks.
 
-    On a loop that carries a :class:`VirtualClock` the pause is a short blocking
-    sleep plus a bare loop turn (so thread and socket callbacks still run); the
-    virtual clock does not move.
+    Defaults retain real deadlines. On a virtual loop the default pause is a
+    short blocking sleep plus a bare loop turn so I/O callbacks still run.
+    With explicit ``clock=``, real poll timers let a concurrent ``clock.elapse()``
+    settle the loop without the waiter spinning. Only that clock bounds the wait;
+    pair opt-in tests with a real-time watchdog, as for :class:`VirtualClock`.
     """
     virtual = isinstance(asyncio.get_running_loop().time, VirtualClock)
-    deadline = time.monotonic() + timeout
+    now = _wait_clock(clock, interval)
+    deadline = now() + timeout
     while True:
         value = condition()
         if value:
             return value
-        if time.monotonic() >= deadline:
+        if now() >= deadline:
+            if clock is not None:
+                raise AssertionError(
+                    f"condition not met after {timeout}s of virtual time waiting for "
+                    f"{description}; virtual clock not advanced?"
+                )
             raise AssertionError(
                 f"timed out after {timeout}s waiting for {description}"
             )
-        if virtual:
+        if clock is not None:
+            await _real_poll_delay(interval)
+        elif virtual:
             time.sleep(interval)
             await asyncio.sleep(0)
         else:

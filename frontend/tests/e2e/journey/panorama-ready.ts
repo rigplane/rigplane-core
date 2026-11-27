@@ -1,5 +1,34 @@
 import type { Page } from '@playwright/test';
 
+interface PanoramaWork { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
+declare global { interface Window { panoramaWork: PanoramaWork } }
+
+export async function installPanoramaWorkProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const work: PanoramaWork = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
+    window.panoramaWork = work;
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = callback => raf(time => {
+      const start = performance.now(); work.raf++;
+      try { callback(time); } finally { work.rafMs += performance.now() - start; }
+    });
+    const gl = WebGL2RenderingContext.prototype;
+    const texture = gl.texImage2D, draw = gl.drawArrays;
+    gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+      work.texture++; return Reflect.apply(texture, this, args);
+    } as typeof gl.texImage2D;
+    gl.drawArrays = function (...args) { work.draw++; return Reflect.apply(draw, this, args); };
+    const paint = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (...args) {
+      if (/^\d+\.\d{3}$/.test(args[0])) {
+        if (args[1] === 20) work.labels = [];
+        work.labels.push(args[0]);
+      }
+      work.static++; return Reflect.apply(paint, this, args);
+    };
+  });
+}
+
 /**
  * MOR-4214: when a panorama journey may first touch the page.
  *
@@ -73,10 +102,13 @@ export async function drainAfterFirstDraw(
   win: GlDrainWindow = window as unknown as GlDrainWindow,
   nextFrame: () => Promise<void> = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
 ): Promise<void> {
-  while ((win.__journeyGlDraws ?? 0) === 0) await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
+  if (win.__journeyGlDraws === undefined || win.__journeyGlContexts === undefined) {
+    throw new Error('Panorama WebGL probe is not installed; navigate with openPanorama(page, url)');
+  }
+  while (win.__journeyGlDraws === 0) await nextFrame();
+  for (const context of win.__journeyGlContexts) context.finish();
   await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
+  for (const context of win.__journeyGlContexts) context.finish();
 }
 
 /** Resolves once the page has submitted its first draw and the GPU queue is empty. */
@@ -89,5 +121,36 @@ export async function awaitRenderPipeline(page: Page): Promise<void> {
 export async function openPanorama(page: Page, url: string): Promise<void> {
   await trackWebglContexts(page);
   await page.goto(url);
+  await awaitRenderPipeline(page);
+}
+
+/** Drain render work on both sides of an action without extending its action budget. */
+export async function clickPanorama(page: Page, control: import('@playwright/test').Locator): Promise<void> {
+  await awaitRenderPipeline(page);
+  await control.click({ timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}
+
+export async function reloadPanorama(page: Page): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.reload({ waitUntil: 'commit', timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}
+
+/** Measurement duration, not a substitute for a readiness condition. */
+export async function observePanorama(page: Page, durationMs: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(({ start, duration }) => performance.now() - start >= duration,
+    { start: await page.evaluate(() => performance.now()), duration: durationMs },
+    { polling: 100, timeout: 0 });
+  await awaitRenderPipeline(page);
+}
+
+export async function expectPanoramaFrequency(page: Page, freqHz: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(expected => {
+    const readout = document.querySelector<HTMLElement>('.receiver-instrument [data-vfo-freq]');
+    return readout !== null && Number(readout.innerText.replace(/\D/g, '')) === expected;
+  }, freqHz, { timeout: 10_000 });
   await awaitRenderPipeline(page);
 }
