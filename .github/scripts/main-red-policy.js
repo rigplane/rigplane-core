@@ -1,15 +1,10 @@
 'use strict';
-const {createHash} = require('node:crypto');
 
 const RED = new Set(['failure', 'timed_out', 'startup_failure', 'action_required', 'cancelled']);
 const EVENTS = new Set(['push', 'schedule', 'workflow_dispatch']);
-const PATHS = new Set(['.github/workflows/full.yml', '.github/workflows/quick.yml', '.github/workflows/pytest.yml', '.github/workflows/onboarding-workflow-tests.yml']);
-const eligible = run => run.head_branch === 'main' && EVENTS.has(run.event);
+const PATHS = new Set(['.github/workflows/full.yml', '.github/workflows/quick.yml']);
+const eligible = run => run.head_branch === 'main' && run.status === 'completed' && EVENTS.has(run.event);
 const marker = value => `<!-- main-red:${value} -->`;
-function identifier(value) {
-  const hex = createHash('sha256').update(`rigplane-main-red:${value}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
 
 function extractFailures(log) {
   const ids = new Set();
@@ -46,155 +41,115 @@ function introducingMerge(sha, pulls) {
   return matches[0];
 }
 
-async function publish(linear, input, dryRun = false) {
-  const issue = await linear.find(input.key);
-  const event = marker(input.eventKey);
-  if (issue && (issue.description.includes(event) || issue.comments.some(comment => comment.body.includes(event)))) return {action: 'duplicate'};
+async function publish(issues, input, dryRun = false) {
+  const issue = await issues.find(input.key);
   if (!issue && input.recovered) return {action: 'no-incident'};
-  const action = issue ? 'comment' : 'create';
+  if (issue?.state === 'closed') return {action: 'resolved'};
+  const event = marker(input.eventKey);
+  const duplicate = issue && [issue.body, ...issue.comments.map(comment => comment.body)].some(body => body?.includes(event));
+  if (duplicate && !input.recovered) return {action: 'duplicate'};
+  const action = input.recovered ? 'close' : issue ? 'comment' : 'create';
   if (!dryRun) {
-    if (issue) await linear.comment(issue.id, `${event}\n${input.body}`, input.eventKey);
-    else await linear.create({...input, body: `${marker(input.key)}\n${event}\n${input.body}`});
+    if (!issue) await issues.create({...input, body: `${marker(input.key)}\n${event}\n${input.body}`});
+    else {
+      if (!duplicate) await issues.comment(issue.number, `${event}\n${input.body}`);
+      if (input.recovered) await issues.close(issue.number);
+    }
   }
   return {action};
 }
 
-function linearClient(fetch, token, team, title, owners) {
-  async function query(queryText, variables) {
-    const response = await fetch('https://api.linear.app/graphql', {
-      method: 'POST', headers: {'Content-Type': 'application/json', Authorization: token},
-      body: JSON.stringify({query: queryText, variables}), signal: AbortSignal.timeout(30000),
-    });
-    if (!response.ok) throw new Error(`Linear HTTP ${response.status}`);
-    const result = await response.json();
-    if (result.errors?.length || !result.data) throw new Error('Linear GraphQL request failed');
-    return result.data;
-  }
-  async function pages(queryText, variables, select) {
-    const nodes = [];
-    let after = null;
-    do {
-      const page = select(await query(queryText, {...variables, after}));
-      nodes.push(...page.nodes);
-      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
-    } while (after);
-    return nodes;
-  }
-  const issues = () => pages(`query($team: ID!, $title: String!, $after: String) {
-    issues(filter: {team: {id: {eq: $team}}, title: {contains: $title}}, includeArchived: true, first: 100, after: $after) {
-      nodes {id description} pageInfo {hasNextPage endCursor}
-    }
-  }`, {team, title}, data => data.issues);
+function githubIssuesClient(github, repo) {
+  const issues = async () => (await github.paginate(github.rest.issues.listForRepo, {
+    ...repo, labels: 'main-red', state: 'all', per_page: 100,
+  })).filter(issue => !issue.pull_request);
   async function comments(issue) {
     if (!issue) return null;
-    return {...issue, description: issue.description || '', comments: await pages(`query($id: String!, $after: String) {
-      issue(id: $id) {comments(first: 100, after: $after) {nodes {body} pageInfo {hasNextPage endCursor}}}
-    }`, {id: issue.id}, data => data.issue.comments)};
-  }
-  async function comment(issueId, body, eventKey) {
-    try {
-      const data = await query(`mutation($input: CommentCreateInput!) {commentCreate(input: $input) {success}}`, {
-        input: {id: identifier(eventKey), issueId, body},
-      });
-      if (!data.commentCreate.success) throw new Error('Linear comment creation failed');
-    } catch (error) {
-      const existing = await comments({id: issueId});
-      if (!existing.comments.some(item => item.body.includes(marker(eventKey)))) throw error;
-    }
+    return {...issue, comments: await github.paginate(github.rest.issues.listComments, {
+      ...repo, issue_number: issue.number, per_page: 100,
+    })};
   }
   return {
-    find: async key => comments((await issues()).find(issue => issue.description?.includes(marker(key)))),
+    find: async key => comments((await issues()).find(issue => issue.body?.includes(marker(key)))),
     findRun: async id => {
       for (const issue of await issues()) {
         const full = await comments(issue);
-        if ([full.description, ...full.comments.map(comment => comment.body)].some(body => body.includes(`main-red:run-${id}-attempt-`))) return full;
+        if ([full.body, ...full.comments.map(comment => comment.body)].some(body => body?.includes(`<!-- main-red:run-${id}-attempt-`))) return full;
       }
       return null;
     },
     create: async input => {
-      const assigneeId = owners[input.owner];
-      if (!assigneeId) throw new Error(`No Linear assignee mapping for GitHub author ${input.owner}`);
-      const id = identifier(input.key);
-      try {
-        const data = await query(`mutation($input: IssueCreateInput!) {issueCreate(input: $input) {success issue {id}}}`, {
-          input: {id, teamId: team, assigneeId, priority: 1, title: input.title, description: input.body},
-        });
-        if (!data.issueCreate.success || !data.issueCreate.issue?.id) throw new Error('Linear issue creation failed');
-      } catch (error) {
-        const existing = (await query(`query($id: String!) {issue(id: $id) {id description}}`, {id})).issue;
-        if (!existing) throw error;
-        if (!existing.description?.includes(marker(input.eventKey))) await comment(id, `${marker(input.eventKey)}\n${input.body}`, input.eventKey);
+      try { await github.rest.issues.getLabel({...repo, name: 'main-red'}); }
+      catch (error) {
+        if (error.status !== 404) throw error;
+        await github.rest.issues.createLabel({...repo, name: 'main-red', color: 'b60205'});
       }
+      await github.rest.issues.create({...repo, title: input.title, labels: ['main-red'], body: input.body});
     },
-    comment,
+    comment: (number, body) => github.rest.issues.createComment({...repo, issue_number: number, body}),
+    close: number => github.rest.issues.update({...repo, issue_number: number, state: 'closed', state_reason: 'completed'}),
   };
 }
 
-async function run({github, context, core, env = process.env, fetch = globalThis.fetch}) {
+async function run({github, context, core, env = process.env}) {
   const repo = context.repo;
   const current = context.payload.workflow_run || (await github.rest.actions.getWorkflowRun({...repo, run_id: Number(env.MAIN_RED_RUN_ID)})).data;
   if (!eligible(current) || !PATHS.has(current.path?.split('@')[0]) || current.head_repository?.full_name !== `${repo.owner}/${repo.repo}`) {
-    core.info('Not an observed main workflow'); return;
+    core.info('Not an observed completed main workflow'); return;
   }
-  const macos = current.path.split('@')[0].endsWith('/onboarding-workflow-tests.yml');
-  const jobsCache = new Map();
-  async function jobs(run) {
-    if (!jobsCache.has(run.id)) jobsCache.set(run.id, await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
-      ...repo, run_id: run.id, attempt_number: run.run_attempt || 1, per_page: 100,
-    }));
-    return jobsCache.get(run.id).filter(job => !macos || job.name === 'browser-webkit-macos');
-  }
-  async function observe(run) {
-    if (!macos) return run;
-    const selected = await jobs(run);
-    if (!selected.length || selected.every(job => job.conclusion === 'skipped')) return {...run, conclusion: 'skipped'};
-    return {...run, conclusion: selected.every(job => job.conclusion === 'success') ? 'success' : 'failure'};
-  }
-  const observed = await observe(current);
-  if (!RED.has(observed.conclusion) && observed.conclusion !== 'success') return;
+  if (!RED.has(current.conclusion) && current.conclusion !== 'success') return;
   const history = [];
+  let newerGreen = null;
   for await (const response of github.paginate.iterator(github.rest.actions.listWorkflowRuns, {
     ...repo, workflow_id: current.workflow_id, branch: 'main', status: 'completed', per_page: 100,
   })) {
     for (const candidate of [...response.data.workflow_runs].sort((a, b) => b.run_number - a.run_number)) {
-      if (!eligible(candidate) || candidate.run_number >= current.run_number) continue;
-      const past = await observe(candidate);
-      history.push(past);
-      if (past.conclusion === 'success') break;
+      if (!eligible(candidate)) continue;
+      if (candidate.run_number > current.run_number && candidate.conclusion === 'success') newerGreen = candidate;
+      if (candidate.run_number >= current.run_number) continue;
+      history.push(candidate);
+      if (candidate.conclusion === 'success') break;
     }
     if (history.some(past => past.conclusion === 'success')) break;
   }
   const channel = `${repo.owner}/${repo.repo}/${current.workflow_id}`;
   const title = `Main red [${channel}]`;
-  if (!env.LINEAR_API_KEY || !env.MAIN_RED_LINEAR_TEAM_ID) throw new Error('Configure the existing Linear secret name and team ID before activation');
-  const linear = linearClient(fetch, env.LINEAR_API_KEY, env.MAIN_RED_LINEAR_TEAM_ID, title, JSON.parse(env.MAIN_RED_OWNER_MAP || '{}'));
-  const recovered = observed.conclusion === 'success';
-  const eventKey = `run-${current.id}-attempt-${current.run_attempt || 1}`;
-  let episode = findEpisode(observed, history);
-  if (!episode && recovered) {
-    const issue = await linear.findRun(current.id);
+  const issues = githubIssuesClient(github, repo);
+  const recovery = current.conclusion === 'success' ? current : newerGreen;
+  const eventRun = recovery || current;
+  const eventKey = `run-${eventRun.id}-attempt-${eventRun.run_attempt || 1}`;
+  const dryRun = env.MAIN_RED_DRY_RUN === 'true';
+  const episode = findEpisode(current, history);
+  if (!episode && recovery) {
+    const issue = await issues.findRun(current.id);
     if (issue) {
-      const key = /<!-- main-red:(episode:[^ ]+) -->/u.exec(issue.description)?.[1];
+      const key = /<!-- main-red:(episode:[^ ]+) -->/u.exec(issue.body)?.[1];
       if (!key) throw new Error('Incident has no episode marker');
-      const result = await publish(linear, {key, eventKey, recovered, body: `Green rerun: ${current.html_url}\nTicket remains open.`}, env.MAIN_RED_DRY_RUN === 'true');
-      core.info(result.action);
+      const result = await publish(issues, {key, eventKey, recovered: true, body: `Green rerun: ${recovery.html_url}`}, dryRun);
+      core.info(JSON.stringify({...result, key, dryRun}));
     }
     return;
   }
   if (!episode) return;
   const key = `episode:${channel}:green-${episode.green?.id || 'none'}`;
   const first = episode.firstRed;
-  const details = [`${recovered ? 'Green; ticket remains open.' : 'Main is red.'}\nRun: ${current.html_url}`, `First red SHA: ${first.head_sha}`];
-  let owner;
-  if (!recovered) {
+  const details = recovery ? [`Green main run: ${recovery.html_url}`]
+    : [`Main is red.\nRun: ${current.html_url}`, `First red SHA: ${first.head_sha}`];
+  let author;
+  if (!recovery) {
     const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {...repo, commit_sha: first.head_sha, per_page: 100});
     const pr = introducingMerge(first.head_sha, pulls);
-    owner = pr.user.login;
-    details.push(`First red merge: #${pr.number} (${first.head_sha}); GitHub lane/author: ${owner}.`,
+    author = pr.user.login;
+    details.push(`First red merge: #${pr.number} (${first.head_sha}); GitHub author: @${author}.`,
       `Last green: ${episode.green ? `${episode.green.html_url || episode.green.id} (${episode.green.head_sha})` : 'not present in available history'}.`,
       'Attribution uses the first red main run; intervening merges require diagnosis.',
       `Target: green in under 4 h; deadline ${new Date(Date.parse(first.updated_at) + 4 * 3600000).toISOString()}.`);
-    for (const job of (await jobs(current)).filter(job => RED.has(job.conclusion))) {
+    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRunAttempt, {
+      ...repo, run_id: current.id, attempt_number: current.run_attempt || 1, per_page: 100,
+    });
+    const failedJobs = jobs.filter(job => RED.has(job.conclusion));
+    if (!failedJobs.length) details.push('Failing tests: no failed-job evidence available; inspect the run.');
+    for (const job of failedJobs) {
       let evidence = {ids: [], assertions: []};
       let unavailable = '';
       try {
@@ -207,8 +162,8 @@ async function run({github, context, core, env = process.env, fetch = globalThis
       details.push(`Job: ${job.name} — ${job.html_url}\nFailed steps: ${failedSteps.join(', ') || 'no step evidence'}\n${unavailable}\nFailing test IDs:\n${evidence.ids.map(id => `- ${id}`).join('\n') || '- No test ID found; inspect the failed step log.'}\n${evidence.assertions.join('\n')}`);
     }
   }
-  const result = await publish(linear, {key, eventKey, title, owner, recovered, body: details.join('\n\n')}, env.MAIN_RED_DRY_RUN === 'true');
-  core.info(JSON.stringify({...result, key, title, owner, run: current.html_url, dryRun: env.MAIN_RED_DRY_RUN === 'true'}));
+  const result = await publish(issues, {key, eventKey, title, recovered: Boolean(recovery), body: details.join('\n\n')}, dryRun);
+  core.info(JSON.stringify({...result, key, title, author, run: eventRun.html_url, dryRun}));
 }
 
-module.exports = {extractFailures, findEpisode, introducingMerge, publish, linearClient, identifier, run};
+module.exports = {extractFailures, findEpisode, introducingMerge, publish, githubIssuesClient, run};

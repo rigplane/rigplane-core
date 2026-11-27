@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: 'Plan the Linear operation without writing'
+        description: 'Plan the GitHub issue operation without writing'
         type: boolean
         default: true
 
@@ -22,11 +22,16 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: main-red-policy-${{ github.event.workflow_run.id || inputs.run_id }}-${{ github.event.workflow_run.run_attempt || github.run_id }}
+  group: main-red-policy-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   report:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: write
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 15
     steps:
@@ -36,9 +41,6 @@ jobs:
           persist-credentials: false
       - uses: actions/github-script@v8
         env:
-          LINEAR_API_KEY: ${{ secrets[vars.MAIN_RED_LINEAR_SECRET] }}
-          MAIN_RED_LINEAR_TEAM_ID: ${{ vars.MAIN_RED_LINEAR_TEAM_ID }}
-          MAIN_RED_OWNER_MAP: ${{ vars.MAIN_RED_OWNER_MAP }}
           MAIN_RED_RUN_ID: ${{ inputs.run_id }}
           MAIN_RED_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
         with:

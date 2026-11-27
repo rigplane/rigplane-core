@@ -6,6 +6,88 @@ const path = require('node:path');
 const policy = require('./main-red-policy.js');
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures/main-red', name), 'utf8');
 const history = () => JSON.parse(fixture('history.json'));
+const repo = {owner: 'example', repo: 'repo'};
+const episodeMarker = '<!-- main-red:episode:example/repo/7:green-11 -->';
+
+function harness({logsFail = false, labelExists = true, failClose = false, dryRun = false, replay = false, issueReadFail = false, noFailedJobs = false} = {}) {
+  let current = {...history()[0], path: '.github/workflows/full.yml', workflow_id: 7, run_attempt: 1,
+    html_url: 'https://github.com/example/repo/actions/runs/13', head_repository: {full_name: 'example/repo'}};
+  let runs = history();
+  const mutations = [];
+  const reads = [];
+  const stored = [];
+  const messages = [];
+  let closeFails = failClose;
+  const issues = {
+    listForRepo: async params => {
+      if (issueReadFail) throw Object.assign(new Error('issue lookup unavailable'), {status: 503});
+      reads.push({method: 'listForRepo', ...params});
+      assert.equal(params.labels, 'main-red');
+      assert.equal(params.state, 'all');
+      return {data: stored.filter(issue => issue.labels.some(label => label.name === params.labels))};
+    },
+    listComments: async params => {
+      reads.push({method: 'listComments', ...params});
+      return {data: stored.find(issue => issue.number === params.issue_number).comments};
+    },
+    getLabel: async () => {
+      if (!labelExists) throw Object.assign(new Error('missing label'), {status: 404});
+      return {data: {name: 'main-red'}};
+    },
+    createLabel: async params => {
+      mutations.push({method: 'createLabel', ...params});
+      labelExists = true;
+      return {data: {name: params.name}};
+    },
+    create: async params => {
+      mutations.push({method: 'create', ...params});
+      const issue = {number: stored.length + 1, state: 'open', body: params.body,
+        labels: params.labels.map(name => ({name})), comments: []};
+      stored.push(issue);
+      return {data: issue};
+    },
+    createComment: async params => {
+      mutations.push({method: 'createComment', ...params});
+      const comment = {body: params.body};
+      stored.find(issue => issue.number === params.issue_number).comments.push(comment);
+      return {data: comment};
+    },
+    update: async params => {
+      if (closeFails) {closeFails = false; throw new Error('close failed');}
+      mutations.push({method: 'update', ...params});
+      const issue = stored.find(item => item.number === params.issue_number);
+      issue.state = params.state;
+      return {data: issue};
+    },
+  };
+  const github = {rest: {issues, actions: {
+    getWorkflowRun: async params => {assert.equal(params.run_id, current.id); return {data: current};},
+    listJobsForWorkflowRunAttempt: 'jobs', listWorkflowRuns: 'runs',
+    downloadJobLogsForWorkflowRun: async () => {
+      if (logsFail) throw Object.assign(new Error('logs expired'), {status: 410});
+      return {data: new TextEncoder().encode(fixture('failure.txt')).buffer};
+    },
+  }, repos: {listPullRequestsAssociatedWithCommit: 'pulls'}}};
+  github.paginate = async (method, params) => {
+    if (method === 'pulls') return [{number: 42, merged_at: '2026-11-26', merge_commit_sha: params.commit_sha,
+      base: {ref: 'main'}, user: {login: 'builder'}}];
+    if (method === 'jobs') return noFailedJobs ? [] : [{id: 99, name: 'test (3.12)', html_url: 'https://github.com/example/repo/actions/runs/13/job/99',
+      conclusion: 'failure', steps: [{name: 'Run tests', conclusion: 'failure'}]}];
+    return (await method(params)).data;
+  };
+  github.paginate.iterator = async function* (_method, params) {
+    assert.equal(params.workflow_id, current.workflow_id);
+    yield {data: {workflow_runs: runs}};
+  };
+  return {
+    mutations, stored, reads, messages,
+    setCurrent: changes => {current = {...current, ...changes};},
+    setHistory: values => {runs = values;},
+    run: () => policy.run({github, context: {repo, payload: replay ? {} : {workflow_run: current}},
+      core: {info: message => messages.push(message)},
+      env: {MAIN_RED_RUN_ID: String(current.id), MAIN_RED_DRY_RUN: String(dryRun)}}),
+  };
+}
 
 test('extracts pytest failures, collection errors and Playwright test ids without duplicates', () => {
   assert.deepEqual(policy.extractFailures(fixture('failure.txt')).ids, [
@@ -22,13 +104,13 @@ test('one episode starts at the first red after a green, independent of API orde
   assert.equal(episode.green.id, 11);
 });
 
-test('green reports the preceding episode without closing it', () => {
+test('green identifies the preceding episode; an earlier green alone has no incident', () => {
   const green = {...history()[0], id: 14, run_number: 14, conclusion: 'success'};
   assert.equal(policy.findEpisode(green, [...history(), green]).firstRed.id, 12);
   assert.equal(policy.findEpisode(history()[2], history()), null);
 });
 
-test('cancelled runs do not become a recovery and PR runs do not create incidents', () => {
+test('cancelled runs remain red and PR runs do not create incidents', () => {
   const runs = history();
   runs.push({...runs[0], id: 14, run_number: 14, conclusion: 'cancelled'});
   assert.equal(policy.findEpisode(runs[0], runs).firstRed.id, 12);
@@ -46,120 +128,208 @@ test('introducing merge must match first red SHA and main, not a later associate
   assert.throws(() => policy.introducingMerge(sha, [{...pr, base: {ref: 'release/1.0.x'}}]), /introducing merge/u);
 });
 
-test('a retried event is a no-op; still red and recovery append comments only', async () => {
-  const existing = {id: 'issue-1', description: 'incident', comments: []};
-  const calls = [];
-  const linear = {
-    find: async () => existing,
-    create: async () => assert.fail('must dedupe'),
-    comment: async (id, body) => { calls.push({id, body}); existing.comments.push({body}); },
-  };
-  const input = {key: 'episode-12', eventKey: 'run-13-attempt-1', title: 'Main red', body: 'Still red'};
-  await policy.publish(linear, input);
-  await policy.publish(linear, input);
-  await policy.publish(linear, {...input, eventKey: 'run-14-attempt-1', body: 'Recovered; ticket remains open'});
-  assert.equal(calls.length, 2);
-  assert.match(calls[1].body, /remains open/u);
-});
-
-test('dry run plans a new ticket without calling any mutation', async () => {
-  const linear = {find: async () => null, create: async () => assert.fail('dry run'), comment: async () => assert.fail('dry run')};
-  const result = await policy.publish(linear, {key: 'episode-12', eventKey: 'run-12-attempt-1', title: 'Main red', body: 'Failure'}, true);
-  assert.equal(result.action, 'create');
-});
-
-test('Linear mutation retries use stable IDs and confirm an existing write after an ambiguous response', async () => {
-  const calls = [];
-  const fetch = async (_url, options) => {
-    const request = JSON.parse(options.body);
-    calls.push(request);
-    if (request.query.includes('issueCreate')) return {ok: true, json: async () => ({errors: [{message: 'already exists'}]})};
-    if (request.query.includes('commentCreate')) return {ok: true, json: async () => ({data: {commentCreate: {success: true}}})};
-    return {ok: true, json: async () => ({data: {issue: {id: request.variables.id, description: 'earlier event'}}})};
-  };
-  const client = policy.linearClient(fetch, 'test-token', 'team', 'channel', {builder: 'user'});
-  await client.create({key: 'episode', eventKey: 'event', owner: 'builder', title: 'Main red', body: 'failure'});
-  assert.equal(calls[0].variables.input.id, policy.identifier('episode'));
-  assert.equal(calls[2].variables.input.id, policy.identifier('event'));
-});
-
-test('Linear errors propagate without printing response contents', async () => {
-  const client = policy.linearClient(async () => ({ok: false, status: 401}), 'test-token', 'team', 'channel', {});
-  await assert.rejects(client.find('episode'), /^Error: Linear HTTP 401$/u);
-});
-
-test('workflow watches completed main runs on self-hosted runners with event-specific concurrency', () => {
-  const workflow = fs.readFileSync(path.join(__dirname, '../workflows/main-red-policy.yml'), 'utf8');
-  assert.match(workflow, /workflow_run:/u);
-  assert.match(workflow, /types: \[completed\]/u);
-  assert.match(workflow, /branches: \[main\]/u);
-  assert.match(workflow, /runs-on: \[self-hosted, Linux, ARM64, light\]/u);
-  assert.match(workflow, /cancel-in-progress: false/u);
-  assert.match(workflow, /group: main-red-policy-.*workflow_run.run_attempt/u);
-  assert.doesNotMatch(workflow, /ref:.*workflow_run/u);
-});
-
-function harness({macos = false, logsFail = false} = {}) {
-  let current = {...history()[0], path: macos ? '.github/workflows/onboarding-workflow-tests.yml' : '.github/workflows/full.yml', workflow_id: 7, run_attempt: 1, html_url: 'https://github.com/example/repo/actions/runs/13', head_repository: {full_name: 'example/repo'}};
-  const mutations = [];
-  const stored = [];
-  const github = {rest: {actions: {listJobsForWorkflowRunAttempt: 'jobs', listWorkflowRuns: 'runs', downloadJobLogsForWorkflowRun: async () => {
-    if (logsFail) throw Object.assign(new Error('logs expired'), {status: 410});
-    return {data: new TextEncoder().encode(fixture('failure.txt')).buffer};
-  }}, repos: {listPullRequestsAssociatedWithCommit: 'pulls'}}};
-  github.paginate = async (method, params) => method === 'pulls' ? [{number: 42, merged_at: '2026-11-26', merge_commit_sha: history()[1].head_sha, base: {ref: 'main'}, user: {login: 'builder'}}] : [{id: 99, name: macos ? 'browser-webkit-macos' : 'test (3.12)', html_url: 'https://github.com/example/repo/actions/runs/13/job/99', conclusion: params.run_id === 11 ? 'success' : 'failure', steps: [{name: 'Run tests', conclusion: 'failure'}]}];
-  github.paginate.iterator = async function* () { yield {data: {workflow_runs: history()}}; };
-  const fetch = async (_url, options) => {
-    const {query, variables} = JSON.parse(options.body);
-    let data;
-    if (query.includes('issueCreate')) {
-      mutations.push(variables.input);
-      stored.push({id: variables.input.id, description: variables.input.description, comments: []});
-      data = {issueCreate: {success: true, issue: {id: stored[0].id}}};
-    } else if (query.includes('commentCreate')) {
-      mutations.push(variables.input);
-      stored[0].comments.push({body: variables.input.body});
-      data = {commentCreate: {success: true}};
-    } else if (query.includes('comments(')) {
-      data = {issue: {comments: {nodes: stored[0].comments, pageInfo: {hasNextPage: false}}}};
-    } else {
-      data = {issues: {nodes: stored, pageInfo: {hasNextPage: false}}};
-    }
-    return {ok: true, json: async () => ({data})};
-  };
-  return {
-    mutations,
-    setCurrent: changes => {current = {...current, ...changes};},
-    run: () => policy.run({github, context: {repo: {owner: 'example', repo: 'repo'}, payload: {workflow_run: current}}, core: {info: () => {}}, fetch, env: {LINEAR_API_KEY: 'test-token', MAIN_RED_LINEAR_TEAM_ID: 'team', MAIN_RED_OWNER_MAP: '{"builder":"user"}'}}),
-  };
-}
-
-test('reporter creates an assigned incident with merge, failures, URL and four-hour target; replay is inert', async () => {
+test('creates one labelled GitHub issue with first-red attribution, failure evidence and four-hour target', async () => {
   const h = harness();
   await h.run();
   await h.run();
   assert.equal(h.mutations.length, 1);
-  assert.equal(h.mutations[0].assigneeId, 'user');
-  assert.match(h.mutations[0].description, /#42 \(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\)/u);
-  assert.match(h.mutations[0].description, /tests\/test_contract.py::test_main/u);
-  assert.match(h.mutations[0].description, /job\/99/u);
-  assert.match(h.mutations[0].description, /deadline 2026-11-26T07:00:00.000Z/u);
+  const issue = h.mutations[0];
+  assert.equal(issue.method, 'create');
+  assert.deepEqual(issue.labels, ['main-red']);
+  assert.equal(issue.owner, repo.owner);
+  assert.equal(issue.repo, repo.repo);
+  assert.ok(issue.body.includes(episodeMarker));
+  assert.match(issue.body, /#42 \(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\)/u);
+  assert.match(issue.body, /GitHub (?:lane\/)?author: @?builder/u);
+  assert.match(issue.body, /tests\/test_contract.py::test_main/u);
+  assert.match(issue.body, /AssertionError: expected ready/u);
+  assert.match(issue.body, /https:\/\/github.com\/example\/repo\/actions\/runs\/13/u);
+  assert.match(issue.body, /job\/99/u);
+  assert.match(issue.body, /green in under 4 h; deadline 2026-11-26T07:00:00.000Z/u);
+});
+
+test('still red comments once on the open episode; next green comments and closes it once', async () => {
+  const h = harness();
+  await h.run();
+  h.setCurrent({id: 14, run_number: 14, html_url: 'https://github.com/example/repo/actions/runs/14'});
+  await h.run();
+  await h.run();
+  assert.deepEqual(h.mutations.map(item => item.method), ['create', 'createComment']);
+  assert.match(h.stored[0].comments[0].body, /run-14-attempt-1/u);
+  h.setHistory([...history(), {...history()[0], id: 14, run_number: 14}]);
+  h.setCurrent({id: 15, run_number: 15, conclusion: 'success', html_url: 'https://github.com/example/repo/actions/runs/15'});
+  await h.run();
+  await h.run();
+  assert.deepEqual(h.mutations.map(item => item.method), ['create', 'createComment', 'createComment', 'update']);
+  assert.match(h.stored[0].comments[1].body, /Green/u);
+  assert.match(h.stored[0].comments[1].body, /actions\/runs\/15/u);
+  assert.equal(h.stored[0].state, 'closed');
+  assert.equal(h.mutations.at(-1).state_reason, 'completed');
+});
+
+test('a green rerun of the first red run finds the episode and closes it', async () => {
+  const h = harness();
+  h.setCurrent({...history()[1], html_url: 'https://github.com/example/repo/actions/runs/12'});
+  h.setHistory(history().slice(1));
+  await h.run();
+  h.setCurrent({conclusion: 'success', run_attempt: 2});
+  await h.run();
+  await h.run();
+  assert.equal(h.stored.length, 1);
+  assert.equal(h.stored[0].state, 'closed');
+  assert.match(h.stored[0].comments[0].body, /run-12-attempt-2/u);
+});
+
+test('recovery replay retries closure after a comment succeeded but closing failed', async () => {
+  const h = harness({failClose: true});
+  await h.run();
+  h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
+  await assert.rejects(h.run(), /close failed/u);
+  await h.run();
+  assert.equal(h.stored[0].comments.length, 1);
+  assert.equal(h.stored[0].state, 'closed');
+});
+
+test('closed episode markers dedupe old red replays without reopening or commenting', async () => {
+  const h = harness();
+  await h.run();
   h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
   await h.run();
-  assert.equal(h.mutations.length, 2);
-  assert.match(h.mutations[1].body, /ticket remains open/u);
-});
-
-test('macOS WebKit job failure is observed even when the aggregate run is green', async () => {
-  const h = harness({macos: true});
-  h.setCurrent({conclusion: 'success'});
+  const count = h.mutations.length;
+  h.setCurrent({id: 13, run_number: 13, conclusion: 'failure', run_attempt: 2});
   await h.run();
-  assert.match(h.mutations[0].description, /browser-webkit-macos/u);
+  assert.equal(h.mutations.length, count);
+  assert.equal(h.stored[0].state, 'closed');
 });
 
-test('missing log access still files evidence with the failed job and an explicit unknown cause', async () => {
+test('a new red after a green gets a distinct episode issue', async () => {
+  const h = harness();
+  await h.run();
+  const green = {...history()[0], id: 14, run_number: 14, conclusion: 'success'};
+  h.setCurrent(green);
+  await h.run();
+  h.setHistory([green, ...history()]);
+  h.setCurrent({id: 15, run_number: 15, conclusion: 'failure', head_sha: 'e'.repeat(40)});
+  await h.run();
+  assert.equal(h.stored.length, 2);
+  assert.equal(h.stored[0].state, 'closed');
+  assert.equal(h.stored[1].state, 'open');
+  assert.match(h.stored[1].body, /episode:example\/repo\/7:green-14/u);
+  assert.match(h.stored[1].body, /#42 \(eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\)/u);
+});
+
+test('an episode lookup ignores a pull request carrying the same label and body marker', async () => {
+  const h = harness();
+  h.stored.push({number: 100, pull_request: {}, state: 'open', body: episodeMarker,
+    labels: [{name: 'main-red'}], comments: []});
+  await h.run();
+  assert.equal(h.mutations[0].method, 'create');
+});
+
+test('dry-run dispatch replay plans an issue without any mutation or custom credentials', async () => {
+  const h = harness({dryRun: true, replay: true, labelExists: false});
+  await h.run();
+  assert.equal(h.mutations.length, 0);
+  assert.ok(h.messages.some(message => message.includes('create')));
+});
+
+test('dry-run recovery leaves an existing issue and its comments untouched', async () => {
+  const h = harness({dryRun: true});
+  h.stored.push({number: 1, body: episodeMarker, state: 'open', labels: [{name: 'main-red'}], comments: []});
+  h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
+  await h.run();
+  assert.equal(h.mutations.length, 0);
+  assert.equal(h.stored[0].state, 'open');
+  assert.equal(h.stored[0].comments.length, 0);
+});
+
+test('creates the main-red label when missing before creating the issue', async () => {
+  const h = harness({labelExists: false});
+  await h.run();
+  assert.deepEqual(h.mutations.map(item => item.method), ['createLabel', 'create']);
+  assert.equal(h.mutations[0].name, 'main-red');
+});
+
+test('green without a matching incident performs no mutations', async () => {
+  const h = harness();
+  h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
+  await h.run();
+  assert.equal(h.mutations.length, 0);
+});
+
+test('a delayed red event after a newer green cannot open a stale incident', async () => {
+  const h = harness();
+  h.setHistory([{...history()[0], id: 14, run_number: 14, conclusion: 'success'}, ...history()]);
+  await h.run();
+  assert.equal(h.mutations.length, 0);
+});
+
+test('a delayed red event reconciles an existing incident with the newer green', async () => {
+  const h = harness();
+  await h.run();
+  h.setHistory([{...history()[0], id: 14, run_number: 14, conclusion: 'success',
+    html_url: 'https://github.com/example/repo/actions/runs/14'}, ...history()]);
+  await h.run();
+  assert.equal(h.stored[0].state, 'closed');
+  assert.match(h.stored[0].comments[0].body, /run-14-attempt-1/u);
+});
+
+test('a green completion records its own recovery even when a later green is already in history', async () => {
+  const h = harness();
+  await h.run();
+  h.setHistory([{...history()[0], id: 16, run_number: 16, conclusion: 'success'}, ...history()]);
+  h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
+  await h.run();
+  assert.match(h.stored[0].comments[0].body, /run-14-attempt-1/u);
+});
+
+test('missing log access keeps the failed job and an explicit unknown cause', async () => {
   const h = harness({logsFail: true});
   await h.run();
-  assert.match(h.mutations[0].description, /Logs unavailable \(HTTP 410\)/u);
-  assert.match(h.mutations[0].description, /job\/99/u);
+  assert.match(h.stored[0].body, /Logs unavailable \(HTTP 410\)/u);
+  assert.match(h.stored[0].body, /job\/99/u);
+});
+
+test('a red run without failed-job evidence states that the test cause is unknown', async () => {
+  const h = harness({noFailedJobs: true});
+  await h.run();
+  assert.match(h.stored[0].body, /Failing tests: no failed-job evidence available; inspect the run/u);
+});
+
+test('issue lookup errors propagate instead of creating an un-deduplicated incident', async () => {
+  const h = harness({issueReadFail: true});
+  await assert.rejects(h.run(), /issue lookup unavailable/u);
+  assert.equal(h.mutations.length, 0);
+});
+
+test('reporter ignores PR runs, foreign repositories, unfinished runs and unobserved workflows', async () => {
+  for (const changes of [{event: 'pull_request'}, {head_branch: 'feature'},
+    {head_repository: {full_name: 'fork/repo'}}, {status: 'in_progress'},
+    {path: '.github/workflows/onboarding-workflow-tests.yml'}]) {
+    const h = harness();
+    h.setCurrent(changes);
+    await h.run();
+    assert.equal(h.mutations.length, 0);
+    assert.equal(h.reads.length, 0);
+  }
+});
+
+test('workflow keeps main completion/replay triggers, read-only defaults and job-scoped issues permission', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../workflows/main-red-policy.yml'), 'utf8');
+  assert.match(workflow, /workflows: \['Tests \(full matrix\)', 'Tests \(quick\)'\]/u);
+  assert.match(workflow, /types: \[completed\]/u);
+  assert.match(workflow, /branches: \[main\]/u);
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /default: true/u);
+  assert.match(workflow, /runs-on: \[self-hosted, Linux, ARM64, light\]/u);
+  assert.match(workflow, /cancel-in-progress: false/u);
+  assert.match(workflow, /group: main-red-policy-\$\{\{ github.repository \}\}/u);
+  const defaults = workflow.split('\npermissions:\n')[1].split('\nconcurrency:')[0];
+  assert.doesNotMatch(defaults, /write/u);
+  assert.match(workflow, /\n  report:\n    permissions:\n(?:      [^\n]+\n)*      issues: write\n/u);
+  assert.equal((workflow.match(/: write/gu) || []).length, 1);
+  assert.match(workflow, /ref: main/u);
+  assert.match(workflow, /persist-credentials: false/u);
+  assert.doesNotMatch(workflow, /LINEAR|OWNER_MAP|secrets\[|secrets\.|vars\./u);
+  assert.doesNotMatch(workflow, /ref:.*workflow_run/u);
 });
