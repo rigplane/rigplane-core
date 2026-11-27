@@ -1740,8 +1740,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ):
                     return
                 try:
-                    await self._teardown_audio_transport()
-                    self._audio_silence_repair_teardown_completed = time.monotonic()
+                    # Match acquire_tx's session lock before retiring its stream.
+                    async with self._audio_session._lock:
+                        if not self._silence_repair_preconditions_ok(
+                            civ_epoch,
+                            owner_stop_epoch,
+                        ):
+                            return
+                        await self._teardown_audio_transport()
+                        self._audio_silence_repair_teardown_completed = time.monotonic()
                     if not self._silence_repair_preconditions_ok(
                         civ_epoch,
                         owner_stop_epoch,

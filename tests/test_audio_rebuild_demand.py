@@ -15,11 +15,12 @@ from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
 from test_web_command_batch_http import _post_json
 from test_web_transport_connection import FakeConnection
 
-from rigplane.audio import AudioState
+from rigplane.audio import AudioState, AudioStream
 from rigplane.audio.session import (
     AudioSession,
     AudioSessionState,
     RX_LIVENESS_TIMEOUT_S,
+    TxLease,
 )
 from rigplane.core.transport import DISCOVERY_RETRIES, DISCOVERY_TIMEOUT, IcomTransport
 from rigplane.core.radio_protocol import AudioRetryCapable
@@ -769,6 +770,94 @@ async def test_tx_rebuild_after_spent_repair_rearms_held_rx(
             await lease.release()
         else:
             await radio.stop_tx()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(15)
+async def test_audio_retry_teardown_serializes_session_tx_admission(
+    demanded_radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio = demanded_radio
+    session = radio.audio_session
+    stopping = asyncio.Event()
+    resume = asyncio.Event()
+    acquiring = asyncio.Event()
+    old_stream: AudioStream | None = None
+    rx_loop = AudioStream._rx_loop
+
+    async def gated_reader(stream: AudioStream) -> None:
+        try:
+            await rx_loop(stream)
+        finally:
+            if stream is old_stream:
+                stopping.set()
+                await resume.wait()
+
+    monkeypatch.setattr(AudioStream, "_rx_loop", gated_reader)
+    sub = await session.subscribe_rx("held-through-retry-tx")
+    old_stream = radio._audio_stream
+    old_transport = radio._audio_transport
+    assert old_stream is not None and old_transport is not None
+    reader = old_stream._rx_task
+    assert reader is not None
+    old_transport._handle_packet(_make_audio_bytes(b"before-retry-tx", send_seq=1))
+    packet = await sub.get(timeout=2.0)
+    assert packet is not None and packet.data == b"before-retry-tx"
+
+    async def acquire() -> TxLease:
+        acquiring.set()
+        return await session.acquire_tx("during-retry-teardown")
+
+    assert await radio.retry_audio(wait=False)
+    repair = radio._audio_silence_repair_task
+    assert repair is not None
+    tx_task: asyncio.Task[TxLease] | None = None
+    try:
+        await asyncio.wait_for(stopping.wait(), timeout=2.0)
+        assert old_stream.state is AudioState.IDLE
+        assert radio._audio_stream is old_stream
+        assert old_stream._rx_task is reader and not reader.done()
+
+        tx_task = asyncio.create_task(acquire())
+        await asyncio.wait_for(acquiring.wait(), timeout=2.0)
+        assert not tx_task.done()
+        assert session.tx_demand == 0
+        assert old_stream.state is AudioState.IDLE
+
+        resume.set()
+        lease = await asyncio.wait_for(tx_task, timeout=2.0)
+        await asyncio.wait_for(asyncio.shield(repair), timeout=2.0)
+        try:
+            stream = radio._audio_stream
+            transport = radio._audio_transport
+            assert reader.done()
+            assert stream is not None and stream is not old_stream
+            assert transport is not None and transport is not old_transport
+            assert session.tx_demand == 1
+            assert session.state is AudioSessionState.RX_TX
+            assert stream.state is AudioState.TRANSMITTING
+            assert stream._rx_task is not None and not stream._rx_task.done()
+            assert stream._rx_callback == session.bus._on_opus_packet
+            transport._handle_packet(_make_audio_bytes(b"after-retry-tx", send_seq=1))
+            packet = await sub.get(timeout=2.0)
+            assert packet is not None and packet.data == b"after-retry-tx"
+            sent: list[bytes] = []
+            monkeypatch.setattr(transport, "_raw_send", sent.append)
+            await lease.push(b"tx-after-retry")
+            assert stream.get_audio_stats()["tx_packets_sent"] == 1
+            assert len(sent) == 1 and sent[0].endswith(b"tx-after-retry")
+        finally:
+            await lease.release()
+    finally:
+        resume.set()
+        if tx_task is not None:
+            tx_task.cancel()
+            results = await asyncio.gather(tx_task, return_exceptions=True)
+            if not isinstance(results[0], BaseException):
+                await results[0].release()
+        repair.cancel()
+        await asyncio.gather(repair, return_exceptions=True)
 
 
 @pytest.mark.asyncio
