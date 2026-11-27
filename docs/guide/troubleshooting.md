@@ -330,6 +330,39 @@ authentication entirely. Reconnect takes ~1 second.
 2. v0.8.0+ uses optimistic default ports — connects instantly even with `civ_port=0`
 3. If persistent: power-cycle the radio's network (Menu → Set → Network → LAN → Off/On)
 
+## Retrying LAN Audio After Bounded Repair Fails
+
+For session-managed LAN RX, the backend emits `AudioRecoveryState.FAILED`
+after the third unsuccessful audio repair attempt. A caller can request a
+new episode without releasing its RX subscription:
+
+```python
+from rigplane.radio_protocol import AudioRetryCapable
+
+if isinstance(radio, AudioRetryCapable):
+    accepted = await radio.retry_audio()
+```
+
+`accepted` means the command started or joined a repair task. It does not
+confirm that frames arrived. A `False` result means no repair was started:
+the backend must use LAN audio, retain session RX demand, and have a connected
+control session. Concurrent retry commands join the active repair; a command
+after its completion renews the episode's three-attempt budget. Repeated
+failures still stop at that cap. Consumers should observe RX packets and
+`on_audio_recovery` for the outcome; an individual task can finish after
+re-arming, with subsequent silence continuing the same bounded episode.
+
+The command rebuilds the audio transport and calls
+`AudioSession.reestablish` to restore live demand. It adds no background
+post-failure probe. Cancelling the command's waiter leaves the repair under
+radio ownership; disconnect cancels the radio-owned task.
+
+Implementation: `core/radio_protocol.py: AudioRetryCapable`,
+`runtime/radio.py: CoreRadio.retry_audio`,
+`runtime/radio.py: CoreRadio._run_audio_silence_repair`, and
+`audio/session.py: AudioSession.reestablish`. Regression coverage:
+`tests/test_audio_rebuild_demand.py: test_audio_cut_returns_with_one_retry_after_failed`.
+
 ## Audio Cuts Out on Mobile (Safari iOS)
 
 **Symptom:** Audio stops when Safari goes to background, doesn't resume on return.

@@ -1558,12 +1558,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if reason in ("rx_resumed", "rx_reopened"):
             task = self._audio_silence_repair_task
             if task is None or task.done():
-                self._audio_silence_repair_attempts = 0
-                self._audio_silence_repair_episode_epoch = self._civ_epoch
-                heartbeat = self._silence_repair_rx_heartbeat()
-                self._audio_silence_repair_episode_start_heartbeat = heartbeat
-                self._audio_silence_repair_baseline_heartbeat = heartbeat
-                self._audio_silence_repair_teardown_completed = None
+                self._reset_audio_silence_repair_episode()
             return
         if reason != "rx_silent":
             return
@@ -1594,13 +1589,48 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._owner_stop_epoch,
         ):
             return
-        self._audio_silence_repair_task = asyncio.get_running_loop().create_task(
+        self._start_audio_silence_repair()
+
+    async def retry_audio(self) -> bool:
+        """Start or join the bounded LAN audio repair with live RX demand.
+
+        An explicit retry renews a spent episode; automatic repair rounds
+        retain their existing cap. Concurrent calls join the same task.
+        Cancelling this caller leaves the repair owned by the radio; owner
+        disconnect still cancels it through the existing task slot.
+
+        Returns True for an accepted/joined task, not proof of fresh audio.
+        Returns False without LAN RX demand on a connected control session.
+        """
+        if self.backend_id != "rigplane" or not self._silence_repair_preconditions_ok(
+            self._civ_epoch, self._owner_stop_epoch
+        ):
+            return False
+        task = self._audio_silence_repair_task
+        if task is None or task.done():
+            self._reset_audio_silence_repair_episode()
+            task = self._start_audio_silence_repair()
+        await asyncio.shield(task)
+        return True
+
+    def _reset_audio_silence_repair_episode(self) -> None:
+        self._audio_silence_repair_attempts = 0
+        self._audio_silence_repair_episode_epoch = self._civ_epoch
+        heartbeat = self._silence_repair_rx_heartbeat()
+        self._audio_silence_repair_episode_start_heartbeat = heartbeat
+        self._audio_silence_repair_baseline_heartbeat = heartbeat
+        self._audio_silence_repair_teardown_completed = None
+
+    def _start_audio_silence_repair(self) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(
             self._run_audio_silence_repair(
                 civ_epoch=self._civ_epoch,
                 owner_stop_epoch=self._owner_stop_epoch,
             ),
             name="audio-silence-repair",
         )
+        self._audio_silence_repair_task = task
+        return task
 
     def _silence_repair_rx_heartbeat(self) -> float | None:
         """Bus RX heartbeat: monotonic stamp of the last arrived RX frame.

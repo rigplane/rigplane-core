@@ -77,6 +77,7 @@ __all__ = [
     "Radio",
     "VfoSlotState",
     "AudioCapable",
+    "AudioRetryCapable",
     "AudioTransport",
     "CivCommandCapable",
     "CivTransactionCapable",
@@ -1193,6 +1194,20 @@ class AudioCapable(Protocol):
     async def get_audio_stats(self) -> dict[str, Any]: ...
     async def start_audio_tx_opus(self) -> None: ...
     async def stop_audio_tx_opus(self) -> None: ...
+
+
+@runtime_checkable
+class AudioRetryCapable(Protocol):
+    """Optional explicit retry command for session-managed audio."""
+
+    async def retry_audio(self) -> bool:
+        """Request or join a bounded repair episode without replacing demand.
+
+        True means a repair task was accepted or joined, not that RX frames
+        have arrived. False means the backend cannot retry in its current
+        state. Observe audio recovery events and RX frames for the outcome.
+        """
+        ...
 
 
 @runtime_checkable
