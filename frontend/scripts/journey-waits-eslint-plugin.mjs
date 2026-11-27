@@ -7,8 +7,8 @@ export default {
       meta: {
         type: 'problem', schema: [],
         messages: {
-          sleep: 'Use a pipeline drain or an observed condition; bare waitForTimeout is forbidden in journeys.',
-          action: 'Use the shared panorama action helper or an explicit action timeout.',
+          sleep: 'Bare waitForTimeout is forbidden in journey specs: wait on the render pipeline with awaitRenderPipeline(page) or observePanorama(page, ms) from ./panorama-ready, or on a condition (expectPanoramaFrequency, expectPassbandProbeReady from ./panorama-passband-probe).',
+          action: 'Click/reload in a journey spec must go through clickPanorama(page, locator) or reloadPanorama(page) from ./panorama-ready (they drain the render pipeline), or pass an explicit { timeout } tied to the action.',
         },
       },
       create(context) {
