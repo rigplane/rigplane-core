@@ -239,7 +239,10 @@ class FieldStatusPublic(_Strict):
 
     Observed entries can add ``lastObservedMonotonic``, ``maxAge``,
     ``source`` and ``quality``. A declared read failure adds a
-    ``message`` to its unobserved entry.
+    ``message`` to its unobserved entry, plus the ``messageKey`` locale-table
+    code and its ``messageParams`` so receivers render the sentence in the
+    operator's language (``message`` stays as the fallback for receivers
+    that do not know the key).
 
     ``available`` and ``stale`` come from an observed entry's freshness
     (``runtime_helpers._freshness_availability``). ``missing``,
@@ -258,6 +261,8 @@ class FieldStatusPublic(_Strict):
     freshness: Literal["unknown", "fresh", "stale"]
     availability: Literal["missing", "available", "stale", "unavailable", "undeclared"]
     message: str | None = None
+    messageKey: str | None = None
+    messageParams: dict[str, str] | None = None
     lastObservedMonotonic: float | None = None
     maxAge: float | None = None
     source: dict[str, object] | None = None

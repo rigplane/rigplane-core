@@ -76,6 +76,7 @@
   } from '$lib/stores/connection.svelte';
   import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
+  import { refusedFieldEntries } from '$lib/state/field-status';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { projectHeaderFrequency } from '$lib/runtime/adapters/tx-capabilities';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -102,6 +103,14 @@
     radioReady: getRadioReady(),
     radioState: getRadioPowerOn() === false ? 'disconnected' : getRadioLinkState(),
   }) : '');
+
+  // MOR-4828: the refused-field twin of the reason line above. The
+  // status-bar tooltip sentence is invisible on a phone, so the refused
+  // field(s) and the plain reason get their own visible line in the same
+  // health area. Same rig-connected gate as the desktop line; '' hides it.
+  let refusedLine = $derived(getRigConnected()
+    ? refusedFieldEntries(radioState).map((entry) => entry.text).join(' ')
+    : '');
 
   // MOR-2241 — the same link-fault veil RadioLayout carries (app.css keys the
   // shared rule on `[data-link-fault]`); this layout has no status bar, its
@@ -575,6 +584,9 @@
   {#if radioLinkLine}
     <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
   {/if}
+  {#if refusedLine}
+    <p class="m-refused-line" data-testid="refused-fields-line" role="status">{refusedLine}</p>
+  {/if}
   <div class="m-ls-body">
   <!-- MOR-2511 — a radio without a spectrum renders no stage at all; the
        overlay below is absolutely positioned inside .m-ls-body and does not
@@ -783,6 +795,9 @@
            under the S-meter bar. -->
       {#if radioLinkLine}
         <p class="m-radio-link-line" data-testid="radio-link-line" role="status">{radioLinkLine}</p>
+      {/if}
+      {#if refusedLine}
+        <p class="m-refused-line" data-testid="refused-fields-line" role="status">{refusedLine}</p>
       {/if}
 
       <!-- ═══ SCROLLABLE CONTENT ═══ -->
@@ -1688,6 +1703,21 @@
 
   .m-radio-link-line::first-letter {
     text-transform: uppercase;
+  }
+
+  /* ── MOR-4828 refused-fields line: the visible twin of the desktop
+     status-bar refusal line, in the same health area. Quiet by design — a
+     refused read leaves the app connected, so it never takes the red
+     fault banner above. ── */
+  .m-refused-line {
+    flex-shrink: 0;
+    margin: 0;
+    padding: 6px 10px;
+    color: var(--v2-text-dim, #888);
+    font-size: 13px;
+    line-height: 1.3;
+    text-align: center;
+    overflow-wrap: anywhere;
   }
 
   /* ── Scrollable content ── */

@@ -57,6 +57,7 @@ from ..audio.route import resolve_audio_route
 from ..commands._frame import build_civ_frame
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
+    FieldRefusalWire,
     MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
@@ -278,7 +279,7 @@ class _PublicStatePayloadFromSnapshotFn(Protocol):
         receiver_count: int,
         availability: Mapping[FieldPath, bool | None] | None = None,
         declared: Collection[FieldPath] | None = None,
-        read_refusals: Mapping[FieldPath, str] | None = None,
+        read_refusals: Mapping[FieldPath, FieldRefusalWire] | None = None,
         updated_at: str | None = None,
         scope_clients: int = 0,
         control_clients: int = 0,
@@ -2530,8 +2531,13 @@ class WebServer:
                 health_revision,
                 tuple(
                     sorted(
-                        (str(path), message)
-                        for path, message in self._declared_read_refusals().items()
+                        (
+                            str(path),
+                            refusal["message"],
+                            refusal["message_key"],
+                            tuple(sorted(refusal["message_params"].items())),
+                        )
+                        for path, refusal in self._declared_read_refusals().items()
                     )
                 ),
                 liveness_declaration,
@@ -4674,7 +4680,7 @@ class WebServer:
             "next_retry_seconds": None,
         }
 
-    def _declared_read_refusals(self) -> dict[FieldPath, str]:
+    def _declared_read_refusals(self) -> dict[FieldPath, FieldRefusalWire]:
         scheduler = getattr(self._radio, "_acquisition_scheduler", None)
         return (
             scheduler.declared_read_refusals()

@@ -317,6 +317,8 @@
   "core.vfo.role.active": "使用中",
   "core.vfo.selectAction": "{label} を選択",
   "core.vfo.freq.selectedDigitHint": "Esc キーか範囲外のクリックで選択を解除",
+  "core.fieldStatus.readMalformed": "トランシーバーが{field}について無効な応答を返しました。このコントロールはトランシーバーが応答するまで利用できません。アプリは接続を維持しています。",
+  "core.fieldStatus.readRefused": "トランシーバーが{field}の報告を拒否しました。このコントロールはトランシーバーが応答するまで利用できません。アプリは接続を維持しています。",
   "core.filter.select.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.filter.width.pendingAnnouncement": "フィルター幅 {target} を要求しました。無線機はまだ確認していません。",
   "core.filter.width.confirmedAnnouncement": "フィルター幅が {confirmed} で確認されました。",

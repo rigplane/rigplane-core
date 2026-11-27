@@ -8,7 +8,7 @@ from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from ..core.acquisition_scheduler import resolve_available_when
+from ..core.acquisition_scheduler import FieldRefusalWire, resolve_available_when
 from ..core.radio_transport import control_transport_of
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
@@ -1864,7 +1864,7 @@ def build_public_state_payload_from_snapshot(
     receiver_count: int,
     availability: Mapping[FieldPath, bool | None] | None = None,
     declared: Collection[FieldPath] | None = None,
-    read_refusals: Mapping[FieldPath, str] | None = None,
+    read_refusals: Mapping[FieldPath, FieldRefusalWire] | None = None,
     updated_at: str | None = None,
     scope_clients: int = 0,
     control_clients: int = 0,
@@ -1877,8 +1877,8 @@ def build_public_state_payload_from_snapshot(
 
     fields = _canonical_snapshot_fields(snapshot)
     refused_public_fields = {
-        public_path: (path, message)
-        for path, message in (read_refusals or {}).items()
+        public_path: (path, refusal)
+        for path, refusal in (read_refusals or {}).items()
         for public_path in _snapshot_field_public_paths(path)
     }
     if refused_public_fields:
@@ -1900,10 +1900,14 @@ def build_public_state_payload_from_snapshot(
         availability=availability,
         declared=declared,
     )
-    for public_path, (path, message) in refused_public_fields.items():
+    for public_path, (path, refusal) in refused_public_fields.items():
         statuses[public_path] = {
             **_missing_field_status(path, "unavailable"),
-            "message": message,
+            # MOR-4828: the English sentence stays as the fallback; the key
+            # plus params render through the frontend's locale table.
+            "message": refusal["message"],
+            "messageKey": refusal["message_key"],
+            "messageParams": dict(refusal["message_params"]),
         }
     state["field_status"] = statuses
     return _build_public_state_payload_from_dict(

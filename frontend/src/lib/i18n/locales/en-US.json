@@ -295,6 +295,8 @@
   "core.vfo.txTarget.label": "TX target",
   "core.vfo.freq.pendingAnnouncement": "Pending, not yet confirmed",
   "core.vfo.freq.selectedDigitHint": "Esc or click away to deselect",
+  "core.fieldStatus.readMalformed": "The radio returned an invalid reply for {field}. The control is unavailable until the radio answers. The app is still connected.",
+  "core.fieldStatus.readRefused": "The radio refused to report {field}. The control is unavailable until the radio answers. The app is still connected.",
   "core.filter.select.pendingAnnouncement": "Pending, not yet confirmed",
   "core.filter.width.pendingAnnouncement": "Filter width {target} requested; not yet confirmed by the radio.",
   "core.filter.width.confirmedAnnouncement": "Filter width confirmed at {confirmed}.",
