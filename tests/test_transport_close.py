@@ -77,13 +77,14 @@ async def test_disconnect_releases_the_local_udp_port_before_returning(
     t2 = IcomTransport()
     try:
         await t1.connect("127.0.0.1", echo_port, local_host="127.0.0.1", local_port=0)
-        local_port = t1.local_port
-        assert local_port != 0
         assert t1._udp_transport is not None
+        local_port = t1._udp_transport.get_extra_info("sockname")[1]
+        assert local_port != 0
         assert t1.remote_id == _RADIO_ID
         await t1.disconnect()
         await t2.connect("127.0.0.1", echo_port, local_port=local_port)
         assert t2._udp_transport is not None
+        assert t2._udp_transport.get_extra_info("sockname")[1] == local_port
     finally:
         await t1.disconnect()
         await t2.disconnect()

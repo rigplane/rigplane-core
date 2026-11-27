@@ -3258,12 +3258,22 @@ class TestStartupBusyHoldOrdering:
 
         from rigplane.cli import _run
         from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
+        from rigplane.rigctld.server import RigctldServer
         from rigplane.runtime._control_phase import _session_reject_hint
 
         radio = _BusyHoldRadio()
         composition = _busy_hold_composition()
         _BusyHoldWebServer.instances.clear()
         rigctld_port = 0
+        bound_rigctld_port = 0
+        start_rigctld = RigctldServer.start
+
+        async def start_and_record_port(candidate: RigctldServer) -> None:
+            nonlocal bound_rigctld_port
+            await start_rigctld(candidate)
+            assert candidate._server is not None
+            bound_rigctld_port = candidate._server.sockets[0].getsockname()[1]
+
         args = _build_parser().parse_args(
             [
                 "--host",
@@ -3279,7 +3289,13 @@ class TestStartupBusyHoldOrdering:
             ]
         )
         p1, p2, p3, p4 = self._patches(radio, composition)
-        with p1, p2, p3, p4:
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch.object(RigctldServer, "start", start_and_record_port),
+        ):
             radio.startup_busy_hold_event.set()
             radio.fail_with = RigplaneConnectionError(
                 "radio busy: another client holds the session. "
@@ -3315,9 +3331,12 @@ class TestStartupBusyHoldOrdering:
         composition.transport_ready.assert_not_awaited()
         assert len(radio.exits) == 1
         assert rigctld_addr == f"127.0.0.1:{rigctld_port}"
+        # Runtime metadata keeps the configured port (0); probe the socket's
+        # actual port so this still detects a listener leaked by shutdown.
+        assert bound_rigctld_port > 0
         with pytest.raises(ConnectionRefusedError):
             await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", rigctld_port), timeout=5.0
+                asyncio.open_connection("127.0.0.1", bound_rigctld_port), timeout=5.0
             )
 
     @pytest.mark.asyncio
