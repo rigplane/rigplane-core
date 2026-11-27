@@ -797,7 +797,7 @@ jobs:
       - name: Bound worker diagnostics
         if: always() && needs.classify.outputs.core == 'true'
         continue-on-error: true
-        run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
+        run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" pytest-output.txt pytest-junit.xml || true
 
       - name: Upload worker diagnostics
         if: failure() && needs.classify.outputs.core == 'true'

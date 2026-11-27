@@ -104,6 +104,7 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "pytest_worker_diagnostics.py --finalize" in finalize
         and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
     )
+    assert "pytest-output.txt pytest-junit.xml" in finalize
     # MOR-4718: the finalize step still runs on every core run so the files
     # exist when a failed shard uploads them.
     assert "if: always() && needs.classify.outputs.core == 'true'" in finalize
@@ -164,18 +165,32 @@ def test_append_log_keeps_recent_complete_records_after_repeated_overflow(
         + "\n"
         for i in range(200)
     ]
+    compactions = 0
     for line in lines:
+        previous_size = path.stat().st_size if path.exists() else 0
         module._append_bounded(path, line)
         assert path.stat().st_size <= module.MAX_APPEND_BYTES
+        compactions += path.stat().st_size < previous_size
+    assert compactions >= 3
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    assert rows[0] == {"event": "TRUNCATED_APPEND_LOG", "retained": "tail"}
-    retained = rows[1:]
+    marker = {"event": "TRUNCATED_APPEND_LOG", "retained": "head+tail"}
+    assert rows.count(marker) == 1
+    marker_index = rows.index(marker)
+    head = rows[:marker_index]
+    assert head[:3] == [json.loads(line) for line in lines[:3]]
+    assert [row["sequence"] for row in head] == list(range(len(head)))
+    head_bytes = b"".join(path.read_bytes().splitlines(keepends=True)[:marker_index])
+    assert len(head_bytes) <= min(16 * 1024, module.MAX_APPEND_BYTES // 8)
+    retained = rows[marker_index + 1 :]
     assert 20 < len(retained) < len(lines)
     assert [row["sequence"] for row in retained] == list(
         range(200 - len(retained), 200)
     )
     assert path.read_bytes().endswith(lines[-1].encode())
+    before_finalize = path.read_bytes()
     module.finalize_directory(tmp_path)
+    assert path.stat().st_size <= module.MAX_APPEND_BYTES
+    assert path.read_bytes() == before_finalize
     assert path.read_bytes().endswith(lines[-1].encode())
 
 
@@ -667,6 +682,60 @@ def test_diagnostic_artifact_bounds(tmp_path: Path) -> None:
     assert log.stat().st_size <= module.MAX_FILE_BYTES
     assert b"TRUNCATED" in log.read_bytes()
     assert (tmp_path / "bounds.json").is_file()
+
+
+@pytest.mark.parametrize("diagnostics_present", [False, True])
+def test_oversized_pytest_reports_share_upload_budget_and_keep_tails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_diagnostics: ModuleType,
+    diagnostics_present: bool,
+) -> None:
+    module = worker_diagnostics
+    directory = tmp_path / "diagnostics"
+    if diagnostics_present:
+        directory.mkdir()
+        for index in range(17):
+            (directory / f"fatal-gw0-{index}.log").write_bytes(
+                b"x" * module.MAX_FILE_BYTES
+            )
+    tails = {
+        "pytest-output.txt": b"FAILED tests/test_synthetic.py::test_failure\nPytest exit code: 1\n",
+        "pytest-junit.xml": b"tests/test_synthetic.py::test_failure</failure></testcase></testsuite></testsuites>\n",
+    }
+    for name, tail in tails.items():
+        (tmp_path / name).write_bytes(b"x" * module.MAX_FILE_BYTES + tail)
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("leave unrelated files alone\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(HELPER), "--finalize-strict", str(directory), *tails],
+    )
+
+    runpy.run_path(str(HELPER), run_name="__main__")
+
+    for name, tail in tails.items():
+        report = (tmp_path / name).read_bytes()
+        assert len(report) <= module.MAX_FILE_BYTES
+        assert report.startswith(b"\n[TRUNCATED diagnostic evidence]\n")
+        assert report.endswith(tail)
+    bounds_path = directory / "bounds.json"
+    bounds = json.loads(bounds_path.read_text())
+    records = {record["file"]: record for record in bounds["files"]}
+    for name in tails:
+        assert records[name]["truncated"] is True
+        assert records[name]["bytes"] == (tmp_path / name).stat().st_size
+    upload_files = [*directory.iterdir(), *(tmp_path / name for name in tails)]
+    assert all(path.stat().st_size <= module.MAX_FILE_BYTES for path in upload_files)
+    assert sum(path.stat().st_size for path in upload_files) <= module.MAX_TOTAL_BYTES
+    assert bounds["bytes"] == sum(
+        path.stat().st_size for path in upload_files if path != bounds_path
+    )
+    if diagnostics_present:
+        assert bounds["droppedFiles"] > 0
+    assert unrelated.read_text() == "leave unrelated files alone\n"
 
 
 async def test_snapshot_omits_values_and_task_names(tmp_path: Path) -> None:
