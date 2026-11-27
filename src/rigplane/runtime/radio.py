@@ -79,6 +79,8 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
 )
 
 # Import split modules
@@ -2374,6 +2376,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: float | None = None,
+        reply_timeout: float | None = None,
         wait_dispatch: bool = True,
         is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame | None:
@@ -2402,6 +2405,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 dedupe=dedupe,
                 wait_response=wait_response,
                 timeout=timeout,
+                reply_timeout=reply_timeout,
                 wait_dispatch=wait_dispatch,
                 is_current=is_current,
             )
@@ -2421,6 +2425,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 dedupe=dedupe,
                 wait_response=wait_response,
                 timeout=timeout,
+                reply_timeout=reply_timeout,
                 wait_dispatch=wait_dispatch,
                 is_current=admitted_is_current,
             )
@@ -4449,6 +4454,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         abort = self._ABORT_COMMANDS.get(operation)
         return abort is not None and self.supports_command(abort[0])
 
+    # MOR-4846 adviser-provided IC-705 tx-smoke measurements with this PR:
+    # worst key HTTP reply 43.6 ms over USB and 22.8 ms over Wi-Fi/LAN.
+    # Each includes the ACK wait, so it upper-bounds the observed ACK latency.
+    # Three times 43.6 ms is 130.8 ms (~131 ms), rounded to 0.15 s, below
+    # the adviser's 0.5 s cap. A lost key ACK delays a following release by
+    # at most this wait; it mostly indicates a down link that cannot release.
+    ICOM_PTT_ON_ACK_TIMEOUT_S = 0.15
+
     async def actuate(
         self,
         token: EffectToken,
@@ -4473,9 +4486,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 civ = getattr(self._commands, name)(*args, to_addr=self._radio_addr)
                 priority = Priority.ABORT
             else:
+                raise CommandError("unsupported managed TX operation")
+        except CommandError as exc:
+            raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            try:
+                reply = await self._send_civ_raw(
+                    civ,
+                    priority=priority,
+                    wait_response=True,
+                    reply_timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
+                    is_current=is_current,
+                )
+            except CommandRejectedError:
                 return ActuationResult.REJECTED
-        except CommandError:
-            return ActuationResult.REJECTED
+            except (StaleBeforeWireError, CommandError) as exc:
+                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
+            acknowledged = None if reply is None else parse_ack_nak(reply)
+            if acknowledged is None:
+                return ActuationResult.ACCEPTED
+            return (
+                ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
+            )
         if operation is not ActuationOperation.FORCE_RECEIVE:
             await self._send_civ_raw(
                 civ,
@@ -4492,7 +4524,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 wait_response=True,
                 is_current=is_current,
             )
-        except TimeoutError:
+        except (TimeoutError, StaleBeforeWireError):
             reply = None
         acknowledged = None if reply is None else parse_ack_nak(reply)
         unclaimed = self._civ_request_tracker.ack_unclaimed_at

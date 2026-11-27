@@ -66,6 +66,7 @@ from ...runtime.tx_interlock import (
 from ...runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 from ...runtime.managed_tx_state import (
     ActuationOperation,
+    ManagedTxActuationRefused,
     ManagedTxIntentKind,
     ManagedTxOutcome,
     ManagedTxRefusalReason,
@@ -2073,6 +2074,10 @@ class ControlHandler:
             else:
                 submission = await authority.submit_ptt(False, self._tx_owner)
         except (CommandError, RuntimeError, TimeoutError) as exc:
+            if isinstance(exc, ManagedTxActuationRefused):
+                raise _ManagedPttRefused(
+                    "positive TX actuation was rejected", exc.reason
+                ) from exc
             if _queue_refused_for_ptt_holder(exc, pending, self._tx_owner):
                 raise _ManagedPttRefused(
                     _PTT_HOLDER_CONFLICT, ManagedTxRefusalReason.TX_HELD_BY_OTHER

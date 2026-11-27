@@ -40,24 +40,21 @@ class RadioSessionHeldError(ConnectionError):
 
 
 class StaleBeforeWireError(ConnectionError):
-    """Raised only by the pre-wire scope-currency refusals in
-    ``runtime/_civ_rx.py`` — the ``is_current`` checks that run before
-    the frame is handed to the transport (``_execute_civ_raw``'s
-    pre-send ``check_current`` sites and ``_send_civ_frame_now``'s
-    before-dispatch currency checks), plus the one refusal that may
-    land inside ``send_tracked`` itself: the transport's own
-    ``is_current`` guard raising ``CommandError`` before it writes.
+    """A CI-V command was refused before its frame was written to the wire.
 
-    A subclass of :class:`ConnectionError`, so every existing ``except
-    ConnectionError`` handler — the managed TX attempts — still catches
-    it unchanged. Only the split-mode read-modify-write
-    (``DualRxRuntimeMixin.write_relative_vfo_mode``, MOR-3743)
-    distinguishes it: that write retries solely on this subclass, which
-    proves the refused frame never reached the wire. The checks after
-    the send (ACK completion, timeouts) and every other failure behind
-    the submission — a serial write whose ``drain`` fails, for example
-    — keep the plain error: the frame may already be applied, so
-    repeating it could overwrite a concurrent client's write.
+    Raised by ``IcomCommander.send`` when not started and ``stop`` for
+    queued commands; by ``CivRuntime._send_civ_raw`` on failed transport
+    recovery; and by ``_execute_civ_raw`` / ``_send_civ_frame_now`` for
+    missing transport or pre-send session, port, observer and currency
+    refusals. This includes the transport's ``is_current`` guard raising
+    ``CommandError`` before writing inside ``send_tracked``.
+
+    It remains a :class:`ConnectionError`. Split-mode read-modify-write
+    (``DualRxRuntimeMixin.write_relative_vfo_mode``, MOR-3743) retries it
+    only when its scope also reports interference, at most three total
+    attempts with no retry delay. Commander or recovery failure alone
+    propagates on the first attempt. Post-send currency failures and
+    transport failures that may have written keep their plain types.
     """
 
 

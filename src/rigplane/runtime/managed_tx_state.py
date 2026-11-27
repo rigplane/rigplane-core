@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TypeAlias, assert_never
 
+from rigplane.core.exceptions import CommandError
+
 
 class ManagedTxIntentKind(StrEnum):
     RX = "rx"
@@ -35,6 +37,12 @@ class ManagedTxRefusalReason(StrEnum):
     CONTROLLER_REFUSED = "controller_refused"
     RADIO_REFUSED = "radio_refused"
     OTHER = "other"
+
+
+class ManagedTxActuationRefused(CommandError):
+    def __init__(self, reason: ManagedTxRefusalReason) -> None:
+        super().__init__("positive TX actuation was rejected")
+        self.reason = reason
 
 
 class ReleasePlan(StrEnum):
@@ -177,6 +185,18 @@ class ActuationSettled:
     operation: ActuationOperation
     result: ActuationResult
     error: str | None = None
+    refusal_reason: ManagedTxRefusalReason | None = None
+
+    @property
+    def rejection_reason(self) -> ManagedTxRefusalReason:
+        if self.refusal_reason is not None:
+            return self.refusal_reason
+        return (
+            ManagedTxRefusalReason.RADIO_REFUSED
+            if self.result is ActuationResult.REJECTED
+            and self.error in (None, ActuationResult.REJECTED.value)
+            else ManagedTxRefusalReason.OTHER
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +339,15 @@ def _settle(state: ManagedTxState, event: ActuationSettled) -> ManagedTxTransiti
             release_plan=ReleasePlan.FORCE_RELEASE,
             tx_started_at_monotonic=None,
             tot_deadline_monotonic=None,
-            last_error=event.error or event.result.value,
+            last_error=(
+                event.rejection_reason.value
+                if event.result is ActuationResult.REJECTED
+                and (
+                    event.refusal_reason is not None
+                    or event.error in (None, ActuationResult.REJECTED.value)
+                )
+                else event.error or event.result.value
+            ),
         )
     return ManagedTxTransition(settled, ManagedTxOutcome.APPLIED)
 
