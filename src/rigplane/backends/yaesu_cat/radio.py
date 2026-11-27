@@ -2192,7 +2192,7 @@ class YaesuCatRadio:
             else:
                 params = {"src": "0", "type": "0", "state": "0"}
         else:
-            return ActuationResult.REJECTED
+            raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER)
 
         try:
             await self._write(
@@ -2203,12 +2203,7 @@ class YaesuCatRadio:
                 **params,
             )
         except CommandNotSupportedError as exc:
-            if operation in (
-                ActuationOperation.PTT_ON,
-                ActuationOperation.TRANSMIT_ON,
-            ):
-                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
-            return ActuationResult.REJECTED
+            raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
         except CommandError:
             return ActuationResult.REJECTED
         if operation is not ActuationOperation.FORCE_RECEIVE:
