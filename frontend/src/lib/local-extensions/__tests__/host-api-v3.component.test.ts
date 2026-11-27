@@ -4,7 +4,7 @@
  * tests/test_host_api_v3_wire_contract.py::test_af_handler_dispatch_and_observed_publication
  * ACKs acknowledge dispatch; only a subsequent provider observation changes readings.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import hostWire from '../../../../../tests/fixtures/host-api-v3-wire.json';
 import hostApiV3Documents from './fixtures/host-api-v3-documents.json';
 import { flushSync, mount, unmount } from 'svelte';
@@ -24,6 +24,15 @@ import { parseHostDeclaration, readHostDeclaration, getLayoutOptions, type Local
 import type { ServerState } from '$lib/types/state';
 import type { LocalExtensionHostApiV3, LocalExtensionHostWindow } from '../host-api';
 import { CANONICAL_LAYOUT_MODES } from '../../../presentation/layout-mode';
+import '../../../skins/desktop-v2/DesktopSkin.svelte';
+import '../../../skins/mobile/MobileSkin.svelte';
+import '../../../skins/lcd-cockpit/LcdCockpitSkin.svelte';
+import '../../../skins/lcd-scope/LcdScopeSkin.svelte';
+import '../../../skins/sdr-test/SdrTestSkin.svelte';
+
+vi.hoisted(() => { vi.useFakeTimers(); });
+
+afterAll(() => { vi.useRealTimers(); });
 
 vi.mock('$lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} } satisfies Pick<typeof import('$lib/media/media-session'), 'initMediaSession' | 'destroyMediaSession'>));
 const audioBoundary = vi.hoisted(() => ({ deferStop: false, finishStop: undefined as (() => void) | undefined }));
@@ -94,6 +103,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear(); resize(1400);
   vi.stubGlobal('WebSocket', MockWebSocket);
+  const send = MockWebSocket.prototype.send;
+  vi.spyOn(MockWebSocket.prototype, 'send').mockImplementation(function (this: MockWebSocket, data: string) {
+    send.call(this, data);
+    if ((JSON.parse(data) as { type: string }).type === 'controller_heartbeat') {
+      this.simulateMessage(JSON.stringify({ type: 'controller_heartbeat', generation: mockControllerGrant.generation }));
+    }
+  });
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
@@ -122,6 +138,7 @@ afterEach(async () => {
 describe('installed host API v3 with production UI handlers', () => {
   it.each([undefined, {}, { health: false }, { health: true }, { health: 'true' }])(
     'respects host health ownership %j without hiding independent status controls', async (flags: { health?: unknown } | undefined) => {
+      expect(vi.isFakeTimers()).toBe(true);
       if (flags) {
         const declaration = { version: 1, report: false, language: false, ...flags };
         const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
@@ -143,15 +160,18 @@ describe('installed host API v3 with production UI handlers', () => {
       expect(bar().querySelector('.skin-select')).not.toBeNull();
       expect(bar().querySelector('.settings-btn')).not.toBeNull();
       expect(bar().querySelector('[data-testid="managed-tot-status"]')).not.toBeNull();
-      await vi.waitFor(() => expect(bar().querySelector('.now-playing')?.textContent).toContain('Host Test Station'), { timeout: 3_000 });
+      await vi.advanceTimersByTimeAsync(800);
+      flushSync();
+      expect(bar().querySelector('.now-playing')?.textContent).toContain('Host Test Station');
 
       setTxCodecFallback(true); flushSync();
       expect(bar().querySelector('[data-testid="tx-codec-fallback"]')).not.toBeNull();
-      // Drive the real staleness interval from its production state-update clock.
-      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 7_000);
-      await vi.waitFor(() => { flushSync(); expect(runtime.connectionStale).toBe(true); }, { timeout: 2_000 });
+      markStateUpdated();
+      await vi.advanceTimersByTimeAsync(6_000);
+      flushSync();
+      expect(runtime.connectionStale).toBe(true);
       expect(bar().querySelector('[data-testid="bad-link-chip"]') === null).toBe(owned);
-      clock.mockRestore(); markStateUpdated();
+      markStateUpdated();
 
       setWsConnected(false); flushSync();
       expect(document.querySelector('.control-link-lost') === null).toBe(owned);
