@@ -624,7 +624,6 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
         try:
             # Spend the whole budget: 3 failed attempts, FAILED once.
             _kill_client_audio_only(radio)
-            await _drive_rx_silent(radio)
             assert await await_until(
                 lambda: (
                     radio._audio_silence_repair_task is None and len(ensure_calls) == 3
@@ -633,6 +632,9 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             ), f"expected 3 attempts and a finished task, got {len(ensure_calls)}"
             assert recovery == [AudioRecoveryState.FAILED]
             resumed_before = sum(1 for e in events if e.reason == "rx_resumed")
+            assert resumed_before == 0, (
+                "watchdog resumed from a pre-death heartbeat before audio was healed"
+            )
 
             # Another path rebuilds the transport and re-arms the stream
             # underneath the session but never reestablishes demand, so the
@@ -654,7 +656,6 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             # A new real death gets a fresh budget and is repaired again.
             _kill_client_audio_only(radio)
             _drain(sub)
-            await _drive_rx_silent(radio)
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             assert len(teardown_calls) > repaired_teardowns
         finally:
