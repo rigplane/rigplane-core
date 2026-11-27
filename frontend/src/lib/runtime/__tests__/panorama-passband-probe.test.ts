@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { URL } from 'node:url';
 import { createContext, runInContext } from 'node:vm';
 import ts from 'typescript';
 import { installSampler, stopSampler, missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
@@ -34,8 +34,9 @@ describe('passband sampler and renderer work', () => {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText, context);
       // Execute the journey's work instrumentation with the sampler.
-      const path = new URL('../../../../tests/e2e/journey/panorama-settle.spec.ts', import.meta.url);
-      const source = ts.createSourceFile(path.pathname, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      // import.meta.url is not a file: URL under the jsdom project; resolve from __dirname.
+      const path = join(__dirname, '..', '..', '..', '..', 'tests', 'e2e', 'journey', 'panorama-settle.spec.ts');
+      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
       let instrumentation: ts.Node | undefined;
       const visit = (node: ts.Node) => {
         if (!instrumentation && ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
