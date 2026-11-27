@@ -144,6 +144,13 @@ function harness({logsFail = false, labelExists = true, failClose = false, dryRu
   };
 }
 
+test('shared Core/Pro implementation matches the pinned body digest', () => {
+  const {createHash} = require('node:crypto');
+  const body = fs.readFileSync(path.join(__dirname, 'main-red-policy.js'), 'utf8').replace(/^(?:\/\/[^\n]*\n)*/u, '');
+  assert.equal(createHash('sha256').update(body).digest('hex'),
+    '66db51eb2dfe218921d99b987b643083d6cd029a77cbd6ca099bd7677cebe4cb');
+});
+
 test('Octokit-shaped paginator normalizes workflow-run pages but preserves compare objects', async () => {
   const h = harness({workflowPageSize: 1});
   await h.run();
@@ -275,6 +282,164 @@ for (const sameSha of [true, false]) {
     assert.match(h.stored[0].comments[0].body, /run-12-attempt-2/u);
   });
 }
+
+for (const event of ['push', 'schedule', 'workflow_dispatch']) {
+  test(`reported ${event} red replay stays in its closed episode after first-red recovery`, async () => {
+    const h = harness({corePolicy: true, workflowPageSize: 1});
+    const first = {...history()[1], event};
+    const later = {...history()[0], event, head_sha: first.head_sha, run_attempt: 1};
+    h.setCurrent(later);
+    h.setHistory([later, first, ...history().slice(2)]);
+    await h.run();
+    const rerun = {...first, conclusion: 'success', run_attempt: 2};
+    h.setCurrent(rerun);
+    h.setHistory([later, rerun, ...history().slice(2)]);
+    await h.run();
+    assert.equal(h.stored[0].state, 'closed');
+    const count = h.mutations.length;
+    h.setCurrent(later);
+    await h.run();
+    await h.run();
+    assert.equal(h.stored.length, 1);
+    assert.equal(h.mutations.length, count);
+  });
+
+  for (const missed of ['first-red rerun', 'next green']) {
+    test(`${event}: missed ${missed} closes the persisted episode before a new red`, async () => {
+      const h = harness({corePolicy: true, workflowPageSize: 1});
+      const runs = history().map(run => ({...run, event}));
+      h.setCurrent(runs[0]);
+      h.setHistory(runs);
+      await h.run();
+      const recovery = {...runs[1], conclusion: 'success', run_attempt: 2,
+        ...(missed === 'next green' ? {id: 14, run_number: 14, run_attempt: 1} : {}),
+        html_url: `https://github.com/example/repo/actions/runs/${missed === 'next green' ? 14 : 12}`};
+      const recoveredHistory = missed === 'next green' ? [recovery, ...runs] : [runs[0], recovery, ...runs.slice(2)];
+      h.setHistory(recoveredHistory);
+      h.setCurrent({...runs[0], id: 15, run_number: 15});
+      await h.run();
+      await h.run();
+      assert.deepEqual(h.stored.map(issue => issue.state), ['closed', 'open']);
+      assert.equal(h.stored[0].comments.length, 1);
+      assert.match(h.stored[0].comments[0].body, new RegExp(`run-${recovery.id}-attempt-${recovery.run_attempt}`, 'u'));
+      assert.match(h.stored[1].body, new RegExp(`green-${recovery.id}`, 'u'));
+      const closedAt = h.mutations.findIndex(item => item.method === 'update');
+      assert.ok(closedAt < h.mutations.findLastIndex(item => item.method === 'create'));
+      h.setHistory([{...runs[0], id: 15, run_number: 15}, ...recoveredHistory]);
+      h.setCurrent({id: 16, run_number: 16, conclusion: 'success'});
+      await h.run();
+      await h.run();
+      assert.deepEqual(h.stored.map(issue => issue.state), ['closed', 'closed']);
+      assert.deepEqual(h.stored.map(issue => issue.comments.length), [1, 1]);
+    });
+  }
+
+  test(`${event}: next green reconciles a missed first-red green rerun`, async () => {
+    const h = harness({corePolicy: true, workflowPageSize: 1});
+    const runs = history().map(run => ({...run, event}));
+    h.setHistory(runs);
+    h.setCurrent(runs[0]);
+    await h.run();
+    const recovery = {...runs[1], conclusion: 'success', run_attempt: 2};
+    h.setHistory([runs[0], recovery, ...runs.slice(2)]);
+    h.setCurrent({id: 14, run_number: 14, conclusion: 'success'});
+    await h.run();
+    await h.run();
+    assert.equal(h.stored.length, 1);
+    assert.equal(h.stored[0].state, 'closed');
+    assert.equal(h.stored[0].comments.length, 1);
+  });
+}
+
+test('red replay keeps its episode when its marker was recorded in a comment', async () => {
+  const h = harness({corePolicy: true, workflowPageSize: 1});
+  await h.run();
+  const later = {...history()[0], id: 14, run_number: 14, run_attempt: 1};
+  h.setCurrent(later);
+  h.setHistory([later, ...history()]);
+  await h.run();
+  assert.match(h.stored[0].comments[0].body, /run-14-attempt-1/u);
+  const green = {...history()[1], conclusion: 'success', run_attempt: 2};
+  h.setCurrent(green);
+  h.setHistory([later, history()[0], green, ...history().slice(2)]);
+  await h.run();
+  const count = h.mutations.length;
+  h.setCurrent(later);
+  await h.run();
+  assert.equal(h.stored.length, 1);
+  assert.equal(h.stored[0].state, 'closed');
+  assert.equal(h.mutations.length, count);
+});
+
+test('dry-run missed recovery does not close or comment on persisted incidents', async () => {
+  const h = harness({dryRun: true, workflowPageSize: 1});
+  h.stored.push({number: 1, body: `${episodeMarker}\n<!-- main-red:first-red-run-12 -->`,
+    state: 'open', labels: [{name: 'main-red'}], comments: []});
+  h.setHistory([{...history()[2], id: 14, run_number: 14}, ...history()]);
+  h.setCurrent({id: 15, run_number: 15});
+  await h.run();
+  assert.equal(h.mutations.length, 0);
+  assert.equal(h.stored.length, 1);
+  assert.equal(h.stored[0].state, 'open');
+  assert.equal(h.stored[0].comments.length, 0);
+  assert.ok(h.messages.some(message => JSON.parse(message).action === 'close'));
+});
+
+test('reconciliation closes every recovered channel episode across older pages and preserves other workflows', async () => {
+  const h = harness({workflowPageSize: 1});
+  await h.run();
+  const old = {...h.stored[0], number: 2,
+    body: '<!-- main-red:episode:example/repo/7:green-8 -->\n<!-- main-red:first-red-run-9 -->', comments: []};
+  const foreign = {...old, number: 3, body: old.body.replace('/7:', '/70:'), comments: []};
+  h.stored.push(old, foreign);
+  const previous = {...history()[1], id: 9, run_number: 9};
+  const green = {...history()[2], id: 14, run_number: 14};
+  h.setHistory([green, ...history(), previous]);
+  h.setCurrent({id: 15, run_number: 15});
+  await h.run();
+  assert.deepEqual(h.stored.map(issue => issue.state), ['closed', 'closed', 'open', 'open']);
+  assert.equal(foreign.comments.length, 0);
+});
+
+test('missed-recovery closure retry does not duplicate comments or create a new episode before closing', async () => {
+  const h = harness({failClose: true, workflowPageSize: 1});
+  await h.run();
+  h.setHistory([{...history()[2], id: 14, run_number: 14}, ...history()]);
+  h.setCurrent({id: 15, run_number: 15});
+  await assert.rejects(h.run(), /close failed/u);
+  assert.equal(h.stored.length, 1);
+  await h.run();
+  assert.deepEqual(h.stored.map(issue => issue.state), ['closed', 'open']);
+  assert.equal(h.stored[0].comments.length, 1);
+});
+
+test('a hand-edited episode marker is logged and skipped without suppressing a new red', async () => {
+  const h = harness({workflowPageSize: 1});
+  await h.run();
+  h.stored[0].body = h.stored[0].body.replace(episodeMarker, episodeMarker.replace(' -->', ''));
+  const green = {...history()[2], id: 14, run_number: 14};
+  h.setHistory([green, ...history()]);
+  h.setCurrent({id: 15, run_number: 15});
+  await h.run();
+  assert.deepEqual(h.stored.map(issue => issue.state), ['open', 'open']);
+  assert.equal(h.stored[0].comments.length, 0);
+  assert.match(h.stored[1].body, /episode:example\/repo\/7:green-14/u);
+  assert.match(h.stored[1].body, /AssertionError: expected ready/u);
+  assert.ok(h.messages.some(message => {
+    const entry = JSON.parse(message);
+    return entry.action === 'skip' && entry.issue === 1 && entry.reason === 'Incident has no episode marker';
+  }));
+});
+
+test('an unrecovered persisted episode is not closed by its older baseline', async () => {
+  const h = harness({workflowPageSize: 1});
+  await h.run();
+  h.setCurrent({id: 14, run_number: 14});
+  await h.run();
+  assert.equal(h.stored.length, 1);
+  assert.equal(h.stored[0].state, 'open');
+  assert.equal(h.mutations.some(item => item.method === 'update'), false);
+});
 
 test('first observed manual red keeps its recovery marker when attribution selects a later red push', async () => {
   const h = harness();
