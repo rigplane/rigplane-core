@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from rigplane.audio import AudioPacket
+from rigplane.audio import AudioPacket, build_audio_packet
 from rigplane.audio.session import AudioSessionEvent, RX_LIVENESS_TIMEOUT_S
 from rigplane.core.exceptions import ConnectionError as CoreConnectionError
 from rigplane.runtime._audio_recovery import AudioRecoveryState
@@ -971,8 +971,24 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         radio._on_audio_recovery = recovery.append
         session = radio.audio_session
 
+        bus = radio.audio_bus
+        on_packet = bus._on_opus_packet
+        allow_frames = True
+        discarded_frames: list[AudioPacket | None] = []
+
+        def gate_frames(packet: AudioPacket | None) -> None:
+            if allow_frames:
+                on_packet(packet)
+            else:
+                discarded_frames.append(packet)
+
+        monkeypatch.setattr(bus, "_on_opus_packet", gate_frames)
+
         sub = await session.subscribe_rx("web-audio")
-        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+        first_frame = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
+        assert first_frame is not None
+        allow_frames = False
+        heartbeat_before_death = bus.last_rx_frame_monotonic
 
         teardown_calls, restore_teardown = _spy_method(
             radio, "_teardown_audio_transport"
@@ -983,11 +999,22 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
 
         async def _dead_ensure() -> None:
             await orig_ensure()
-            # The new leg is dead on arrival, but the call succeeds: the
-            # radio accepted the handshake yet sends no RX frames. The RX
-            # callback is only (re-)registered by reestablish below, so no
-            # frame can slip through between the rebuild and the kill.
             _kill_client_audio_only(radio)
+            # Closing UDP leaves its receive queue intact. Force a backlog
+            # that the new RX task will read after reestablish returns.
+            transport = radio._audio_transport
+            assert transport is not None
+            _drain(transport._packet_queue)
+            for seq in range(bus._jitter_depth):
+                transport._packet_queue.put_nowait(
+                    build_audio_packet(
+                        first_frame.data,
+                        sender_id=transport.remote_id,
+                        receiver_id=transport.my_id,
+                        send_seq=seq,
+                        ident=first_frame.ident,
+                    )
+                )
 
         async def _spy_reestablish() -> None:
             await orig_reestablish()
@@ -1030,12 +1057,19 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             # 2, 2 s before round 3, and the third round observes frames
             # for RX_LIVENESS_TIMEOUT_S before reporting FAILED once.
             for round_no in range(1, 4):
+                discarded_before = len(discarded_frames)
                 await _drive_rx_silent()
                 task = radio._audio_silence_repair_task
                 assert task is not None, (
                     f"round {round_no}: rx_silent scheduled no repair task"
                 )
                 await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+                assert await await_until(
+                    lambda: len(discarded_frames) > discarded_before,
+                    timeout=RESUME_BOUND_S,
+                    description=f"round {round_no} buffered RX delivery",
+                )
+                assert bus.last_rx_frame_monotonic == heartbeat_before_death
                 assert radio._audio_silence_repair_task is None
                 assert radio._audio_silence_repair_attempts == round_no
                 assert len(reestablished) == round_no
