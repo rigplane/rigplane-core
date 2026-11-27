@@ -606,6 +606,41 @@ it('reads reduced motion once for shared consumers and reacts to a query change'
   expect(query.listeners.size).toBe(0);
 });
 
+it('keeps a surviving reactive reader on the shared state across subscriber turnover (MOR-2551 P2a)', () => {
+  const query = motionQuery();
+  const observed: boolean[] = [];
+  const stopReactive = $effect.root(() => {
+    $effect(() => { observed.push(prefersReducedMotion()); });
+  });
+  flushSync();
+  try {
+    expect(observed).toEqual([false]);
+
+    const stopFirst = onReducedMotionChange(() => {});
+    // The last callback subscriber goes away while the reactive reader above
+    // survives: only the native listener is removed, the shared state stays.
+    stopFirst();
+    expect(query.listeners.size).toBe(0);
+
+    // Re-subscribing must reuse the same query and state — not strand the
+    // surviving reader on a discarded object.
+    const seen: boolean[] = [];
+    const stopSecond = onReducedMotionChange((reduced) => { seen.push(reduced); });
+    try {
+      expect(query.matchMedia).toHaveBeenCalledTimes(1);
+      query.change(true);
+      expect(prefersReducedMotion()).toBe(true);
+      expect(seen).toEqual([true]);
+      expect(observed).toEqual([false, true]);
+    } finally {
+      stopSecond();
+    }
+  } finally {
+    stopReactive();
+  }
+  expect(query.listeners.size).toBe(0);
+});
+
 it('keeps panorama layers and its landscape overlay free of backdrop filters and blur', () => {
   expect(Object.keys(panoramaSources).length).toBeGreaterThan(0);
   for (const [path, source] of Object.entries(panoramaSources)) {

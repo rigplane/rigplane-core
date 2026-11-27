@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createSmoother } from '../smoothing.svelte';
+import { createSmoother, onReducedMotionChange } from '../smoothing.svelte';
 
 // MOR-1233: the rAF ballistics loop in createSmoother previously ran
 // unconditionally, ignoring `prefers-reduced-motion`. These tests pin the
@@ -515,4 +515,63 @@ it('reset clears current and target synchronously without changing the live sche
     expect(smoother.value).toBe(2);
     smoother.stop();
   } finally { restore(); }
+});
+
+// MOR-2551 P2 (review of #4839): preference dispatch snapshotted the
+// subscriber set without re-checking membership, so a callback unsubscribed
+// by an earlier callback in the same dispatch still ran. For a smoother that
+// meant a removed change callback could call loop() after stop() and leave a
+// native frame scheduled — resurrecting disposed animation work.
+describe('reduced-motion dispatch — removal during dispatch (MOR-2551 P2b)', () => {
+  it('does not call a callback unsubscribed by an earlier callback in the same dispatch', () => {
+    const { setMatches, restore } = mockReducedMotion(false);
+    try {
+      const calls: string[] = [];
+      let stopSecond!: () => void;
+      const stopFirst = onReducedMotionChange(() => {
+        calls.push('first');
+        stopSecond();
+      });
+      stopSecond = onReducedMotionChange(() => {
+        calls.push('second');
+      });
+
+      setMatches(true);
+
+      expect(calls).toEqual(['first']);
+      stopFirst();
+    } finally {
+      restore();
+    }
+  });
+
+  it('a stop() by an earlier subscriber during dispatch leaves no frame scheduled', () => {
+    const { setMatches, restore } = mockReducedMotion(true);
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    try {
+      const smoother = createSmoother(0.12, 0.32, 0);
+      // Subscribed BEFORE the smoother's own change callback, so it runs
+      // first in the same dispatch and stops the smoother before the
+      // smoother's (now-removed) callback would run.
+      const stopStopper = onReducedMotionChange(() => {
+        smoother.stop();
+      });
+      smoother.update(50);
+      smoother.start();
+      expect(smoother.value).toBe(50);
+      expect(rafSpy).not.toHaveBeenCalled();
+
+      // Reduced motion turns OFF: the stopper runs first and stops the
+      // smoother; the smoother's removed callback must not restart the loop.
+      setMatches(false);
+
+      expect(rafSpy).not.toHaveBeenCalled();
+      expect(smoother.value).toBe(50);
+      stopStopper();
+      smoother.stop();
+    } finally {
+      restore();
+    }
+  });
 });
