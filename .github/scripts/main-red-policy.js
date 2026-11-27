@@ -1,3 +1,5 @@
+// Shared with rigplane-pro/.github/scripts/main-red-policy-core.js.
+// Change both copies and both pinned body digests together in lockstep PRs.
 'use strict';
 
 const RED = new Set(['failure', 'timed_out', 'startup_failure']);
@@ -197,6 +199,7 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
     return {...run, conclusion};
   }
   const observed = await observe(current);
+  // Neutral/cancelled runs defer stale-issue reconciliation to the next red or successful run.
   if (!RED.has(observed.conclusion) && observed.conclusion !== 'success') return;
   const channel = `${repo.owner}/${repo.repo}/${current.workflow_id}`;
   const issues = githubIssuesClient(github, repo);
@@ -234,7 +237,11 @@ async function run({github, context, core, env = process.env, workflowPaths = PA
       : observedRuns.filter(run => run.conclusion === 'success' && run.run_number >= first.run_number)
         .sort((a, b) => a.run_number - b.run_number)[0];
     if (!green) continue;
-    const key = /<!-- main-red:(episode:[^ ]+) -->/u.exec(issue.body)[1];
+    const key = /<!-- main-red:(episode:[^ ]+) -->/u.exec(issue.body)?.[1];
+    if (!key) {
+      core.info(JSON.stringify({action: 'skip', issue: issue.number, reason: 'Incident has no episode marker'}));
+      continue;
+    }
     const result = await publish(issues, {key, eventKey: `run-${green.id}-attempt-${green.run_attempt || 1}`,
       recovered: true, body: `Green main run: ${green.html_url || green.id}`}, dryRun);
     core.info(JSON.stringify({...result, key, dryRun}));

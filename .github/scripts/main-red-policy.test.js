@@ -148,7 +148,7 @@ test('shared Core/Pro implementation matches the pinned body digest', () => {
   const {createHash} = require('node:crypto');
   const body = fs.readFileSync(path.join(__dirname, 'main-red-policy.js'), 'utf8').replace(/^(?:\/\/[^\n]*\n)*/u, '');
   assert.equal(createHash('sha256').update(body).digest('hex'),
-    '199445fc618ff4eaab3fe4d89cd8b22eec417a503e7effd631a0e188cf56e5e4');
+    '66db51eb2dfe218921d99b987b643083d6cd029a77cbd6ca099bd7677cebe4cb');
 });
 
 test('Octokit-shaped paginator normalizes workflow-run pages but preserves compare objects', async () => {
@@ -411,6 +411,24 @@ test('missed-recovery closure retry does not duplicate comments or create a new 
   await h.run();
   assert.deepEqual(h.stored.map(issue => issue.state), ['closed', 'open']);
   assert.equal(h.stored[0].comments.length, 1);
+});
+
+test('a hand-edited episode marker is logged and skipped without suppressing a new red', async () => {
+  const h = harness({workflowPageSize: 1});
+  await h.run();
+  h.stored[0].body = h.stored[0].body.replace(episodeMarker, episodeMarker.replace(' -->', ''));
+  const green = {...history()[2], id: 14, run_number: 14};
+  h.setHistory([green, ...history()]);
+  h.setCurrent({id: 15, run_number: 15});
+  await h.run();
+  assert.deepEqual(h.stored.map(issue => issue.state), ['open', 'open']);
+  assert.equal(h.stored[0].comments.length, 0);
+  assert.match(h.stored[1].body, /episode:example\/repo\/7:green-14/u);
+  assert.match(h.stored[1].body, /AssertionError: expected ready/u);
+  assert.ok(h.messages.some(message => {
+    const entry = JSON.parse(message);
+    return entry.action === 'skip' && entry.issue === 1 && entry.reason === 'Incident has no episode marker';
+  }));
 });
 
 test('an unrecovered persisted episode is not closed by its older baseline', async () => {
