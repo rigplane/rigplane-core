@@ -101,21 +101,27 @@ async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
 
 async def test_states_until_observes_events_without_advancing_clock() -> None:
     radio = IcomRadio("127.0.0.1", model="IC-7610")
-    clock = VirtualClock()
-    loop = asyncio.get_running_loop()
-    real_loop_time = loop.time
-    loop.call_soon(setattr, radio, "_conn_state", RadioConnectionState.CONNECTED)
+    try:
+        clock = VirtualClock()
+        loop = asyncio.get_running_loop()
+        real_loop_time = loop.time
+        loop.call_soon(setattr, radio, "_conn_state", RadioConnectionState.CONNECTED)
 
-    seen = await _states_until(
-        radio,
-        1.0,
-        lambda states: states[-1] is RadioConnectionState.CONNECTED,
-        clock=clock,
-    )
+        seen = await _states_until(
+            radio,
+            1.0,
+            lambda states: states[-1] is RadioConnectionState.CONNECTED,
+            clock=clock,
+        )
 
-    assert seen == [RadioConnectionState.DISCONNECTED, RadioConnectionState.CONNECTED]
-    assert clock() == 0.0
-    assert loop.time == real_loop_time
+        assert seen == [
+            RadioConnectionState.DISCONNECTED,
+            RadioConnectionState.CONNECTED,
+        ]
+        assert clock() == 0.0
+        assert loop.time == real_loop_time
+    finally:
+        await radio.disconnect()
 
 
 @pytest.mark.timeout(30)
