@@ -87,6 +87,7 @@ export const SOURCE_TEXT_PIN_BASELINE = Object.freeze([
   "src/components-v2/layout/__tests__/RadioLayout.refusal-line-grid.component.test.ts::RadioLayout refusal-line grid placement (MOR-4828 fix round) > gives the stacked Standard band its own refusal row",
   "src/components-v2/layout/__tests__/RadioLayout.refusal-line-grid.component.test.ts::RadioLayout refusal-line grid placement (MOR-4828 fix round) > gives the wide semantic-deck grid a full-width health area",
   "src/components-v2/layout/__tests__/RadioLayout.refusal-line-grid.component.test.ts::RadioLayout refusal-line grid placement (MOR-4828 fix round) > keeps the disconnected banner, the refusal row and the bar on distinct full-width rows",
+  "src/components-v2/layout/__tests__/RadioLayout.refusal-line-grid.component.test.ts::RadioLayout refusal-line grid placement (MOR-4828 fix round) > keeps the original tracks and no health line on %s when no field is refused",
   "src/components-v2/layout/__tests__/StatusBar.skin-options.test.ts::StatusBar skinOptions (MOR-1257 F1) > is typed CanonicalLayoutMode, not the wider LayoutMode",
   "src/components-v2/layout/__tests__/StatusBar.skin-options.test.ts::StatusBar skinOptions (MOR-1257 F1) > lists peer-split with an LCD Peer Split label",
   "src/components-v2/layout/__tests__/StatusBar.skin-options.test.ts::StatusBar skinOptions (MOR-1257 F1) > lists production segmentline layout %s",

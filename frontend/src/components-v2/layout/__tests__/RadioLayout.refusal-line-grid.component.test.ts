@@ -146,8 +146,11 @@ describe('RadioLayout refusal-line grid placement (MOR-4828 fix round)', () => {
     return state;
   }
 
-  function mountFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2'): void {
-    rt.state = refusedFaceState();
+  function mountFace(
+    skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2',
+    state: unknown = refusedFaceState(),
+  ): void {
+    rt.state = state;
     rt.caps = structuredClone(capsFixture);
     conn.setRigConnected(true);
     conn.setRadioHealth(null);
@@ -196,13 +199,43 @@ describe('RadioLayout refusal-line grid placement (MOR-4828 fix round)', () => {
   it('gives the refusal row its own full-width health row below the disconnected banner', async () => {
     const source = await layoutSource();
     expect(source).toMatch(
-      /\.desktop-control-face > :global\(\.refusal-line\)\s*\{\s*grid-area:\s*2 \/ 1 \/ 3 \/ -1;/,
+      /\.desktop-control-face > :global\(\.refusal-line\)\s*\{\s*grid-area:\s*refusal \/ 1 \/ span 1 \/ -1;/,
+    );
+    expect(source).toMatch(
+      /\.radio-layout\.desktop-control-face:has\(> :global\(\.refusal-line\)\)\s*\{\s*grid-template-rows:\s*\[banner\] auto \[refusal\] auto \[status\] 28px/,
+    );
+    expect(source).toMatch(
+      /\.radio-layout\.desktop-control-face\.standard-face:has\(> :global\(\.refusal-line\)\)\s*\{\s*grid-template-rows:\s*\[banner\] auto \[refusal\] auto \[status\] 28px/,
     );
   });
 
+  it.each(['desktop-v2', 'sdr-test'] as const)('keeps the original tracks and no health line on %s when no field is refused', async (skinId) => {
+    conn.setWsConnected(true);
+    conn.markStateUpdated();
+    const state = structuredClone(stateFixture) as { fieldStatus: Record<string, unknown> };
+    // Same field-status state as the production design-language capture.
+    state.fieldStatus = Object.fromEntries(['main.sMeter', 'sub.sMeter'].map(path => [path, {
+      storePath: path, observed: false, freshness: 'unknown', availability: 'missing',
+    }]));
+    mountFace(skinId, state);
+    expect(refusalLine()).toBeNull();
+
+    // jsdom omits component styles; the browser capture asserts rectangles.
+    // Pin the default tracks here so an unconditional empty health row fails.
+    const source = await layoutSource();
+    const base = source.match(/\.radio-layout\.desktop-control-face\s*\{([^}]*)\}/)![1];
+    expect(base).toContain('grid-template-rows: [banner] auto [status] 28px [deck] auto [controls] minmax(min-content, 1fr) [dock] auto;');
+    const standard = source.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/)![1];
+    expect(standard).toContain('grid-template-rows: [banner] auto [status] 28px [deck] minmax(200px, auto) [controls] minmax(min-content, 1fr) [dock] auto;');
+    expect(source).toContain('.radio-layout.desktop-control-face:has(> :global(.refusal-line))');
+    expect(source).toContain('.radio-layout.desktop-control-face.standard-face:has(> :global(.refusal-line))');
+    const band = source.slice(source.indexOf('@media (max-width: 1024px)'));
+    const stacked = band.match(/\.radio-layout\.desktop-control-face\.standard-face\s*\{([^}]*)\}/)![1];
+    expect(stacked).toContain('grid-template-rows: [banner] auto [status] 28px [deck] auto [left] auto [center] minmax(min-content, 1fr) [right] auto [dock] auto;');
+  });
+
   it('keeps the disconnected banner, the refusal row and the bar on distinct full-width rows', async () => {
-    // Coexistence: disconnected AND refused at once. The banner keeps row 1,
-    // the refusal row takes row 2, the bar moves to row 3.
+    // Coexistence: disconnected AND refused at once, on separate named rows.
     conn.setWsConnected(true);
     conn.markStateUpdated();
     conn.setWsConnected(false);
@@ -220,7 +253,7 @@ describe('RadioLayout refusal-line grid placement (MOR-4828 fix round)', () => {
       /\.desktop-control-face > :global\(\.control-link-lost\)\s*\{\s*grid-area:\s*1 \/ 1 \/ 2 \/ -1;/,
     );
     expect(source).toMatch(
-      /\.desktop-control-face > :global\(\.status-bar\)\s*\{\s*grid-area:\s*3 \/ 1 \/ 4 \/ -1;/,
+      /\.desktop-control-face > :global\(\.status-bar\)\s*\{\s*grid-area:\s*status \/ 1 \/ span 1 \/ -1;/,
     );
   });
 
@@ -238,7 +271,10 @@ describe('RadioLayout refusal-line grid placement (MOR-4828 fix round)', () => {
     expect(bandStart).toBeGreaterThan(-1);
     const stacked = source.slice(bandStart);
     expect(stacked).toMatch(
-      /\.desktop-control-face\.standard-face > :global\(\.refusal-line\)\s*\{\s*grid-area:\s*2 \/ 1 \/ 3 \/ 2;/,
+      /\.desktop-control-face\.standard-face > :global\(\.refusal-line\)\s*\{\s*grid-area:\s*refusal \/ 1 \/ span 1 \/ 2;/,
+    );
+    expect(stacked).toMatch(
+      /\.radio-layout\.desktop-control-face\.standard-face:has\(> :global\(\.refusal-line\)\)\s*\{\s*grid-template-rows:\s*\[banner\] auto \[refusal\] auto \[status\] 28px/,
     );
   });
 });
