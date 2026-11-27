@@ -66,7 +66,7 @@ async def demanded_radio(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IcomR
     async def open_close(*, open_stream: bool) -> None:
         return None
 
-    radio = IcomRadio("127.0.0.1")
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
     radio._connected = True
     radio._civ_transport = IcomTransport()
     radio._audio_port = 50001
