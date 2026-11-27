@@ -83,6 +83,161 @@ def test_parser_preserves_future_codes_and_ignores_extra_fields():
     assert failure.phase == "future_phase"
 
 
+@pytest.mark.parametrize("command", ["web", "station"])
+@pytest.mark.parametrize("options", [["--port", "not-an-int"], ["--unknown-option"]])
+def test_main_argument_abort_emits_once(command, options, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["rigplane", command, *options])
+    with patch("rigplane.cli._run") as run:
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+    assert caught.value.code == 2
+    run.assert_not_called()
+    _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.parametrize("command", ["web", "station"])
+def test_main_log_initialization_abort_emits_once(
+    command, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr("sys.argv", ["rigplane", command])
+    monkeypatch.setenv("ICOM_LOG_FILE", str(tmp_path))
+    with patch("rigplane.cli._run") as run:
+        with pytest.raises(OSError):
+            cli.main()
+    run.assert_not_called()
+    _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.parametrize(
+    "argv", [["web", "--help"], ["station", "--help"], ["models", "--unknown-option"]]
+)
+def test_main_help_and_other_commands_do_not_report(argv, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["rigplane", *argv])
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+    assert caught.value.code == (0 if "--help" in argv else 2)
+    assert STARTUP_FAILURE_PREFIX not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_main_reports_nested_abort_before_forced_exit(exit_code, monkeypatch, capsys):
+    from rigplane.core.startup_failure import startup_failure_scope
+
+    monkeypatch.setattr("sys.argv", ["rigplane", "web", "--no-rigctld"])
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+
+    async def abort(_args):
+        with startup_failure_scope(StartupCause.UNKNOWN, StartupPhase.CONFIGURATION):
+            if exit_code:
+                cli.record_startup_failure(
+                    None,
+                    StartupCause.PROFILE_UNRESOLVED,
+                    StartupPhase.PROFILE_RESOLUTION,
+                )
+            return exit_code
+
+    def forced_exit(code):
+        if exit_code:
+            _failure(capsys, "profile_unresolved", "profile_resolution")
+        else:
+            assert STARTUP_FAILURE_PREFIX not in capsys.readouterr().err
+        raise SystemExit(code)
+
+    with (
+        patch("rigplane.cli._run", new=abort),
+        patch("logging.basicConfig"),
+        patch("rigplane.diagnostics._logging.detach_diagnostic_logging"),
+        patch("rigplane.cli.signal.signal"),
+        patch("rigplane.cli.os._exit", side_effect=forced_exit),
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main()
+    assert caught.value.code == exit_code
+    assert STARTUP_FAILURE_PREFIX not in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["0", "not-a-number"])
+async def test_real_constructor_environment_error_is_configuration_invalid(
+    value, monkeypatch, capsys
+):
+    monkeypatch.setenv("ICOM_SERIAL_CIV_MIN_INTERVAL_MS", value)
+    args = cli._build_parser().parse_args(["web", "--no-rigctld"])
+    config = SerialBackendConfig(device="/private/device", model="IC-7300")
+    with (
+        patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
+        patch("rigplane.cli.guards_backend", return_value=False),
+        patch("rigplane.cli.check_ports_available") as preflight,
+    ):
+        assert await cli._run(args) == 1
+    preflight.assert_not_called()
+    _failure(capsys, "configuration_invalid", "configuration")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [None, "unsupported-synthetic-model"])
+async def test_factory_model_refusal_is_profile_unresolved(model, capsys):
+    args = cli._build_parser().parse_args(["web", "--no-rigctld"])
+    config = SerialBackendConfig(device="/private/device", model=model)
+    with (
+        patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
+        patch("rigplane.cli.guards_backend", return_value=False),
+    ):
+        assert await cli._run(args) == 1
+    _failure(capsys, "profile_unresolved", "profile_resolution")
+
+
+@pytest.mark.asyncio
+async def test_pending_radio_ownership_abort_wins_over_web_scope(capsys):
+    import asyncio
+
+    from rigplane.backends.config import LanBackendConfig
+    from rigplane.core.exceptions import RadioSessionHeldError
+
+    args = cli._build_parser().parse_args(["web", "--no-rigctld", "--no-discovery"])
+    args.web_bridge = None
+    web_starting = asyncio.Event()
+    web_stopped = asyncio.Event()
+    error = RadioSessionHeldError("synthetic-secret")
+    radio = AsyncMock()
+    radio.startup_busy_hold_event = asyncio.Event()
+    radio.startup_busy_hold_event.set()
+
+    async def enter():
+        await web_starting.wait()
+        raise error
+
+    async def serve(**_kwargs):
+        web_starting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            web_stopped.set()
+
+    radio.__aenter__.side_effect = enter
+    server = AsyncMock()
+    server.serve_forever.side_effect = serve
+    with (
+        patch(
+            "rigplane.cli._build_backend_config",
+            new=AsyncMock(return_value=LanBackendConfig(host="127.0.0.1")),
+        ),
+        patch("rigplane.cli.guards_backend", return_value=False),
+        patch("rigplane.cli.create_radio", return_value=radio),
+        patch("rigplane.cli.check_ports_available"),
+        patch("rigplane.cli.ManagedTxComposition", return_value=None),
+        patch("rigplane.cli.install_managed_tx_composition"),
+        patch("rigplane._platformdirs_migration.migrate_legacy_platformdirs"),
+        patch("rigplane.web.server.WebServer", return_value=server),
+    ):
+        assert await cli._run(args) == 3
+    assert web_stopped.is_set()
+    server.finish_startup_busy_hold.assert_not_awaited()
+    radio.__aexit__.assert_awaited_once()
+    assert radio.__aexit__.await_args.args[1] is error
+    _failure(capsys, "radio_in_use", "radio_open")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["web", "station"])
 @pytest.mark.parametrize("stage", ["config", "factory"])
@@ -373,7 +528,7 @@ async def test_unclassified_abort_emits_unknown_and_preserves_exception(
     with patch(
         "rigplane.cli._build_backend_config", new=AsyncMock(side_effect=original)
     ):
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(type(original)) as caught:
             await cli._run(args)
     assert caught.value is original
     _failure(capsys, "unknown", "configuration")

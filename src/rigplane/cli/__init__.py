@@ -2682,7 +2682,13 @@ async def _serve_while_startup_connect_pending(
                 # The hold cleared (or gave up) before shutdown: success
                 # runs the late completion and serving continues; failure
                 # tears serving down by raising through the finally below.
-                await startup_enter
+                try:
+                    await startup_enter
+                except RadioSessionHeldError:
+                    with startup_operation(
+                        StartupCause.RADIO_IN_USE, StartupPhase.RADIO_OPEN
+                    ):
+                        raise
                 await server.finish_startup_busy_hold()
         await serve_task
     finally:
@@ -2907,10 +2913,14 @@ async def _run_command(args: argparse.Namespace) -> int:
     try:
         radio = create_radio(config)
     except (ValueError, RigLoadError) as exc:
-        # A profile that does not load (MOR-3678: e.g. an incomplete
-        # [cw_text] enable) is a readable error naming the file and key.
         record_startup_failure(
-            exc, StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+            exc,
+            StartupCause.PROFILE_UNRESOLVED
+            if isinstance(exc, RigLoadError)
+            else StartupCause.CONFIGURATION_INVALID,
+            StartupPhase.PROFILE_RESOLUTION
+            if isinstance(exc, RigLoadError)
+            else StartupPhase.CONFIGURATION,
         )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -5573,10 +5583,33 @@ def probe_main(
 
 
 def main() -> None:
+    parser = _build_parser()
+    args = argparse.Namespace()
+    try:
+        args = parser.parse_args(namespace=args)
+    except (Exception, SystemExit):
+        if getattr(args, "command", None) in ("web", "station"):
+            with startup_failure_scope(
+                StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+            ):
+                raise
+        raise
+
+    if args.command in ("web", "station"):
+        with startup_failure_scope(
+            StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+        ):
+            exit_code = _main_with_args(parser, args)
+    else:
+        exit_code = _main_with_args(parser, args)
+    # Force exit prevents a hang on orphaned PortAudio executor threads.
+    _flush_stdio_before_forced_exit()
+    os._exit(exit_code)
+
+
+def _main_with_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     import logging
 
-    parser = _build_parser()
-    args = parser.parse_args()
     _finalize_ptt_args(parser, args)
 
     # Enable debug logging with ICOM_DEBUG=1 or any truthy value
@@ -5723,8 +5756,8 @@ def main() -> None:
         # unified session lifecycle's graceful close (``radio.disconnect()`` →
         # ``CoreRadioSessionLifecycle.disconnect`` → mechanism release).  The
         # release sends the load-bearing token-remove under ``asyncio.shield``
-        # (Note 2), so the radio's session is freed BEFORE the ``os._exit``
-        # below — even though a cancel is already in flight from the SIGTERM.
+        # (Note 2), so the radio's session is freed BEFORE ``main`` exits
+        # — even though a cancel is already in flight from the SIGTERM.
         # This is the SIGTERM graceful-close path (design 2.6 / Hole 3): the
         # process does not hard-exit before the token-remove has gone out.
         def _sigterm_handler(signum: int, frame: Any) -> None:
@@ -5773,13 +5806,9 @@ def main() -> None:
                     pid_file.unlink(missing_ok=True)
                 except OSError:
                     pass
-            # Force exit — prevents hang on orphaned executor threads
-            # (PortAudio stream.read/write blocked in thread pool)
-            _flush_stdio_before_forced_exit()
-            os._exit(exit_code)
+            return exit_code
         except KeyboardInterrupt:
-            _flush_stdio_before_forced_exit()
-            os._exit(130)
+            return 130
         finally:
             if pid_file is not None:
                 try:
