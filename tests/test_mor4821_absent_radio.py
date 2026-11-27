@@ -305,28 +305,44 @@ async def test_open_transport_resumes_acquisition_before_freshness_reply(
     monkeypatch.setattr(poller, "_send_query", counted_send)
     task = asyncio.create_task(poller._run())  # noqa: SLF001
     try:
-        await virtual_clock.elapse(35.0)
+        # Advance before settling instead of replaying every intermediate timer.
+        for _ in range(70):
+            virtual_clock.advance(0.5)
+            await virtual_clock.elapse(0)
         assert send_query.await_count == 0
+        assert len(query_times) >= 10, "closed-link setup must complete ten probes"
         assert poller._state_store.snapshot().generated_at_monotonic == virtual_clock()  # noqa: SLF001
         radio._serial_session.connected = True
         radio._conn_state = RadioConnectionState.CONNECTED
         assert not radio.radio_ready
         opened = virtual_clock()
-        await virtual_clock.elapse(0.3)
-        assert send_query.await_count >= 1
+        for _ in range(3):
+            virtual_clock.advance(0.1)
+            await virtual_clock.elapse(0)
+        assert send_query.await_count >= 1, (
+            "an open transport must send acquisition within three 0.1 s clock steps, "
+            "before any freshness reply"
+        )
         assert opened <= wire_times[0] <= opened + 0.3
         assert wire_ready[0] is False
         assert not radio.radio_ready
         radio._last_civ_data_received = virtual_clock()
         assert radio.radio_ready
-        await virtual_clock.elapse(2.1)
+        for _ in range(21):
+            virtual_clock.advance(0.1)
+            await virtual_clock.elapse(0)
         assert not radio.radio_ready
-        await virtual_clock.elapse(7.9)
+        for _ in range(79):
+            virtual_clock.advance(0.1)
+            await virtual_clock.elapse(0)
         # A 2 s freshness window must not strand polling at the 5 s cap.
-        assert sum(t >= opened for t in query_times) >= 20
+        assert sum(t >= opened for t in query_times) >= 20, (
+            "acquisition must keep normal cadence after the freshness window expires"
+        )
     finally:
         task.cancel()
-        await await_until(task.done, timeout=2.0, description="poller shutdown")
+        await virtual_clock.elapse(0)
+        assert task.done(), "poller cancellation must settle without a clock timer"
         await task
 
 
