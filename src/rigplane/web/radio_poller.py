@@ -1834,15 +1834,17 @@ class RadioPoller:
                             )
                     await asyncio.sleep(self._adaptive_gap())
 
-                # Closed-transport pacing is separate from command/query error
-                # recovery. Recheck openness at the normal poll interval because
-                # backends do not expose a common link-open notification; queue
-                # notifications wake this wait immediately for safety commands.
+                # Keep the disconnected log and paced probes even when the
+                # acquisition drain can suppress sends without raising an error.
                 if not self._transport_open_for_acquisition():
-                    _closed_pause = True
-                    await self._queue.wait(timeout=self._fast_interval)
-                    continue
-                if _closed_pause:
+                    _backoff = max(_backoff, 0.5)
+                    if not _closed_pause:
+                        _closed_pause = True
+                        logger.info(
+                            "radio-poller: radio disconnected, backing off %.1fs",
+                            _backoff,
+                        )
+                elif _closed_pause:
                     _closed_pause = False
                     # Errors while the transport was closed must not keep an
                     # open link behind the old readiness-based error backoff.
@@ -1850,12 +1852,31 @@ class RadioPoller:
 
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
-                    await asyncio.sleep(_backoff)
+                    if _closed_pause:
+                        loop = asyncio.get_running_loop()
+                        retry_at = loop.time() + _backoff
+                        while (remaining := retry_at - loop.time()) > 0:
+                            await self._queue.wait(
+                                timeout=min(remaining, self._fast_interval)
+                            )
+                            if (
+                                self._queue.has_commands
+                                or self._transport_open_for_acquisition()
+                            ):
+                                break
+                        if (
+                            self._queue.has_commands
+                            or self._transport_open_for_acquisition()
+                        ):
+                            continue
+                    else:
+                        await asyncio.sleep(_backoff)
                     # Still try one query to detect reconnection
                     try:
                         await self._send_query()
                         if (
-                            getattr(self._radio, "connected", False) is not True
+                            not self._transport_open_for_acquisition()
+                            or getattr(self._radio, "connected", False) is not True
                             or getattr(self._radio, "radio_ready", False) is not True
                         ):
                             _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
@@ -1866,6 +1887,8 @@ class RadioPoller:
                         _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         continue
                     except Exception:
+                        if _closed_pause:
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         continue
 
                 # 2. Send fast meter query

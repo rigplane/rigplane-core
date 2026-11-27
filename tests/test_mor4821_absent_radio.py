@@ -18,6 +18,7 @@ attempt 0, no retry scheduled" next to a health verdict of "reconnecting".
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -36,7 +37,7 @@ from rigplane.core.acquisition_scheduler import (
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.radio_state import RadioState
-from rigplane.web.radio_poller import CommandQueue, PttOff, RadioPoller
+from rigplane.web.radio_poller import CommandQueue, PttOff, RadioPoller, SetPower
 from rigplane.web.runtime_helpers import classify_radio_health
 from rigplane.web.server import WebServer
 from test_radio_poller_coverage import (
@@ -119,17 +120,58 @@ class _SerialPropertiesRadio:
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.parametrize("query_error", [None, TimeoutError("closed transport")])
+async def test_closed_transport_keeps_backoff_probes_without_restoring(
+    virtual_clock: VirtualClock,
+    caplog: pytest.LogCaptureFixture,
+    query_error: Exception | None,
+) -> None:
+    radio = _absent_serial_radio()
+    poller, send_query = _poller_with_counted_wire(radio)
+    original_probe = poller._send_query  # noqa: SLF001
+    generation = poller._provider_generation()  # noqa: SLF001
+
+    async def probe() -> None:
+        if query_error is not None:
+            raise query_error
+        await original_probe()
+
+    poller._send_query = AsyncMock(side_effect=probe)  # noqa: SLF001
+    with caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"):
+        task = asyncio.create_task(poller._run())  # noqa: SLF001
+        try:
+            await virtual_clock.elapse(35.0)
+            assert 2 <= poller._send_query.await_count < 20  # noqa: SLF001
+            send_query.assert_not_awaited()
+            assert "radio disconnected, backing off" in caplog.text
+            assert "radio-poller: connection restored" not in caplog.text
+            assert radio.connected is False
+            assert radio.radio_ready is False
+            assert poller._provider_generation() == generation  # noqa: SLF001
+        finally:
+            task.cancel()
+            await task
+
+
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("open_before_release", [False, True])
+@pytest.mark.parametrize("command_failed", [False, True])
 async def test_absent_port_sends_no_acquisition_and_release_wakes_pacing(
     virtual_clock: VirtualClock,
     open_before_release: bool,
+    command_failed: bool,
 ) -> None:
     radio = _SerialPropertiesRadio()
     poller, send_query = _poller_with_counted_wire(radio)
+    if command_failed:
+        radio.set_rf_power.side_effect = ConnectionError("closed transport")
+        poller._queue.put(SetPower(10))  # noqa: SLF001
     task = asyncio.create_task(poller._run())  # noqa: SLF001
     try:
         await virtual_clock.elapse(35.0)
         assert send_query.await_count == 0
+        if command_failed:
+            radio.set_rf_power.assert_awaited_once_with(10)
         if open_before_release:
             radio._serial_session.connected = True
             radio._conn_state = RadioConnectionState.CONNECTED
