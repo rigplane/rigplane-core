@@ -1,0 +1,49 @@
+name: Main red policy
+
+on:
+  workflow_run:
+    workflows: ['Tests (full matrix)', 'Tests (quick)']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Main workflow run to report'
+        required: true
+        type: string
+      dry_run:
+        description: 'Plan the GitHub issue operation without writing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: main-red-policy-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: write
+    runs-on: [self-hosted, Linux, ARM64, light]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        env:
+          MAIN_RED_RUN_ID: ${{ inputs.run_id }}
+          MAIN_RED_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        with:
+          script: |
+            const policy = require('./.github/scripts/main-red-policy.js');
+            await policy.run({github, context, core});
