@@ -767,9 +767,7 @@ class CivRuntime:
             tuple[asyncio.Task[None], asyncio.Task[None]] | None
         ) = None
         self._soft_recovery_epoch: int | None = None
-        # A new pump can start without receiving any data. Keep the last
-        # confirmed generation across rebuilds so the watchdog sees that debt.
-        self._last_civ_frame_epoch: int | None = None
+        self._recovery_frame_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, tuple[CivFrame, bytes]] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
@@ -1198,6 +1196,10 @@ class CivRuntime:
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
+        if reason in ("connect", "soft_reconnect"):
+            self._host._last_civ_data_received = time.monotonic()
+            if self._recovery_running():
+                self._recovery_frame_epoch = self._host._civ_epoch
         self._host._state_store.begin_provider_generation()
         session = getattr(self._host, "_control_scope_session", None)
         if isinstance(session, ScopeSession):
@@ -1603,10 +1605,9 @@ class CivRuntime:
         :meth:`stop_data_watchdog` keeps it from cancelling itself).
 
         Once payload is idle, silence, unanswered sends, or a recovery that
-        has yet to restore CI-V data can start a stall episode. Pings alone
-        cannot end that episode. The deadline is chosen at entry: a silent
-        port or a stream with recovery/data history gets the short window;
-        a first stall on an answering port keeps the 60 s patience.
+        still needs a CI-V frame can start a stall episode. A silent port
+        or an unconfirmed recovery uses the short deadline. A live port
+        with an unanswered send keeps the 60 s patience.
 
         Before that patience window starts, the control session itself is
         probed once (MOR-3703) — but only while a LAN control session is
@@ -1620,7 +1621,6 @@ class CivRuntime:
         """
         recovering = False
         recovery_start: float = 0.0
-        deadline = _OPENCLOSE_DEADLINE
         last_rx_advance: float | None = None
         rx_baseline: int | None = None
         baseline_transport: object | None = None
@@ -1672,8 +1672,11 @@ class CivRuntime:
                 )
 
                 payload_idle = now - last > _CIV_DATA_WATCHDOG_TIMEOUT
+                recovery_owes_data = self._recovery_owes_data()
                 stalled = payload_idle and (
-                    port_silent or unanswered or self._unrestored_after_recovery()
+                    port_silent
+                    or unanswered
+                    or (recovery_owes_data and not self._recovery_running())
                 )
                 if payload_idle and not stalled:
                     if not quiet_logged:
@@ -1683,21 +1686,11 @@ class CivRuntime:
                             now - last,
                         )
                         quiet_logged = True
-                    continue
-                quiet_logged = False
+                else:
+                    quiet_logged = False
 
                 if stalled:
                     if not recovering:
-                        # Capture history before this episode sets the flag.
-                        # Otherwise the first nudge would shorten its own deadline.
-                        deadline = (
-                            _SILENT_OPENCLOSE_DEADLINE
-                            if port_silent
-                            or self._host._civ_recovering
-                            or self._soft_recovery_epoch is not None
-                            or self._last_civ_frame_epoch is not None
-                            else _OPENCLOSE_DEADLINE
-                        )
                         logged_rx = rx_count if rx_count is not None else -1
                         q_size = civ_t._packet_queue.qsize() if civ_t else -1
                         evidence = "unrestored CI-V stream"
@@ -1751,6 +1744,11 @@ class CivRuntime:
                         recovery_start = now
 
                     elapsed_recovery = now - recovery_start
+                    deadline = (
+                        _SILENT_OPENCLOSE_DEADLINE
+                        if port_silent or recovery_owes_data
+                        else _OPENCLOSE_DEADLINE
+                    )
                     if elapsed_recovery < deadline:
                         try:
                             await self._host._send_open_close(open_stream=True)
@@ -1786,7 +1784,7 @@ class CivRuntime:
                         recovering = False
                     if (
                         self._host._civ_recovering
-                        and not self._rebuild_owes_data()
+                        and not recovery_owes_data
                         and not self._recovery_running()
                     ):
                         # Release a stale flag so a later notice can start
@@ -1806,22 +1804,10 @@ class CivRuntime:
             )
         )
 
-    def _rebuild_owes_data(self) -> bool:
-        return (
-            self._last_civ_frame_epoch is not None
-            and self._last_civ_frame_epoch != self._host._civ_epoch
-        )
-
-    def _unrestored_after_recovery(self) -> bool:
-        host = self._host
-        return (
-            (host._civ_recovering or not host._civ_stream_ready)
-            and (
-                host._civ_recovering
-                or self._soft_recovery_epoch is not None
-                or self._rebuild_owes_data()
-            )
-            and not self._recovery_running()
+    def _recovery_owes_data(self) -> bool:
+        return self._host._civ_epoch in (
+            self._recovery_frame_epoch,
+            self._soft_recovery_epoch,
         )
 
     async def _probe_control_session(self) -> str | None:
@@ -1993,7 +1979,7 @@ class CivRuntime:
                 # full connect() with discovery.
                 self._host._ctrl_transport.remote_id = 0
             await self._host.soft_reconnect()
-            if not escalate:
+            if not escalate and self._recovery_frame_epoch == self._host._civ_epoch:
                 self._soft_recovery_epoch = self._host._civ_epoch
         except asyncio.CancelledError:
             cancelled = True
@@ -2152,7 +2138,11 @@ class CivRuntime:
         """Continuously consume CI-V transport packets and route events."""
         assert self._host._civ_transport is not None
         self._active_rx_source_generation = source_generation
-        self._host._last_civ_data_received = time.monotonic()
+        if (
+            source_generation == self._host._civ_epoch
+            and self._host._last_civ_data_received is None
+        ):
+            self._host._last_civ_data_received = time.monotonic()
         try:
             while self._host._civ_transport is not None:
                 receiving_transport = self._host._civ_transport
@@ -2176,8 +2166,6 @@ class CivRuntime:
                 for pkt in packets:
                     if len(pkt) <= CIV_HEADER_SIZE:
                         continue
-                    self._host._last_civ_data_received = time.monotonic()
-                    self._soft_recovery_epoch = None
                     payload = pkt[CIV_HEADER_SIZE:]
                     frames: list[tuple[bytes, CivFrame]] = []
                     for frame_bytes in iter_civ_frames(payload):
@@ -2204,9 +2192,9 @@ class CivRuntime:
                             and frame.from_addr == self._host._radio_addr
                             and frame.to_addr in (CONTROLLER_ADDR, 0x00)
                         ):
-                            # UDP activity is insufficient evidence of CI-V
-                            # readiness after a rebuild.
-                            self._last_civ_frame_epoch = source_generation
+                            self._host._last_civ_data_received = time.monotonic()
+                            self._soft_recovery_epoch = None
+                            self._recovery_frame_epoch = None
                             self._host._civ_stream_ready = True
                             self._host._civ_recovering = False
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)

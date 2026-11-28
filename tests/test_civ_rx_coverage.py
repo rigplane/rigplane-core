@@ -776,11 +776,11 @@ async def test_watchdog_recover_escalates_when_soft_reconnect_restored_no_data(
 async def test_watchdog_recover_stays_soft_after_payload(
     radio: IcomRadio,
 ) -> None:
-    """(b) A payload drained between recoveries clears the epoch, so the next
-    recovery is soft-only."""
+    """(b) A current radio frame clears the epoch for the next recovery."""
     radio._civ_epoch = 7
     radio._civ_runtime._soft_recovery_epoch = 7
-    radio._civ_transport.queue_response(b"\x00" * (CIV_HEADER_SIZE + 1))
+    frame = build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+    radio._civ_transport.queue_response(_wrap_civ_in_udp(frame))
 
     def stop_after_batch() -> None:
         radio._civ_transport = None
@@ -835,6 +835,7 @@ async def test_watchdog_recover_ignores_stale_epoch(radio: IcomRadio) -> None:
     """(d) A changed CI-V epoch (a new session) ignores a remembered epoch."""
     radio._civ_epoch = 8
     radio._civ_runtime._soft_recovery_epoch = 7
+    radio._civ_runtime._recovery_frame_epoch = 8
     released = AsyncMock()
     radio._control_phase.release = released
     radio._force_cleanup_civ = AsyncMock()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,8 +12,10 @@ from _helpers import wrap_civ_in_udp
 from test_radio_connect import ConnectMockTransport
 
 from rigplane.audio.lan_stream import AudioNotStartedError, AudioState, AudioStream
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.core import civ as tracker_module
 from rigplane.core.exceptions import DiscoveryTimeout
+from rigplane.runtime import _civ_rx
 from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.session_lifecycle import LifecycleState
 
@@ -76,6 +79,11 @@ async def test_r2_ws_reboot_hold(link: Link) -> None:
 
 async def test_r3_ping_only_after_stall(link: Link) -> None:
     original = link.ports[-1]
+    await _flow_pings(link, 0.25)
+    sent = await link.complete(
+        link.radio.send_civ_transaction(0x03, expect="none"), budget=0.25
+    )
+    assert sent.status == "sent"
     await link.clock.elapse(2.71)
     assert link.radio._civ_recovering
     await link.ping_until(lambda: link.ports[-1] is not original)
@@ -136,7 +144,7 @@ async def test_r5_id_zero_notice_while_cached_ready(link: Link) -> None:
 
 
 async def test_r6_waiter_cancel_strands_recovery(link: Link) -> None:
-    # follow-up: MOR-4930 (R6/R8 main-equivalent)
+    # follow-up: MOR-4938 (R6/R8 main-equivalent)
     await link.hold_tx("cancelled-waiter")
     lifecycle = link.radio._session_lifecycle
     link.control.silent = True
@@ -226,7 +234,7 @@ async def test_r7_legacy_rx_restored_once(
 async def test_r8_full_request_dropped_mid_soft(
     link: Link, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # follow-up: MOR-4930 (R6/R8 main-equivalent)
+    # follow-up: MOR-4938 (R6/R8 main-equivalent)
     await link.hold_tx("notice-during-soft")
     runtime = link.radio._civ_runtime
     requested = runtime.request_recovery_now
@@ -249,6 +257,7 @@ async def test_r8_full_request_dropped_mid_soft(
         assert results == [False]
         assert not link.control.logins
         # A silent CI-V port lets the ordinary detector escalate on both heads.
+        link.control.civ_dead = True
         await link.clock.elapse(60)
         repair.result()
         assert link.control.logins
@@ -349,6 +358,7 @@ async def test_readiness_requires_frame_from_current_radio(
 ) -> None:
     radio = link.radio
     port = link.ports[-1]
+    last_data = radio._last_civ_data_received
     assert not radio._civ_stream_ready
     if invalid == "malformed":
         payload = b"malformed CI-V"
@@ -362,3 +372,155 @@ async def test_readiness_requires_frame_from_current_radio(
     port.queue_response(wrap_civ_in_udp(payload))
     await link.clock.elapse(0)
     assert not radio._civ_stream_ready
+    assert radio._last_civ_data_received == last_data
+
+
+async def _flow_pings(link: Link, seconds: float) -> None:
+    for _ in range(int(seconds * 4)):
+        link.ports[-1].rx_packet_count += 1
+        await link.clock.elapse(0.25)
+
+
+@pytest.mark.parametrize("traffic", ["echo", "other-controller"])
+async def test_rejected_frames_after_soft_do_not_prevent_full_and_ptt_off(
+    link: Link, traffic: str
+) -> None:
+    await link.hold_tx("rejected-frames")
+    radio = link.radio
+    link.control.civ_dead = True
+    for _ in range(60):
+        if link.soft_discoveries:
+            break
+        await link.clock.elapse(0.25)
+    assert link.soft_discoveries == 1
+    assert not link.control.logins and not radio.radio_ready and link.ptt
+
+    frame = (
+        build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x19, sub=0)
+        if traffic == "echo"
+        else build_civ_frame(0xE1, radio._radio_addr, 0xFB)
+    )
+    packet = wrap_civ_in_udp(frame)
+    for _ in range(360):
+        if link.control.logins:
+            break
+        port = link.ports[-1]
+        port.rx_packet_count += 1
+        port.queue_response(packet)
+        await link.clock.elapse(0.25)
+    assert len(link.control.logins) == 1, "rejected CI-V frames prevented FULL"
+
+    link.control.civ_dead = False
+    link.ports[-1].payload()
+    await link.ping_until(lambda: radio.radio_ready and not link.ptt)
+    assert radio.radio_ready
+    assert link.ptt_writes == [True, False]
+    assert not link.ptt
+
+
+@pytest.mark.parametrize("link", [False], indirect=True)
+async def test_quiet_directed_reads_survive_transient_ping_gap(
+    link: Link, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = link.radio
+    original = link.ports[-1]
+    send = Civ.send_tracked
+    frequency = bytes.fromhex("0007401400")
+
+    async def send_with_query_reply(
+        port: Civ, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        await send(port, data, is_current=is_current)
+        payload = data[_civ_rx.CIV_HEADER_SIZE :]
+        if payload.startswith(b"\xfe\xfe") and parse_civ_frame(payload).command == 0x03:
+            port.queue_response(
+                wrap_civ_in_udp(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, radio._radio_addr, 0x03, data=frequency
+                    )
+                )
+            )
+
+    monkeypatch.setattr(Civ, "send_tracked", send_with_query_reply)
+    first = await link.complete(
+        radio.send_civ_transaction(0x03, expect="data"), budget=0.25
+    )
+    assert first.status == "response" and radio.radio_ready
+    await link.clock.elapse(2.8)
+    assert radio._civ_recovering
+    await _flow_pings(link, 8)
+    assert link.ports[-1] is original
+    assert (link.soft_discoveries, len(link.control.logins)) == (0, 0)
+    last = await link.complete(
+        radio.send_civ_transaction(0x03, expect="data"), budget=0.25
+    )
+    assert last.status == "response" and radio.radio_ready
+
+
+@pytest.mark.parametrize("link", [False], indirect=True)
+async def test_quiet_without_unsolicited_frames_does_not_rebuild_after_ping_gap(
+    link: Link,
+) -> None:
+    original = link.ports[-1]
+    original.payload()
+    await link.clock.elapse(0)
+    assert link.radio.radio_ready
+    await link.clock.elapse(2.8)
+    assert link.radio._civ_recovering
+    await _flow_pings(link, 90)
+    assert (link.soft_discoveries, len(link.control.logins)) == (0, 0)
+    assert link.ports[-1] is original and link.radio.connected
+
+
+@pytest.mark.parametrize("link", [False], indirect=True)
+async def test_live_port_delivers_delayed_reply_within_sdk_timeout(
+    link: Link, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link.clock.scope_to(monkeypatch, tracker_module)
+    radio = link.radio
+    original = link.ports[-1]
+    original.payload()
+    await link.clock.elapse(0)
+    assert radio.radio_ready
+    send = Civ.send_tracked
+    frequency = bytes.fromhex("0007401400")
+    writes: list[float] = []
+    deliveries: list[float] = []
+
+    async def send_with_delayed_reply(
+        port: Civ, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        await send(port, data, is_current=is_current)
+        payload = data[_civ_rx.CIV_HEADER_SIZE :]
+        if port is not original or not payload.startswith(b"\xfe\xfe"):
+            return
+        if parse_civ_frame(payload).command != 0x03:
+            return
+        writes.append(link.clock.now)
+        packet = wrap_civ_in_udp(
+            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x03, data=frequency)
+        )
+
+        def deliver() -> None:
+            deliveries.append(link.clock.now)
+            if original._udp_transport is not None:
+                original.queue_response(packet)
+
+        asyncio.get_running_loop().call_later(8.75, deliver)
+
+    monkeypatch.setattr(Civ, "send_tracked", send_with_delayed_reply)
+    await _flow_pings(link, 0.25)
+    transaction = asyncio.create_task(
+        radio.send_civ_transaction(0x03, expect="data", timeout=15.0)
+    )
+    try:
+        await _flow_pings(link, 12)
+        assert len(writes) == len(deliveries) == 1
+        assert deliveries[0] - writes[0] == pytest.approx(8.75)
+        assert transaction.done()
+        assert transaction.result().status == "response"
+        assert link.ports[-1] is original
+    finally:
+        if not transaction.done():
+            transaction.cancel()
+        await asyncio.gather(transaction, return_exceptions=True)
