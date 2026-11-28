@@ -142,9 +142,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
             RuntimeError: If audio TX not started.
         """
         self._check_connected()
-        if self._audio_stream is None:
-            raise RuntimeError("Audio TX not started")
-        await self._audio_stream.push_tx(data)
+        async with self._audio_tx_admission_lock:
+            if self._audio_stream is None:
+                raise RuntimeError("Audio TX not started")
+            await self._audio_stream.push_tx(data)
 
     async def stop_tx(self) -> None:
         """Close the TX path (codec-neutral)."""
@@ -171,6 +172,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Raises:
             ConnectionError: If not connected or audio port unavailable.
         """
+        # Repair re-arms held TX demand while already owning admission.
+        if asyncio.current_task() is getattr(self, "_audio_silence_repair_task", None):
+            await self._start_tx_stream_locked()
+            return
         async with self._audio_tx_admission_lock:
             await self._start_tx_stream_locked()
 
@@ -778,8 +783,8 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         audio_stream = self._audio_stream
         if audio_stream is not None:
             try:
-                await audio_stream.stop_rx()
                 await audio_stream.stop_tx()
+                await audio_stream.stop_rx()
             except Exception:
                 logger.debug("audio teardown: stream stop failed", exc_info=True)
             self._audio_stream = None

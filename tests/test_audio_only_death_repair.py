@@ -568,10 +568,7 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
 
 
 async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> None:
-    """A successful round does NOT reset the budget — only real frames (or
-    a new connection epoch) close the episode (MOR-3401 r3): one failed
-    round plus a successful one leaves the counter at 2, and a later death
-    is still repaired because frames flowed in between."""
+    """Two repair rounds restore frames, closing the episode before another death."""
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -599,11 +596,9 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
             assert await await_until(
                 lambda: radio._audio_silence_repair_task is None, timeout=15.0
             ), "repair never finished"
-            # Both rounds consumed budget (the successful round itself
-            # re-enters ensure via reestablish → start_rx, so no exact
-            # ensure count is asserted); success did not reset anything.
             assert len(teardown_calls) == 2
-            assert radio._audio_silence_repair_attempts == 2
+            radio.audio_session._check_liveness_locked()
+            assert radio._audio_silence_repair_attempts == 0
 
             # Frames flowed after the repair, so a later death opens a new
             # episode with a fresh budget and is repaired again.
