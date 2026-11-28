@@ -291,6 +291,7 @@ class AudioSession:
         self._listeners: list[Callable[[AudioSessionEvent], None]] = []
         self._last_event: AudioSessionEvent | None = None
         self._rx_silent_reported = False
+        self._rx_resume_pending = False
 
     @property
     def state(self) -> AudioSessionState:
@@ -377,14 +378,20 @@ class AudioSession:
         subscription).
         """
         async with self._lock:
+            recover = self._state in (
+                AudioSessionState.RECOVERING,
+                AudioSessionState.FAILED,
+            )
             sub = RxSubscription(self, self._bus.subscribe(name=name))
             self._rx_subs.append(sub)
             try:
-                await self._apply()
+                await self._apply(recover=recover)
             except BaseException:
                 self._rx_subs.remove(sub)
                 await sub._inner.aclose()
                 raise
+            if recover:
+                self._emit("rx_reopened")
             return sub
 
     async def acquire_tx(self, owner: str = "") -> TxLease:
@@ -534,9 +541,13 @@ class AudioSession:
             return "rx_first"
         return cast(_SetupOrder, order)
 
-    async def _apply(self, *, closing_rx: RxSubscription | None = None) -> None:
+    async def _apply(
+        self, *, closing_rx: RxSubscription | None = None, recover: bool = False
+    ) -> None:
         try:
-            await self._converge(closing_rx=closing_rx)
+            await self._converge(closing_rx=closing_rx, recover=recover)
+            if recover:
+                self._rx_armed_at = self._monotonic()
         finally:
             if self._state is not AudioSessionState.RECOVERING:
                 self._recovering_from = None
@@ -587,6 +598,7 @@ class AudioSession:
                 await self._disarm_tx()  # MOR-574: TX down BEFORE RX drops
             await self._drop_rx(closing_rx)
             self._state = AudioSessionState.IDLE
+            self._rx_resume_pending = False
         elif desired is AudioSessionState.TX_ONLY:
             # Full-duplex, TX demand, no RX. Shed any RX first (TX-down then
             # RX-drop if a TX leg is up — MOR-574), then arm TX alone.
@@ -728,6 +740,7 @@ class AudioSession:
                 "(AudioBus.rx_active is False after re-arm); see "
                 "'audio-bus: failed to re-arm RX' in the log"
             )
+        await self._arm_rx()
 
     async def _disarm_tx(self) -> None:
         try:
@@ -767,19 +780,12 @@ class AudioSession:
                 the next reconnect or demand edge retries.
         """
         async with self._lock:
-            self._recovering_from = None
-            # Converge against the rebuilt (RECEIVING/idle) transport. recover
-            # forces a fresh RX re-attach (the bus rx_active flag is stale).
-            # TX_ONLY / RX_ONLY / RX_TX / IDLE recovery all fall out of this:
-            # demand dropped during the outage stays dropped (IDLE), a held
-            # lease re-arms TX (TX_ONLY) with no phantom RX, RX-bearing demand
-            # re-arms in the declared order. A dead-RX re-arm surfaces as a
-            # RuntimeError so the recovery caller can report FAILED.
-            await self._converge(recover=True)
-            # Fresh liveness reference: silence is measured from this re-arm,
-            # not from the stale pre-outage heartbeat.
-            self._rx_armed_at = self._monotonic()
-            await self._sync_watchdog()
+            await self._reestablish_locked()
+
+    async def _reestablish_locked(self) -> None:
+        self._recovering_from = None
+        self._rx_resume_pending = bool(self._rx_subs)
+        await self._apply(recover=True)
 
     # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
 
@@ -817,12 +823,21 @@ class AudioSession:
             # armed (still "starting") RX leg.
             ref = self._rx_armed_at if last is None else max(last, self._rx_armed_at)
             if now - ref >= self._rx_liveness_timeout:
+                self._rx_resume_pending = True
                 self._recovering_from = self._state
                 self._state = AudioSessionState.RECOVERING
                 logger.warning("audio-session: RX silent %.1fs — RECOVERING", now - ref)
                 self._emit("rx_silent")
+            elif (
+                self._rx_resume_pending
+                and last is not None
+                and last >= self._rx_armed_at
+            ):
+                self._rx_resume_pending = False
+                self._emit("rx_resumed")
         elif self._state is AudioSessionState.RECOVERING:
             if last is not None and now - last < self._rx_liveness_timeout:
+                self._rx_resume_pending = False
                 self._recovering_from = None
                 self._state = self._desired()
                 logger.info("audio-session: RX frames resumed — %s", self._state.value)

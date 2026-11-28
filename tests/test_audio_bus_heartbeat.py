@@ -16,6 +16,7 @@ import pytest
 
 from rigplane.audio import AudioPacket
 from rigplane.audio_bus import AudioBus
+from rigplane.testing.timing import ManualClock
 from rigplane.web.server import WebConfig, WebServer
 
 
@@ -66,6 +67,18 @@ def _response_json(writer: _FakeWriter) -> tuple[int, dict]:
 def test_heartbeat_is_none_before_any_packet(bus):
     assert bus.last_rx_frame_monotonic is None
     assert bus.stats["last_rx_frame_monotonic"] is None
+
+
+def test_gap_placeholders_do_not_advance_real_frame_heartbeat(bus):
+    clock = ManualClock(start=1000.0)
+    bus._monotonic = clock
+    bus._on_opus_packet(None)
+    assert bus.last_rx_frame_monotonic is None
+    bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=b"real"))
+    assert bus.last_rx_frame_monotonic == clock()
+    clock.advance(1.0)
+    bus._on_opus_packet(None)
+    assert bus.last_rx_frame_monotonic == 1000.0
 
 
 async def test_heartbeat_stamps_and_advances_on_each_packet(bus, mock_radio):

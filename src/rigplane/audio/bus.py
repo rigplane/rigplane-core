@@ -335,9 +335,8 @@ class AudioBus:
 
     @property
     def last_rx_frame_monotonic(self) -> float | None:
-        """Monotonic timestamp of the most recent RX fan-out, or None.
+        """Monotonic timestamp of the most recent non-gap RX packet, or None.
 
-        RX liveness heartbeat (MOR-564): observability only, no watchdog.
         Stamped from this bus's ``monotonic`` clock, which defaults to
         ``time.monotonic``.
         """
@@ -371,7 +370,8 @@ class AudioBus:
 
     def _on_opus_packet(self, packet: "AudioPacket | None") -> None:
         """Internal callback — distributes packet to all active subscribers."""
-        self._last_rx_frame_monotonic = self._monotonic()
+        if packet is not None:
+            self._last_rx_frame_monotonic = self._monotonic()
         for sub in self._subscribers:
             sub.deliver(packet)
         # ``rx.pcm`` stage tap (MOR-565): passive observer of radio-native

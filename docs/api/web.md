@@ -374,6 +374,50 @@ The catalog documents the current command surface. A route or command is not a
 stable API contract solely because it appears there; stability still comes from
 explicit promotion into `rigplane.web.api_contract`.
 
+#### Audio retry
+
+After the audio recovery `failed` event, a client can request another bounded
+repair episode without replacing its RX subscription:
+
+```json
+{"type":"cmd","id":"retry-1","name":"audio_retry","params":{}}
+```
+
+Send this envelope on `/api/v1/ws`, or send its `name`, `id`, and `params`
+fields to `POST /api/v1/commands`. The command bypasses the radio command
+queue and is not eligible for command batches. It is allowed in read-only
+mode. It has no required parameters; `receiver` is tolerated and ignored
+because repair belongs to the shared audio session.
+
+The normal response envelope has `ok: true` and a `result` typed by
+`src/rigplane/web/api_contract.py: AudioRetryResult`:
+
+| Result | Meaning |
+|--------|---------|
+| `{"accepted":true}` | A repair task was accepted or joined. |
+| `{"accepted":false,"reason":"unsupported"}` | The backend does not implement the optional retry capability. |
+| `{"accepted":false,"reason":"not_applicable"}` | The retry capability declined repair in the current state. |
+
+The `reason` vocabulary is closed by
+`src/rigplane/web/api_contract.py: AudioRetryRefusalReason` and omitted when
+accepted. `src/rigplane/runtime/radio.py: IcomRadio.retry_audio` requires LAN
+audio, existing RX demand, a connected control session, and no TX demand or
+active audio TX leg. A retry during TX returns `not_applicable`. An explicit
+retry renews a spent episode; concurrent calls join the active repair. Its reply
+returns after starting or joining the radio-owned task, without waiting for
+repair completion. Acceptance does not establish fresh RX frames. Keep
+observing audio recovery events and received audio for the outcome.
+The existing `no_radio` envelope error still applies when
+no radio is configured.
+
+Dispatcher and outage regression coverage is in
+`tests/test_audio_rebuild_demand.py: test_audio_cut_returns_with_one_retry_after_failed`
+and `tests/test_audio_rebuild_demand.py: test_web_audio_retry_refuses_when_no_lan_repair_applies`.
+Receive-loop coverage is in
+`tests/test_audio_rebuild_demand.py: test_control_run_receives_while_audio_retry_connect_is_pending`;
+TX refusal coverage is in
+`tests/test_audio_rebuild_demand.py: test_audio_retry_refuses_transmitting_without_replacing_reader`.
+
 ### Internal And Diagnostic Surface
 
 Browser static files, `src/rigplane/web/static*`, handler class names, queue

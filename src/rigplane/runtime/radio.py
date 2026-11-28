@@ -94,7 +94,7 @@ from rigplane.runtime._control_phase import (
     ControlPhaseSessionMechanism,
 )
 from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle, LifecycleEvent
-from rigplane.audio import AudioPacket, AudioStream
+from rigplane.audio import AudioPacket, AudioState, AudioStream
 from rigplane.core.civ import CivRequestTracker
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.commands import (
@@ -209,10 +209,13 @@ from rigplane.core.radio_protocol import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
+    ObservedPtt,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
+    project_observed_ptt,
 )
 from rigplane.core.tx_safety import (
+    RadioTx,
     TxOutcome,
     TxSafetySnapshot,
 )
@@ -534,6 +537,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
         # whole rebuild runs under it; no teardown ever takes it.
         self._audio_ensure_lock = asyncio.Lock()
+        self._raw_ptt_release_epoch = 0
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
@@ -1542,10 +1546,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         it is the SAME episode and the attempt count continues. Measuring
         from the settled baseline absorbs one buffered pre-death frame
         landing mid-task. A round whose ``reestablish()`` succeeds
-        therefore never resets the budget — only frames (or a new epoch)
-        do — so a leg that re-arms but stays frameless still caps
+        therefore never resets the budget, so a leg that re-arms but stays
+        frameless still caps
         at 3 attempts with one FAILED instead of looping forever. A second
         ``rx_silent`` while the task runs schedules nothing.
+        An explicit client ``rx_reopened`` starts a fresh episode too.
         ``rx_resumed`` is itself frame-based so it still ends the episode,
         but only once its repair task is done: a stray resumed edge (e.g. a
         buffered frame landing mid-repair) must not fund an extra round.
@@ -1554,18 +1559,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         and rigctld are separate classes outside this path entirely.
         """
         reason = event.reason
-        if reason == "rx_resumed":
+        if reason in ("rx_resumed", "rx_reopened"):
             task = self._audio_silence_repair_task
             if task is None or task.done():
-                self._audio_silence_repair_attempts = 0
-                self._audio_silence_repair_episode_epoch = self._civ_epoch
-                heartbeat = self._silence_repair_rx_heartbeat()
-                self._audio_silence_repair_episode_start_heartbeat = heartbeat
-                self._audio_silence_repair_baseline_heartbeat = heartbeat
-                self._audio_silence_repair_teardown_completed = None
+                self._reset_audio_silence_repair_episode()
             return
         if reason != "rx_silent":
             return
+        self._schedule_audio_silence_repair()
+
+    def _schedule_audio_silence_repair(self) -> None:
+        """Admit automatic repair against the existing episode and demand."""
         if self.backend_id != "rigplane":
             return
         task = self._audio_silence_repair_task
@@ -1588,18 +1592,56 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._audio_silence_repair_baseline_heartbeat = heartbeat
         if self._silence_repair_budget_spent():
             return
-        if not self._silence_repair_preconditions_ok(
+        if not self._silence_repair_episode_current(
             self._civ_epoch,
             self._owner_stop_epoch,
         ):
             return
-        self._audio_silence_repair_task = asyncio.get_running_loop().create_task(
+        self._start_audio_silence_repair()
+
+    async def retry_audio(self, *, wait: bool = True) -> bool:
+        """Start or join the bounded LAN audio repair with live RX demand.
+
+        An explicit retry renews a spent episode; automatic repair rounds
+        retain their existing cap. Concurrent calls join the same task.
+        Cancelling this caller leaves the repair owned by the radio; owner
+        disconnect still cancels it through the existing task slot.
+        With ``wait=False``, return as soon as the task is accepted/joined.
+
+        Returns True for an accepted/joined task, not proof of fresh audio.
+        Returns False without LAN RX demand on a connected control session,
+        or while PTT, managed transmit intent or recent TX frames are active.
+        """
+        if self.backend_id != "rigplane" or not self._silence_repair_preconditions_ok(
+            self._civ_epoch, self._owner_stop_epoch
+        ):
+            return False
+        task = self._audio_silence_repair_task
+        if task is None or task.done():
+            self._reset_audio_silence_repair_episode()
+            task = self._start_audio_silence_repair()
+        if wait:
+            await asyncio.shield(task)
+        return True
+
+    def _reset_audio_silence_repair_episode(self) -> None:
+        self._audio_silence_repair_attempts = 0
+        self._audio_silence_repair_episode_epoch = self._civ_epoch
+        heartbeat = self._silence_repair_rx_heartbeat()
+        self._audio_silence_repair_episode_start_heartbeat = heartbeat
+        self._audio_silence_repair_baseline_heartbeat = heartbeat
+        self._audio_silence_repair_teardown_completed = None
+
+    def _start_audio_silence_repair(self) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(
             self._run_audio_silence_repair(
                 civ_epoch=self._civ_epoch,
                 owner_stop_epoch=self._owner_stop_epoch,
             ),
             name="audio-silence-repair",
         )
+        self._audio_silence_repair_task = task
+        return task
 
     def _silence_repair_rx_heartbeat(self) -> float | None:
         """Bus RX heartbeat: monotonic stamp of the last arrived RX frame.
@@ -1635,16 +1677,52 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             reference = completed
         if reference is None or heartbeat <= reference:
             return False
-        return time.monotonic() - heartbeat < RX_LIVENESS_TIMEOUT_S
+        return asyncio.get_running_loop().time() - heartbeat < RX_LIVENESS_TIMEOUT_S
 
     def _silence_repair_preconditions_ok(
         self, civ_epoch: int, owner_stop_epoch: int
     ) -> bool:
+        return (
+            self._silence_repair_episode_current(civ_epoch, owner_stop_epoch)
+            and not self._audio_repair_transmitting()
+        )
+
+    def _audio_repair_transmitting(self) -> bool:
+        from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
+        from rigplane.core.acquisition_scheduler import derive_tx_active
+        from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+
+        observed = project_observed_ptt(self.state_store.snapshot())
+        if observed is ObservedPtt.ON or derive_tx_active(self.state_store):
+            return True
+        composition = self._managed_tx_composition
+        if composition is not None:
+            projection = composition.authority.snapshot_nowait()
+            if projection.state.intent.kind is not ManagedTxIntentKind.RX:
+                return True
+        snapshot = self.tx_snapshot
+        if snapshot is not None and (
+            snapshot.radio_tx is RadioTx.ON or snapshot.lease_id is not None
+        ):
+            return True
+        stream = self._audio_stream
+        if stream is None or stream.state is not AudioState.TRANSMITTING:
+            return False
+        last = stream.last_tx_frame_monotonic
+        return (
+            last is not None
+            and asyncio.get_running_loop().time() - last < RX_LIVENESS_TIMEOUT_S
+        )
+
+    def _silence_repair_episode_current(
+        self, civ_epoch: int, owner_stop_epoch: int
+    ) -> bool:
         """Whether the silence repair may (still) run for a trigger episode.
 
-        RX demand must still be held, the radio must be CONNECTED (not
-        RECONNECTING or mid soft-reconnect), and the CI-V / owner-stop epochs must still name the
-        trigger generation — any reconnect or owner stop since then aborts.
+        RX demand must still be held.
+        The radio must be CONNECTED (not RECONNECTING or mid soft-reconnect),
+        and the CI-V / owner-stop epochs must still name the trigger
+        generation — any reconnect or owner stop since then aborts.
         """
         session = self._audio_session
         return bool(
@@ -1676,13 +1754,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``_audio_ensure_lock`` inside ``_ensure_audio_transport``), with the
         ``_LAN_AUDIO_SILENCE_REPAIR_BACKOFF_S`` sleeps between rounds. Every
         precondition is re-checked after each await. Every round consumes
-        one attempt. Re-establishing demand does NOT reset the budget:
-        only real RX frames (or a new CI-V epoch) close the episode, so a
-        leg that re-arms yet stays frameless
+        one attempt. Automatic re-establishment does NOT reset the budget:
+        a leg that re-arms yet stays frameless
         consumes the shared budget and reports FAILED once through
         ``_on_audio_recovery`` instead of looping with a fresh budget per
-        task. A successful final round observes frames for at most
-        ``RX_LIVENESS_TIMEOUT_S`` before reporting FAILED. Before every
+        task. Before every
         round (after the backoff sleep) the task stops quietly when frames
         have resumed and are still flowing: the
         silence is over, nothing to tear down. Never raises — cancellation
@@ -1692,6 +1768,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             while not self._silence_repair_budget_spent():
                 if self._audio_silence_repair_attempts:
                     await asyncio.sleep(self._silence_repair_backoff_s())
+                while self._silence_repair_episode_current(civ_epoch, owner_stop_epoch):
+                    if self._silence_repair_silence_over():
+                        return
+                    if not self._audio_repair_transmitting():
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    return
                 if self._silence_repair_silence_over():
                     return
                 if not self._silence_repair_preconditions_ok(
@@ -1700,20 +1784,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ):
                     return
                 try:
-                    await self._teardown_audio_transport()
-                    self._audio_silence_repair_teardown_completed = time.monotonic()
-                    if not self._silence_repair_preconditions_ok(
-                        civ_epoch,
-                        owner_stop_epoch,
-                    ):
-                        return
-                    await self._ensure_audio_transport()
-                    if not self._silence_repair_preconditions_ok(
-                        civ_epoch,
-                        owner_stop_epoch,
-                    ):
-                        return
-                    await self._audio_session.reestablish()
+                    async with self._audio_session._lock:
+                        async with self._audio_tx_admission_lock:
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                continue
+                            await self._teardown_audio_transport()
+                            self._audio_silence_repair_teardown_completed = (
+                                asyncio.get_running_loop().time()
+                            )
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                continue
+                            await self._ensure_audio_transport(reestablish=False)
+                            if not self._silence_repair_preconditions_ok(
+                                civ_epoch,
+                                owner_stop_epoch,
+                            ):
+                                continue
+                            await self._audio_session._reestablish_locked()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -1727,13 +1820,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 if self._silence_repair_budget_spent():
                     from rigplane.audio.session import RX_LIVENESS_TIMEOUT_S
 
-                    deadline = time.monotonic() + RX_LIVENESS_TIMEOUT_S
-                    while self._silence_repair_preconditions_ok(
+                    deadline = asyncio.get_running_loop().time() + RX_LIVENESS_TIMEOUT_S
+                    while self._silence_repair_episode_current(
                         civ_epoch, owner_stop_epoch
                     ):
                         if self._silence_repair_silence_over():
                             return
-                        remaining = deadline - time.monotonic()
+                        if self._audio_repair_transmitting():
+                            await asyncio.sleep(0.05)
+                            continue
+                        remaining = deadline - asyncio.get_running_loop().time()
                         if remaining <= 0:
                             break
                         await asyncio.sleep(min(0.05, remaining))
@@ -1741,6 +1837,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                         return
                 break
             if self._silence_repair_budget_spent():
+                while self._silence_repair_episode_current(civ_epoch, owner_stop_epoch):
+                    if self._silence_repair_silence_over():
+                        return
+                    if not self._audio_repair_transmitting():
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    return
                 if (
                     not self._silence_repair_preconditions_ok(
                         civ_epoch, owner_stop_epoch
@@ -1770,6 +1874,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
             if self._audio_silence_repair_task is asyncio.current_task():
                 self._audio_silence_repair_task = None
+                if (
+                    self._civ_epoch == civ_epoch
+                    and self._owner_stop_epoch == owner_stop_epoch
+                    and self._silence_repair_silence_over()
+                ):
+                    self._reset_audio_silence_repair_episode()
 
     @property
     def profile(self) -> RadioProfile:
@@ -4425,7 +4535,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if on
             else self._commands.ptt_off(to_addr=self._radio_addr)
         )
-        await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
+        if on:
+            release_epoch = self._raw_ptt_release_epoch
+            civ_epoch = self._civ_epoch
+            owner_stop_epoch = self._owner_stop_epoch
+            await self._send_civ_raw(
+                civ,
+                priority=Priority.IMMEDIATE,
+                wait_response=False,
+                is_current=lambda: (
+                    release_epoch == self._raw_ptt_release_epoch
+                    and civ_epoch == self._civ_epoch
+                    and owner_stop_epoch == self._owner_stop_epoch
+                ),
+            )
+        else:
+            self._raw_ptt_release_epoch += 1
+            await self._send_civ_raw(
+                civ, priority=Priority.IMMEDIATE, wait_response=False
+            )
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
 
     _PTT_READBACK_SETTLE_S: float = 0.2
@@ -4648,7 +4776,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         civ = (self._commands.ptt_on if on else self._commands.ptt_off)(
             to_addr=self._radio_addr
         )
-        await self._civ_runtime.write_managed_ptt(civ, provider_generation)
+        if on:
+            release_epoch = self._raw_ptt_release_epoch
+            await self._civ_runtime.write_managed_ptt(
+                civ,
+                provider_generation,
+                is_current=lambda: release_epoch == self._raw_ptt_release_epoch,
+            )
+        else:
+            self._raw_ptt_release_epoch += 1
+            await self._civ_runtime.write_managed_ptt(civ, provider_generation)
 
     async def _retire_managed_tx_port(self, provider_generation: int) -> None:
         await self._civ_runtime.retire_managed_tx_port(provider_generation)

@@ -29,6 +29,8 @@ codec/rate/channel agreement that sits next to it.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from rigplane.audio._transcoder import PcmAudioFormat
@@ -94,6 +96,43 @@ class _TaggingTranscoder:
 
 # Every PCM rate the transcoder/validator accepts, at the production 20 ms frame.
 _PCM_RATES = [8000, 12000, 16000, 24000, 48000]
+
+
+@pytest.mark.asyncio
+async def test_partial_mixin_hosts_serialize_tx_per_instance() -> None:
+    first = _ContractValidatorHarness(
+        tx_codec=AudioCodec.PCM_1CH_16BIT,
+        sample_rate=48000,
+        channels=1,
+        frame_ms=20,
+    )
+    second = _ContractValidatorHarness(
+        tx_codec=AudioCodec.PCM_1CH_16BIT,
+        sample_rate=48000,
+        channels=1,
+        frame_ms=20,
+    )
+    entered = asyncio.Event()
+
+    async def push_first() -> None:
+        entered.set()
+        await first.push_tx(b"first")
+
+    push: asyncio.Task[None] | None = None
+    try:
+        async with first._audio_tx_admission_lock:
+            push = asyncio.create_task(push_first())
+            await entered.wait()
+            await second.push_tx(b"second")
+            assert not push.done()
+            assert first._audio_stream.pushed == []  # type: ignore[union-attr]
+            assert second._audio_stream.pushed == [b"second"]  # type: ignore[union-attr]
+        await push
+        assert first._audio_stream.pushed == [b"first"]  # type: ignore[union-attr]
+    finally:
+        if push is not None:
+            push.cancel()
+            await asyncio.gather(push, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

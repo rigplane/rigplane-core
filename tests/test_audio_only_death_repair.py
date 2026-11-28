@@ -346,7 +346,7 @@ async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -385,7 +385,7 @@ async def test_silence_repair_caps_at_three_attempts_and_reports_failed_once() -
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -434,7 +434,7 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -459,10 +459,7 @@ async def test_rx_resumed_during_backoff_does_not_grant_extra_attempt() -> None:
 
 
 async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> None:
-    """A successful round does NOT reset the budget — only real frames (or
-    a new connection epoch) close the episode (MOR-3401 r3): one failed
-    round plus a successful one leaves the counter at 2, and a later death
-    is still repaired because frames flowed in between."""
+    """Two repair rounds restore frames, closing the episode before another death."""
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -475,11 +472,11 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
         ensure_calls: list[int] = []
         orig_ensure = radio._ensure_audio_transport
 
-        async def _fail_first_ensure() -> None:
+        async def _fail_first_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             if len(ensure_calls) == 1:
                 raise CoreConnectionError("first round fails")
-            await orig_ensure()
+            await orig_ensure(reestablish=reestablish)
 
         radio._ensure_audio_transport = _fail_first_ensure  # type: ignore[method-assign]
         try:
@@ -490,11 +487,9 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
             assert await await_until(
                 lambda: radio._audio_silence_repair_task is None, timeout=15.0
             ), "repair never finished"
-            # Both rounds consumed budget (the successful round itself
-            # re-enters ensure via reestablish → start_rx, so no exact
-            # ensure count is asserted); success did not reset anything.
             assert len(teardown_calls) == 2
-            assert radio._audio_silence_repair_attempts == 2
+            radio.audio_session._check_liveness_locked()
+            assert radio._audio_silence_repair_attempts == 0
 
             # Frames flowed after the repair, so a later death opens a new
             # episode with a fresh budget and is repaired again.
@@ -515,7 +510,11 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
 async def test_third_successful_round_waits_for_real_frames(
     frames_before_return: bool,
 ) -> None:
-    """Real frames on the third round prevent FAILED across the return edge."""
+    """Real frames on the third round prevent FAILED across the return edge.
+
+    Three rounds run, the third waits for real frames, and the frames close
+    the episode back to idle (counter 0, teardown stamp cleared).
+    """
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -529,7 +528,7 @@ async def test_third_successful_round_waits_for_real_frames(
             radio, "_teardown_audio_transport"
         )
         orig_ensure = radio._ensure_audio_transport
-        orig_reestablish = session.reestablish
+        orig_reestablish = session._reestablish_locked
         bus = radio.audio_bus
         orig_callback = bus._on_opus_packet
         allow_frames = asyncio.Event()
@@ -537,6 +536,7 @@ async def test_third_successful_round_waits_for_real_frames(
         heartbeats: list[float] = []
         ensure_calls: list[int] = []
         release_frames: asyncio.TimerHandle | None = None
+        teardown_completed_in_third_round: list[float | None] = []
 
         def _gate_real_frames(packet: AudioPacket | None) -> None:
             if allow_frames.is_set() and packet is not None:
@@ -546,15 +546,21 @@ async def test_third_successful_round_waits_for_real_frames(
                 heartbeats.append(heartbeat)
                 delivery_order.append("frame")
 
-        async def _fail_first_two_ensures() -> None:
+        async def _fail_first_two_ensures(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             if len(ensure_calls) <= 2:
                 raise CoreConnectionError("first two rounds fail")
-            await orig_ensure()
+            await orig_ensure(reestablish=reestablish)
 
         async def _reestablish_with_frame_gate() -> None:
             nonlocal release_frames
             await orig_reestablish()
+            # Inside the third round: its teardown already ran and the
+            # episode finalizer cannot have reset it yet (the repair task
+            # holds the locks). Records that the round reached reestablish.
+            teardown_completed_in_third_round.append(
+                radio._audio_silence_repair_teardown_completed
+            )
             if frames_before_return:
                 allow_frames.set()
                 assert await await_until(lambda: bool(heartbeats), timeout=2.0)
@@ -565,7 +571,7 @@ async def test_third_successful_round_waits_for_real_frames(
             delivery_order.append("return")
 
         radio._ensure_audio_transport = _fail_first_two_ensures  # type: ignore[method-assign]
-        session.reestablish = _reestablish_with_frame_gate  # type: ignore[method-assign]
+        session._reestablish_locked = _reestablish_with_frame_gate  # type: ignore[method-assign]
         bus._on_opus_packet = _gate_real_frames  # type: ignore[method-assign]
         try:
             _kill_client_audio_only(radio)
@@ -577,17 +583,23 @@ async def test_third_successful_round_waits_for_real_frames(
                 lambda: radio._audio_silence_repair_task is None, timeout=5.0
             ), "third-round frame observation did not finish"
             assert len(teardown_calls) == 3
-            assert radio._audio_silence_repair_attempts == 3
+            assert len(teardown_completed_in_third_round) == 1
+            third_teardown_completed = teardown_completed_in_third_round[0]
+            assert third_teardown_completed is not None
             assert recovery == [], "healthy third round falsely reported FAILED"
             assert (
                 delivery_order.index("frame") < delivery_order.index("return")
             ) is frames_before_return
-            assert heartbeats[0] > radio._audio_silence_repair_teardown_completed
+            assert heartbeats[0] > third_teardown_completed
+            # Real RX frames closed the episode: the counter is back to 0
+            # and the teardown stamp cleared (idle), not left at 3.
+            assert radio._audio_silence_repair_attempts == 0
+            assert radio._audio_silence_repair_teardown_completed is None
         finally:
             if release_frames is not None:
                 release_frames.cancel()
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
-            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            session._reestablish_locked = orig_reestablish  # type: ignore[method-assign]
             bus._on_opus_packet = orig_callback  # type: ignore[method-assign]
             restore_teardown()
         await sub.release()
@@ -616,7 +628,7 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -642,7 +654,7 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
             # watchdog itself emits rx_resumed.
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
             await radio._teardown_audio_transport()
-            await radio._ensure_audio_transport()
+            await radio._ensure_audio_transport(reestablish=False)
             await radio.audio_bus.restart_rx()
             assert await await_until(
                 lambda: (
@@ -828,7 +840,7 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path(
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 
@@ -978,11 +990,11 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             radio, "_teardown_audio_transport"
         )
         orig_ensure = radio._ensure_audio_transport
-        orig_reestablish = session.reestablish
+        orig_reestablish = session._reestablish_locked
         reestablished: list[int] = []
 
-        async def _dead_ensure() -> None:
-            await orig_ensure()
+        async def _dead_ensure(*, reestablish: bool = True) -> None:
+            await orig_ensure(reestablish=reestablish)
             # The new leg is dead on arrival, but the call succeeds: the
             # radio accepted the handshake yet sends no RX frames. The RX
             # callback is only (re-)registered by reestablish below, so no
@@ -994,7 +1006,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             reestablished.append(1)
 
         radio._ensure_audio_transport = _dead_ensure  # type: ignore[method-assign]
-        session.reestablish = _spy_reestablish  # type: ignore[method-assign]
+        session._reestablish_locked = _spy_reestablish  # type: ignore[method-assign]
 
         # Inject the watchdog loop so wall time cannot add an unrequested
         # edge (the test_two_rx_silent_start_one_repair_task precedent);
@@ -1060,7 +1072,7 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             assert recovery == [AudioRecoveryState.FAILED]
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
-            session.reestablish = orig_reestablish  # type: ignore[method-assign]
+            session._reestablish_locked = orig_reestablish  # type: ignore[method-assign]
             restore_teardown()
         await sub.release()
     finally:
@@ -1085,7 +1097,7 @@ async def test_frames_resumed_during_backoff_stop_repair_without_teardown() -> N
         orig_ensure = radio._ensure_audio_transport
         ensure_calls: list[int] = []
 
-        async def _fail_ensure() -> None:
+        async def _fail_ensure(*, reestablish: bool = True) -> None:
             ensure_calls.append(1)
             raise CoreConnectionError("audio leg never returns")
 

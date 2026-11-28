@@ -1,5 +1,6 @@
 {
   "commands": {
+    "audio_retry": null,
     "cw_auto_tune": null,
     "get_acc1_mod_level": null,
     "get_af_mute": null,

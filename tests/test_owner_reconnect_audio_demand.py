@@ -99,7 +99,7 @@ def _owner_connect_radio(recovery_cb: MagicMock) -> IcomRadio:
     radio._arm_managed_tx = AsyncMock()
     radio.rearm_managed_tx = AsyncMock()
 
-    async def _ensure_audio_transport() -> None:
+    async def _ensure_audio_transport(*, reestablish: bool = True) -> None:
         if radio._audio_stream is not None:
             return
         radio._audio_transport = _fake_audio_transport()
