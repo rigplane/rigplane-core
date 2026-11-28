@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import struct
-import time
 from collections.abc import Awaitable, Callable
 from typing import ClassVar, TYPE_CHECKING
 
@@ -32,6 +31,7 @@ from rigplane.core.exceptions import (
 from rigplane.core.types import CivFrame, Mode
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.transport import IcomCivTransport, IcomTransport
 from test_serial_civ_link import _FakeReader, _FakeWriter
 
@@ -40,7 +40,10 @@ if TYPE_CHECKING:
 
 _MODELS = ("IC-7300", "IC-705", "IC-7610")
 
-# Bounded awaits for the transport-level scenarios (MOR-3743 round 4).
+# Bounds for a stuck run, not the expected wait (MOR-3743 round 4, MOR-4075):
+# the converted tests run on the shared virtual clock, so their ``wait_for``
+# bounds are virtual-time hang guards and each test completes when its real
+# events (queued frames, task completion) arrive.
 _BOUND_S = 2.0
 
 
@@ -149,7 +152,7 @@ async def _await_queued(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_split_mode_write_rechecks_preservation_after_foreign_write(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """A foreign write dispatched before the SET is refused and retried.
 
@@ -210,7 +213,7 @@ async def test_split_mode_write_rechecks_preservation_after_foreign_write(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_split_mode_write_fails_after_persistent_interference(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """Three interfered attempts fail the write without a stale SET."""
     radio = IcomRadio("127.0.0.1", model=model)
@@ -256,7 +259,7 @@ async def test_split_mode_write_fails_after_persistent_interference(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_split_mode_write_without_interference_writes_once(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """Without interference the write is one read, one SET, one readback."""
     radio = IcomRadio("127.0.0.1", model=model)
@@ -281,7 +284,7 @@ async def test_split_mode_write_without_interference_writes_once(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_background_frames_do_not_interfere_with_split_write(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """A BACKGROUND poll from another task never marks the scope."""
     radio = IcomRadio("127.0.0.1", model=model)
@@ -336,7 +339,7 @@ async def test_background_frames_do_not_interfere_with_split_write(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_ptt_frames_keep_priority_order_during_split_write(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """PTT frames queued mid-write dispatch in (priority, seq) order.
 
@@ -400,7 +403,7 @@ async def test_ptt_frames_keep_priority_order_during_split_write(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_ptt_frames_queued_before_the_write_are_not_delayed(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """PTT frames queued before the write keep their queue order.
 
@@ -472,7 +475,7 @@ async def test_ptt_frames_queued_before_the_write_are_not_delayed(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_tx_releases_run_unhindered_and_mark_the_scope(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """TX releases dispatch at their own priority and count as interference.
 
@@ -569,7 +572,9 @@ class _Hold:
             await self.release.wait()
 
 
-async def test_scope_marks_interference_from_foreign_frames() -> None:
+async def test_scope_marks_interference_from_foreign_frames(
+    virtual_clock: VirtualClock,
+) -> None:
     """Any foreign non-BACKGROUND dispatch marks the active scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
@@ -610,7 +615,9 @@ async def test_scope_marks_interference_from_foreign_frames() -> None:
     assert commander._interference_scopes == set()
 
 
-async def test_scope_ignores_foreign_background_frames() -> None:
+async def test_scope_ignores_foreign_background_frames(
+    virtual_clock: VirtualClock,
+) -> None:
     """A BACKGROUND frame from another task never marks the scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
@@ -645,7 +652,9 @@ async def test_scope_ignores_foreign_background_frames() -> None:
     assert commander._interference_scopes == set()
 
 
-async def test_scope_deregisters_on_exit_error_and_cancellation() -> None:
+async def test_scope_deregisters_on_exit_error_and_cancellation(
+    virtual_clock: VirtualClock,
+) -> None:
     """Normal exit, an exception and cancellation all deregister the scope."""
     hold = _Hold()
     commander = IcomCommander(hold)
@@ -690,7 +699,9 @@ async def test_scope_deregisters_on_exit_error_and_cancellation() -> None:
     await commander.stop()
 
 
-async def test_concurrent_scopes_mark_each_other() -> None:
+async def test_concurrent_scopes_mark_each_other(
+    virtual_clock: VirtualClock,
+) -> None:
     """Two live scopes each see the other's frames as interference."""
     hold = _Hold()
     commander = IcomCommander(hold)
@@ -724,7 +735,9 @@ async def test_concurrent_scopes_mark_each_other() -> None:
     await commander.stop()
 
 
-async def test_scope_currency_dies_with_the_scope() -> None:
+async def test_scope_currency_dies_with_the_scope(
+    virtual_clock: VirtualClock,
+) -> None:
     """A finished scope is never current again, even without interference.
 
     The SET's retransmit guard in ``IcomTransport._tx_guards`` outlives the
@@ -777,7 +790,9 @@ async def test_scope_currency_dies_with_the_scope() -> None:
     await commander.stop()
 
 
-async def test_note_foreign_dispatch_marks_scopes_like_the_worker() -> None:
+async def test_note_foreign_dispatch_marks_scopes_like_the_worker(
+    virtual_clock: VirtualClock,
+) -> None:
     """The direct-dispatch marking rule equals the worker's rule.
 
     Raw CI-V transactions reach the wire without entering the commander
@@ -914,7 +929,7 @@ def _assert_idle_reply(backend: _RetransmitBackend, seq: int) -> None:
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_retired_scope_set_is_not_retransmitted_after_completion(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """After a normal write the SET's sequence is never resent (MOR-3743).
 
@@ -942,7 +957,7 @@ async def test_retired_scope_set_is_not_retransmitted_after_completion(
 
 @pytest.mark.parametrize("model", _MODELS)
 async def test_retired_scope_set_is_not_retransmitted_after_cancellation(
-    monkeypatch: pytest.MonkeyPatch, model: str
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, model: str
 ) -> None:
     """A cancelled write's SET sequence is never resent (MOR-3743).
 
@@ -1167,6 +1182,7 @@ async def test_serial_drain_failure_after_submission_fails_the_write_without_ret
 
 
 async def test_transport_guard_refusal_before_the_write_still_retries(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only the transport's own guard refusal stays retryable.
@@ -1217,8 +1233,7 @@ async def test_transport_guard_refusal_before_the_write_still_retries(
 
     async def respond() -> None:
         answered = 0
-        deadline = time.monotonic() + _BOUND_S
-        while time.monotonic() < deadline:
+        while True:
             while answered < len(transport.sent_packets):
                 frame = transport.sent_packets[answered][CIV_HEADER_SIZE:]
                 answered += 1
@@ -1227,7 +1242,13 @@ async def test_transport_guard_refusal_before_the_write_still_retries(
                     transport.replies.put_nowait(_wrap_reply(reply))
             if write.done():
                 return
-            await asyncio.sleep(0.01)
+            # A real event, not wall time: the next sent packet or the
+            # write finishing. The bound is for a stuck run only.
+            await await_until(
+                lambda: len(transport.sent_packets) > answered or write.done(),
+                timeout=_BOUND_S,
+                description="the next sent packet or write completion",
+            )
 
     responder = asyncio.create_task(respond())
     try:
