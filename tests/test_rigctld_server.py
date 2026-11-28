@@ -13,7 +13,6 @@ Strategy
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from types import SimpleNamespace
@@ -614,8 +613,9 @@ class TestLifecycle:
             command_service=None,
         )
 
+    @pytest.mark.timeout(30)
     async def test_combined_seats_drive_the_shared_service_once(
-        self, cfg: RigctldConfig
+        self, cfg: RigctldConfig, virtual_clock: VirtualClock
     ) -> None:
         """Both seats over one radio produce one ticking freshness loop.
 
@@ -662,7 +662,7 @@ class TestLifecycle:
         real_tick = StateFreshnessService.tick
 
         def _tick(service: StateFreshnessService, *, now: float | None = None) -> Any:
-            stamps.append(time.monotonic())
+            stamps.append(virtual_clock.now())
             return real_tick(service, now=now)
 
         with (
@@ -681,7 +681,10 @@ class TestLifecycle:
                 await srv.start()
                 assert srv._state_freshness_service is freshness_service
                 assert srv._state_store_freshness_task is not None
-                await asyncio.sleep(interval * 12)
+                # Both seats share one loop and one service: the driver lock
+                # lets exactly one ticking loop through, so every elapse
+                # advances one tick train spaced ``interval`` apart.
+                await virtual_clock.elapse(interval * 12)
             finally:
                 await srv.stop()
                 web_task.cancel()
@@ -692,7 +695,7 @@ class TestLifecycle:
         assert min(gaps) >= interval * 0.9, f"ticks overlapped: gaps={gaps}"
 
     async def test_standalone_rigctld_cadence_polls_ptt_at_the_profile_declared_interval(
-        self, cfg: RigctldConfig
+        self, cfg: RigctldConfig, virtual_clock: VirtualClock
     ) -> None:
         """``0x1C/0x00`` reaches the wire at the interval the profile declares.
 
@@ -714,9 +717,11 @@ class TestLifecycle:
         declared_cadence = acquisition.policy_for(ptt).cadence_seconds
         assert declared_cadence is not None
 
-        # Ahead of real ``time.monotonic()`` so the drain's own real-clock
+        # Ahead of the real monotonic clock so the drain's own real-clock
         # expiry check can never fire on a request stamped in this domain.
-        clock = FreshnessClock(start=time.monotonic() + 60.0)
+        # The fixture clock starts at the loop's real time, so +60 s keeps
+        # the same relation without reading the wall clock in the test.
+        clock = FreshnessClock(start=virtual_clock.now() + 60.0)
         store = StateStore(freshness_clock=clock)
         radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
 
@@ -777,7 +782,7 @@ class TestLifecycle:
         assert len(ptt_sends) == round(window / declared_cadence)
 
     async def test_external_cat_session_stands_the_cadence_down_but_not_a_user_read(
-        self, cfg: RigctldConfig
+        self, cfg: RigctldConfig, virtual_clock: VirtualClock
     ) -> None:
         """The deleted PTT re-read's external-CAT stand-down survives the move.
 
@@ -799,10 +804,12 @@ class TestLifecycle:
         ptt = FieldPath.global_("tx_state", "ptt")
 
         async def _drive(
-            *, external_cat: bool, user_read: str | None
+            *, external_cat: bool, user_read: str | None, now_base: float
         ) -> tuple[int, int]:
             profile = resolve_radio_profile(model="IC-7300")
-            clock = FreshnessClock(start=time.monotonic() + 60.0)
+            # Ahead of the real monotonic clock (see the cadence test above)
+            # so the drain's real-clock expiry check never fires here either.
+            clock = FreshnessClock(start=now_base)
             store = StateStore(freshness_clock=clock)
             radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
             radio.external_cat_session_active = external_cat
@@ -835,10 +842,17 @@ class TestLifecycle:
             )
             return ptt_reads, len(radio.civ_sends)
 
-        ptt_reads, total = await _drive(external_cat=False, user_read=None)
+        # The fixture clock starts at the loop's real time, so +60 s keeps
+        # the ahead-of-real-monotonic relation without a wall-clock read.
+        now_base = virtual_clock.now() + 60.0
+        ptt_reads, total = await _drive(
+            external_cat=False, user_read=None, now_base=now_base
+        )
         assert (ptt_reads, total > 0) == (1, True)
 
-        ptt_reads, total = await _drive(external_cat=True, user_read=None)
+        ptt_reads, total = await _drive(
+            external_cat=True, user_read=None, now_base=now_base
+        )
         assert ptt_reads == 0, "the cadence did not stand down for external CAT"
         assert total > 0, (
             "everything went quiet, not just the cadence -- a guard that "
@@ -846,7 +860,9 @@ class TestLifecycle:
         )
 
         for ordering in ("before", "after"):
-            ptt_reads, _total = await _drive(external_cat=True, user_read=ordering)
+            ptt_reads, _total = await _drive(
+                external_cat=True, user_read=ordering, now_base=now_base
+            )
             assert ptt_reads == 1, (
                 f"a client read queued {ordering} the tick was swallowed by "
                 "the external-CAT stand-down"
@@ -1106,8 +1122,9 @@ class TestLifecycle:
             if srv._server is not None:
                 await srv.stop()
 
+    @pytest.mark.timeout(30)
     async def test_stale_standalone_state_store_queues_acquisition_via_server_service(
-        self, cfg: RigctldConfig
+        self, cfg: RigctldConfig, virtual_clock: VirtualClock
     ) -> None:
         freq = FieldPath.active("main", "freq_mode", "freq_hz")
         radio = _ProfiledStandaloneRadio(
@@ -1247,7 +1264,7 @@ class TestLifecycle:
                             provider=request.provider,
                             native_id="fake-provider-read",
                         ),
-                        timestamp_monotonic=time.monotonic(),
+                        timestamp_monotonic=clock(),
                         max_age=request.policy.freshness_ttl_seconds,
                         provider_generation=store.provider_generation,
                     )
@@ -1258,8 +1275,12 @@ class TestLifecycle:
         executor = _ReapplyingExecutor()
         radio._acquisition_executor = executor
 
-        fake_now = [1000.0]
-        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+        # The shared virtual clock drives the manual time domain (constructed,
+        # not installed: no loop timers are involved). It also stands in for
+        # the real monotonic clock wherever the drain path reads one, so the
+        # whole pass runs on one deterministic domain.
+        clock = VirtualClock(start=1000.0)
+        with patch("time.monotonic", side_effect=clock):
             srv = RigctldServer(radio, cfg)
             # Bootstrap directly (no real background loop tasks) so time can
             # be driven deterministically across several drain cycles.
@@ -1275,8 +1296,8 @@ class TestLifecycle:
             _apply_store_value(srv._state_store, swr, 1, max_age=2.0)
 
             for _ in range(5):
-                fake_now[0] += 2.1
-                srv._state_freshness_service.tick(now=fake_now[0])
+                clock.advance(2.1)
+                srv._state_freshness_service.tick(now=clock.now())
                 await srv._drain_state_acquisition_once()
 
         assert executor.calls == [], (
@@ -1671,7 +1692,6 @@ class TestLifecycle:
 
 
 @pytest.mark.timeout(30)
-@pytest.mark.usefixtures("virtual_clock")
 class TestAcceptResponse:
     """Request/reply round trips, on the virtual clock.
 
@@ -1679,10 +1699,15 @@ class TestAcceptResponse:
     time a starved runner let it fire before the reply was written, so the
     read returned EOF. Virtual time does not move here, so the idle timeout
     cannot preempt the reply; the ``timeout`` mark is the real-time watchdog.
+    Each test takes the ``virtual_clock`` fixture explicitly (the form the
+    realtime guard recognizes) instead of a class-level ``usefixtures`` mark.
     """
 
     async def test_single_command_response(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         r, w = await _connect(server)
         w.write(b"f\n")
@@ -1695,7 +1720,10 @@ class TestAcceptResponse:
         await _close(w)
 
     async def test_multiple_commands_same_connection(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         r, w = await _connect(server)
 
@@ -1709,7 +1737,11 @@ class TestAcceptResponse:
         await _close(w)
 
     async def test_set_command_calls_execute(
-        self, server: RigctldServer, proto: MagicMock, handler: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        handler: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         set_cmd = RigctldCommand("F", "set_freq", args=("14074000",), is_set=True)
         proto.parse_line.return_value = set_cmd
@@ -1729,7 +1761,11 @@ class TestAcceptResponse:
         await _close(w)
 
     async def test_legacy_handler_execute_without_session_id_still_runs(
-        self, mock_radio: MagicMock, cfg: RigctldConfig, proto: MagicMock
+        self,
+        mock_radio: MagicMock,
+        cfg: RigctldConfig,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         compat_handler = _CompatHandler()
         srv = RigctldServer(
@@ -1752,7 +1788,10 @@ class TestAcceptResponse:
             await srv.stop()
 
     async def test_format_response_receives_session(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         r, w = await _connect(server)
         w.write(b"f\n")
@@ -1769,7 +1808,10 @@ class TestAcceptResponse:
         await _close(w)
 
     async def test_blank_lines_are_skipped(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         r, w = await _connect(server)
         w.write(b"\n\n\nf\n")
@@ -1780,7 +1822,10 @@ class TestAcceptResponse:
         await _close(w)
 
     async def test_crlf_line_ending_accepted(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         r, w = await _connect(server)
         w.write(b"f\r\n")
@@ -1792,8 +1837,11 @@ class TestAcceptResponse:
 
 
 class TestSemiIntegrationSerialMockRadio:
+    @pytest.mark.timeout(30)
     async def test_get_and_set_frequency_flows_through_core(
-        self, server_serial_radio: tuple[RigctldServer, SerialMockRadio]
+        self,
+        server_serial_radio: tuple[RigctldServer, SerialMockRadio],
+        virtual_clock: VirtualClock,
     ) -> None:
         """f/F commands go through real RigctldHandler into SerialMockRadio."""
         server, radio = server_serial_radio
@@ -1821,8 +1869,11 @@ class TestSemiIntegrationSerialMockRadio:
         finally:
             await _close(writer)
 
+    @pytest.mark.timeout(30)
     async def test_get_and_set_mode_flows_through_core(
-        self, server_serial_radio: tuple[RigctldServer, SerialMockRadio]
+        self,
+        server_serial_radio: tuple[RigctldServer, SerialMockRadio],
+        virtual_clock: VirtualClock,
     ) -> None:
         """m/M commands go through real RigctldHandler into SerialMockRadio."""
         server, radio = server_serial_radio
@@ -1853,8 +1904,11 @@ class TestSemiIntegrationSerialMockRadio:
         finally:
             await _close(writer)
 
+    @pytest.mark.timeout(30)
     async def test_get_lock_mode_keeps_next_reply_aligned(
-        self, server_serial_radio: tuple[RigctldServer, SerialMockRadio]
+        self,
+        server_serial_radio: tuple[RigctldServer, SerialMockRadio],
+        virtual_clock: VirtualClock,
     ) -> None:
         """MOR-3113: `\\get_lock_mode` answers value + RPRT 0, nothing more.
 
@@ -1897,8 +1951,10 @@ class TestSemiIntegrationSerialMockRadio:
             await _close(writer)
 
 
+@pytest.mark.timeout(30)
 async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connection(
     cfg: RigctldConfig,
+    virtual_clock: VirtualClock,
 ) -> None:
     """MOR-1881: the exact regression the rejected deferred-lane design
     failed at (PR #2755).
@@ -1922,26 +1978,38 @@ async def test_deferred_write_and_unkey_both_answer_immediately_on_one_connectio
         try:
             split_before = radio._split  # noqa: SLF001
 
-            start = time.monotonic()
+            start = virtual_clock.now()
             writer.write(b"S 1 VFOA\n")
             await writer.drain()
-            data_split = await asyncio.wait_for(reader.read(4096), timeout=1.0)
-            elapsed_split = time.monotonic() - start
+            split_reply = asyncio.ensure_future(reader.read(4096))
+            await await_until(
+                split_reply.done, timeout=10.0, description="the split reply"
+            )
+            data_split = split_reply.result()
+            elapsed_split = virtual_clock.now() - start
 
-            start_ptt = time.monotonic()
+            start_ptt = virtual_clock.now()
             writer.write(b"T 0\n")
             await writer.drain()
-            data_ptt = await asyncio.wait_for(reader.read(4096), timeout=1.0)
-            elapsed_ptt = time.monotonic() - start_ptt
+            ptt_reply = asyncio.ensure_future(reader.read(4096))
+            await await_until(
+                ptt_reply.done, timeout=10.0, description="the unkey reply"
+            )
+            data_ptt = ptt_reply.result()
+            elapsed_ptt = virtual_clock.now() - start_ptt
         finally:
             await _close(writer)
     finally:
         await srv.stop()
 
     assert data_split == b"RPRT 0\n"
-    assert elapsed_split < 0.1
+    assert elapsed_split == 0, (
+        "the split reply waited on a lane timer instead of answering at once"
+    )
     assert data_ptt == b"RPRT 0\n"
-    assert elapsed_ptt < 0.1
+    assert elapsed_ptt == 0, (
+        "the unkey reply waited on a lane timer instead of answering at once"
+    )
     assert radio._split is split_before  # noqa: SLF001
 
 
@@ -1964,8 +2032,12 @@ class TestQuit:
         assert data == b""  # server closed the connection
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_quit_decrements_client_count(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         proto.parse_line.return_value = RigctldCommand("q", "quit")
 
@@ -1974,8 +2046,11 @@ class TestQuit:
         await w.drain()
         await _read_all(r)
 
-        # Give event loop a beat to run the done callback.
-        await asyncio.sleep(0.05)
+        # The done callback runs on a loop turn once retirement finishes.
+        await await_until(
+            lambda: server._client_count == 0,
+            description="the quit disconnect to retire",
+        )
         assert server._client_count == 0
         await _close(w)
 
@@ -1986,8 +2061,12 @@ class TestQuit:
 
 
 class TestErrorHandling:
+    @pytest.mark.timeout(30)
     async def test_parse_error_sends_enimpl(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unknown commands (ValueError) return ENIMPL, not EPROTO."""
         proto.parse_line.side_effect = ValueError("unknown command")
@@ -2002,8 +2081,12 @@ class TestErrorHandling:
         proto.format_error.assert_called_with(HamlibError.ENIMPL)
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_parse_error_connection_stays_open(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """After a parse error the connection should remain open."""
         # First command: parse error
@@ -2025,8 +2108,13 @@ class TestErrorHandling:
 
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_handler_exception_sends_eio(
-        self, server: RigctldServer, handler: MagicMock, proto: MagicMock
+        self,
+        server: RigctldServer,
+        handler: MagicMock,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         handler.execute.side_effect = RuntimeError("radio exploded")
         proto.format_error.return_value = b"RPRT -6\n"
@@ -2157,18 +2245,24 @@ class TestIdleTimeout:
 
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_active_client_resets_timeout(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Each command resets the idle clock."""
         r, w = await _connect(server)
 
-        # Send two commands 0.3s apart (< client_timeout=0.5) — should work.
+        # Send two commands 0.2 virtual seconds apart (< client_timeout=0.5):
+        # each command resets the idle timer, so the connection must survive.
         for _ in range(2):
             w.write(b"f\n")
             await w.drain()
-            await asyncio.wait_for(r.read(4096), timeout=1.0)
-            await asyncio.sleep(0.2)
+            data = await asyncio.wait_for(r.read(4096), timeout=1.0)
+            assert data == _RESPONSE_BYTES
+            await virtual_clock.elapse(0.2)
 
         await _close(w)
 
@@ -2179,8 +2273,12 @@ class TestIdleTimeout:
 
 
 class TestMaxClients:
+    @pytest.mark.timeout(30)
     async def test_max_clients_enforced(
-        self, server: RigctldServer, cfg: RigctldConfig
+        self,
+        server: RigctldServer,
+        cfg: RigctldConfig,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Connecting max_clients+1 should get an immediate EOF on the last."""
         connections: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
@@ -2189,8 +2287,11 @@ class TestMaxClients:
             r, w = await _connect(server)
             connections.append((r, w))
 
-        # Give event loop a beat so all connections are registered.
-        await asyncio.sleep(0.05)
+        # Wait until every connection is registered before the extra one.
+        await await_until(
+            lambda: server._client_count == cfg.max_clients,
+            description="all clients to register",
+        )
 
         # One extra — should be rejected.
         r_extra, w_extra = await _connect(server)
@@ -2201,19 +2302,29 @@ class TestMaxClients:
             await _close(w)
         await _close(w_extra)
 
+    @pytest.mark.timeout(30)
     async def test_client_count_decreases_on_disconnect(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         proto.parse_line.return_value = RigctldCommand("q", "quit")
 
         r, w = await _connect(server)
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: server._client_count == 1,
+            description="the client to register",
+        )
         assert server._client_count == 1
 
         w.write(b"q\n")
         await w.drain()
         await _read_all(r)
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: server._client_count == 0,
+            description="the quit disconnect to retire",
+        )
 
         assert server._client_count == 0
         await _close(w)
@@ -2225,7 +2336,10 @@ class TestMaxClients:
 
 
 class TestConcurrentClients:
-    async def test_three_concurrent_clients(self, server: RigctldServer) -> None:
+    @pytest.mark.timeout(30)
+    async def test_three_concurrent_clients(
+        self, server: RigctldServer, virtual_clock: VirtualClock
+    ) -> None:
         """All three clients should receive independent responses."""
         conns = [await _connect(server) for _ in range(3)]
 
@@ -2243,8 +2357,12 @@ class TestConcurrentClients:
         for r, w in conns:
             await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_each_client_has_unique_id(
-        self, server: RigctldServer, proto: MagicMock
+        self,
+        server: RigctldServer,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         conns = [await _connect(server) for _ in range(3)]
 
@@ -2270,18 +2388,22 @@ class TestConcurrentClients:
 
 
 class TestGracefulShutdown:
+    @pytest.mark.timeout(30)
     async def test_stop_closes_active_clients(
         self,
         mock_radio: MagicMock,
         cfg: RigctldConfig,
         proto: MagicMock,
         handler: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
         await srv.start()
 
         r, w = await _connect(srv)
-        await asyncio.sleep(0.05)  # ensure task is running
+        await await_until(
+            lambda: srv._client_count == 1, description="the client to register"
+        )
 
         await srv.stop()
 
@@ -2290,38 +2412,48 @@ class TestGracefulShutdown:
         assert data == b""
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_stop_cancels_all_tasks(
         self,
         mock_radio: MagicMock,
         cfg: RigctldConfig,
         proto: MagicMock,
         handler: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
         await srv.start()
 
         readers_writers = [await _connect(srv) for _ in range(2)]
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: srv._client_count == 2, description="both clients to register"
+        )
 
         assert srv._client_count == 2
         await srv.stop()
-        # Allow done callbacks to fire after task cancellation
-        await asyncio.sleep(0.05)
+        # The done callbacks fire on loop turns once cancellation lands.
+        await await_until(
+            lambda: srv._client_count == 0, description="both clients to retire"
+        )
         assert srv._client_count == 0
 
         for r, w in readers_writers:
             await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_serve_forever_stops_on_cancel(
         self,
         mock_radio: MagicMock,
         cfg: RigctldConfig,
         proto: MagicMock,
         handler: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
         task = asyncio.get_event_loop().create_task(srv.serve_forever())
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: srv._server is not None, description="serve_forever to listen"
+        )
 
         task.cancel()
         try:
@@ -2331,12 +2463,14 @@ class TestGracefulShutdown:
 
         assert srv._server is None
 
+    @pytest.mark.timeout(30)
     async def test_stop_during_client_teardown_still_closes_socket(
         self,
         mock_radio: MagicMock,
         cfg: RigctldConfig,
         proto: MagicMock,
         handler: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """MOR-1887: stop() cancelling a client mid-teardown strands nothing.
 
@@ -2349,12 +2483,17 @@ class TestGracefulShutdown:
         when the cancellation arrives mid-teardown.
         """
 
+        entered = asyncio.Event()
+        unwinding = asyncio.Event()
+
         async def slow_to_cancel(cmd: RigctldCommand) -> RigctldResponse:
+            entered.set()
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
                 # The cancel takes a detour, so the handler's teardown
                 # gather is still pending when stop() cancels the handler.
+                unwinding.set()
                 await asyncio.sleep(0.1)
                 raise
             return _FREQ_RESP  # pragma: no cover
@@ -2366,16 +2505,26 @@ class TestGracefulShutdown:
         r, w = await _connect(srv)
         w.write(b"f\n")
         await w.drain()
-        await asyncio.sleep(0.05)  # the response task is inside execute()
+        # The response task is inside execute().
+        await await_until(
+            entered.is_set, description="the response task to enter execute()"
+        )
 
         # EOF: the handler breaks out of its read loop and enters its
         # teardown gather while the response task is still unwinding.
         w.close()
-        await asyncio.sleep(0.05)
+        await await_until(
+            unwinding.is_set,
+            description="the teardown gather to pend on the unwinding response",
+        )
 
         # Cancels the handler mid-teardown; before MOR-1887 this hung forever
-        # inside Server.wait_closed().
-        await asyncio.wait_for(srv.stop(), timeout=5.0)
+        # inside Server.wait_closed(). The 0.1 s detour above is a loop timer,
+        # so the clock must move for the teardown to finish.
+        stop_task = asyncio.ensure_future(srv.stop())
+        await virtual_clock.elapse(1.0)
+        await await_until(stop_task.done, description="stop() to finish")
+        await stop_task
 
         assert srv._server is None
         await _close(w)
@@ -2387,14 +2536,19 @@ class TestGracefulShutdown:
 
 
 class TestAbruptDisconnect:
+    @pytest.mark.timeout(30)
     async def test_abrupt_disconnect_does_not_crash_server(
-        self, server: RigctldServer
+        self, server: RigctldServer, virtual_clock: VirtualClock
     ) -> None:
         r, w = await _connect(server)
 
-        # Close without sending anything (abrupt).
+        # Close without sending anything (abrupt); wait until the server has
+        # retired the connection.
         w.close()
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: server._client_count == 0,
+            description="the abrupt disconnect to retire",
+        )
 
         # Server must still be running and accept new clients.
         assert server._server is not None
@@ -2405,15 +2559,16 @@ class TestAbruptDisconnect:
         assert data == _RESPONSE_BYTES
         await _close(w2)
 
+    @pytest.mark.timeout(30)
     async def test_disconnect_mid_session_handled(
-        self, server: RigctldServer, handler: MagicMock
+        self, server: RigctldServer, handler: MagicMock, virtual_clock: VirtualClock
     ) -> None:
         """Handler may be awaiting execute when client disconnects."""
         evt = asyncio.Event()
 
         async def blocking(cmd: RigctldCommand) -> RigctldResponse:
             evt.set()
-            await asyncio.sleep(10)  # blocking
+            await asyncio.sleep(10)  # blocking; teardown cancels it, never waits it out
             return _FREQ_RESP  # pragma: no cover
 
         handler.execute = blocking
@@ -2423,9 +2578,13 @@ class TestAbruptDisconnect:
         await w.drain()
 
         # Wait until handler is entered, then yank the connection.
-        await asyncio.wait_for(evt.wait(), timeout=1.0)
+        await await_until(evt.is_set, description="the handler to enter execute()")
         w.close()
-        await asyncio.sleep(0.2)
+        # Teardown cancels the blocked response and retires the connection.
+        await await_until(
+            lambda: server._client_count == 0,
+            description="the yanked connection to retire",
+        )
 
         # Server should still be alive.
         assert server._server is not None
@@ -2437,7 +2596,10 @@ class TestAbruptDisconnect:
 
 
 class TestRunRigctldServer:
-    async def test_run_stops_on_cancel(self, mock_radio: MagicMock) -> None:
+    @pytest.mark.timeout(30)
+    async def test_run_stops_on_cancel(
+        self, mock_radio: MagicMock, virtual_clock: VirtualClock
+    ) -> None:
         """run_rigctld_server should exit cleanly when cancelled."""
         # Use a no-op handler/protocol so start() doesn't fail on stubs.
         proto = MagicMock()
@@ -2453,16 +2615,22 @@ class TestRunRigctldServer:
 
         orig_cls = server_mod.RigctldServer
         server_mod_any = cast(Any, server_mod)
+        started: list[RigctldServer] = []
 
         def _patched_cls(radio: MagicMock, config: RigctldConfig) -> RigctldServer:
-            return orig_cls(radio, config, _protocol=proto, _handler=hdl)
+            srv = orig_cls(radio, config, _protocol=proto, _handler=hdl)
+            started.append(srv)
+            return srv
 
         server_mod_any.RigctldServer = _patched_cls
         try:
             task = asyncio.get_event_loop().create_task(
                 run_rigctld_server(mock_radio, host="127.0.0.1", port=0)
             )
-            await asyncio.sleep(0.05)
+            await await_until(
+                lambda: started and started[0]._server is not None,
+                description="run_rigctld_server to listen",
+            )
             task.cancel()
             try:
                 await asyncio.wait_for(task, timeout=2.0)
@@ -2692,8 +2860,11 @@ class TestStateAcquisitionDrainPolicies:
         recorder = StateDiagnosticsRecorder(enabled=True)
         radio._state_diagnostics = recorder
 
-        fake_now = [1000.0]
-        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+        # The shared virtual clock drives the manual time domain (constructed,
+        # not installed: no loop timers are involved) and stands in for the
+        # real monotonic clock wherever the drain path reads one.
+        clock = VirtualClock(start=1000.0)
+        with patch("time.monotonic", side_effect=clock):
             srv = RigctldServer(radio, cfg)
             srv._bootstrap_state_acquisition()
             scheduler = srv._acquisition_scheduler
@@ -2701,19 +2872,19 @@ class TestStateAcquisitionDrainPolicies:
             assert scheduler is not None
             assert service is not None
 
-            service.tick(now=fake_now[0])
+            service.tick(now=clock.now())
             await srv._drain_state_acquisition_once()
             assert executor.calls, "nothing was dispatched, so nothing can time out"
             assert srv._acquisition_in_flight != {}
 
             # Well past every deadline the queued request carries, with the
             # link demonstrably alive: a CI-V frame landed this instant.
-            fake_now[0] += 3600.0
+            clock.advance(3600.0)
             radio._civ_recovering = False
-            radio._last_civ_data_received = fake_now[0]
+            radio._last_civ_data_received = clock.now()
             radio._civ_ready_idle_timeout = 2.0
             probe = RadioPoller._civ_link_healthy  # noqa: SLF001
-            assert probe(cast(Any, SimpleNamespace(_radio=radio)), now=fake_now[0]), (
+            assert probe(cast(Any, SimpleNamespace(_radio=radio)), now=clock.now()), (
                 "premise failed: the web poller's own probe does not call this "
                 "link healthy, so this test would not detect the grace"
             )
@@ -2762,8 +2933,11 @@ class TestStateAcquisitionDrainPolicies:
         radio._acquisition_executor = executor
         radio._state_diagnostics = StateDiagnosticsRecorder(enabled=True)
 
-        fake_now = [1000.0]
-        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+        # The shared virtual clock drives the manual time domain (constructed,
+        # not installed: no loop timers are involved) and stands in for the
+        # real monotonic clock wherever the drain path reads one.
+        clock = VirtualClock(start=1000.0)
+        with patch("time.monotonic", side_effect=clock):
             srv = RigctldServer(radio, cfg)
             srv._bootstrap_state_acquisition()
             scheduler = srv._acquisition_scheduler
@@ -2785,7 +2959,7 @@ class TestStateAcquisitionDrainPolicies:
             # One-two drain ticks later (the drain sleeps 0.05 s), well
             # inside any sane answer window: the request must still be
             # live, awaiting its answer.
-            fake_now[0] += 0.1
+            clock.advance(0.1)
             await srv._drain_state_acquisition_once()
 
         assert srv._acquisition_in_flight != {}, (
@@ -2801,7 +2975,7 @@ class TestStateAcquisitionDrainPolicies:
         )
 
     async def test_external_cat_stand_down_selects_on_reasons_not_on_the_request(
-        self, cfg: RigctldConfig
+        self, cfg: RigctldConfig, virtual_clock: VirtualClock
     ) -> None:
         """The dispatch-eligibility filter stays as narrow as it is today.
 
@@ -2814,7 +2988,9 @@ class TestStateAcquisitionDrainPolicies:
 
         ptt = FieldPath.global_("tx_state", "ptt")
         profile = resolve_radio_profile(model="IC-7300")
-        clock = FreshnessClock(start=time.monotonic() + 60.0)
+        # Ahead of the real monotonic clock (see the cadence test) so the
+        # drain's real-clock expiry check never fires on this domain.
+        clock = FreshnessClock(start=virtual_clock.now() + 60.0)
         store = StateStore(freshness_clock=clock)
         radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
         srv = RigctldServer(radio, cfg)
@@ -2866,6 +3042,7 @@ class TestStateAcquisitionDrainPolicies:
 
 
 @pytest.mark.parametrize("cancelled", [False, True], ids=["waited", "cancelled-once"])
+@pytest.mark.timeout(30)
 async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
     mock_radio: MagicMock,
     cfg: RigctldConfig,
@@ -2874,6 +3051,7 @@ async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     cancelled: bool,
+    virtual_clock: VirtualClock,
 ) -> None:
     monkeypatch.setattr(rigctld_server, "SESSION_TX_HANDBACK_TIMEOUT_S", 0.05)
     started, never = asyncio.Event(), asyncio.Event()
@@ -2885,9 +3063,12 @@ async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
     handler.release_session_tx = release_session_tx
     srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
     teardown = asyncio.ensure_future(srv._release_session_tx("s1"))
-    await asyncio.wait_for(started.wait(), 1.0)
+    await await_until(started.is_set, description="the handback to start")
     if cancelled:
         teardown.cancel()  # stop() reaching the session mid-handback
+    # The 0.05 s handback bound is a loop timer: move the clock past it (and,
+    # after a cancel, past the second wait it starts) so the bound fires.
+    await virtual_clock.elapse(0.06)
     # asyncio.wait, not wait_for: a timeout here must not cancel the teardown
     # into its second, bounded wait and pass for the wrong reason.
     done, _ = await asyncio.wait({teardown}, timeout=1.0)
@@ -2901,6 +3082,7 @@ async def test_a_handback_that_never_settles_is_waited_on_only_for_its_bound(
     assert errors[0].endswith("unkey not confirmed")
 
 
+@pytest.mark.timeout(30)
 async def test_a_handback_cancelled_twice_is_left_with_an_error_naming_the_session(
     mock_radio: MagicMock,
     cfg: RigctldConfig,
@@ -2908,6 +3090,7 @@ async def test_a_handback_cancelled_twice_is_left_with_an_error_naming_the_sessi
     handler: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
 ) -> None:
     monkeypatch.setattr(rigctld_server, "SESSION_TX_HANDBACK_TIMEOUT_S", 5.0)
     started, never = asyncio.Event(), asyncio.Event()
@@ -2924,9 +3107,11 @@ async def test_a_handback_cancelled_twice_is_left_with_an_error_naming_the_sessi
     handler.release_session_tx = release_session_tx
     srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
     teardown = asyncio.ensure_future(srv._release_session_tx("s1"))
-    await asyncio.wait_for(started.wait(), 1.0)
+    await await_until(started.is_set, description="the handback to start")
     teardown.cancel()  # the first cancellation: a second, bounded wait begins
-    await asyncio.sleep(0.05)
+    # The second wait runs on the 5.0 s bound: moving the clock a little must
+    # still leave it pending, proving the wait honours the patched bound.
+    await virtual_clock.elapse(0.05)
     assert not teardown.done()
     teardown.cancel()  # the second one ends the wait and the handback
     done, _ = await asyncio.wait({teardown}, timeout=1.0)
@@ -2941,12 +3126,14 @@ async def test_a_handback_cancelled_twice_is_left_with_an_error_naming_the_sessi
     ]
 
 
+@pytest.mark.timeout(30)
 async def test_stop_waits_for_a_listener_that_never_closes_only_for_its_bound(
     mock_radio: MagicMock,
     cfg: RigctldConfig,
     proto: MagicMock,
     handler: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     monkeypatch.setattr(rigctld_server, "LISTENER_CLOSE_TIMEOUT_S", 0.05)
 
@@ -2959,7 +3146,11 @@ async def test_stop_waits_for_a_listener_that_never_closes_only_for_its_bound(
 
     srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
     srv._server = cast(Any, _NeverClosingListener())
-    await asyncio.wait_for(srv.stop(), 1.0)
+    # The listener-close bound is a loop timer: only the clock releases it.
+    stop_task = asyncio.ensure_future(srv.stop())
+    await virtual_clock.elapse(0.06)
+    await await_until(stop_task.done, description="stop() to give up on the listener")
+    await stop_task
     assert srv._server is None
 
 
