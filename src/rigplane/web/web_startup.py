@@ -591,10 +591,17 @@ def _unwarned_unavailable_paths(
     if profile is None:
         return ()
     observed = frozenset(_observed_paths(server, scheduler))
-    availability = resolve_available_when(
-        profile, server.command_state_store.snapshot()
-    )
-    if scope_fixed_edge_slot(profile, server.command_state_store.snapshot()) is None:
+    snapshot = server.command_state_store.snapshot()
+    availability = resolve_available_when(profile, snapshot)
+    # MOR-4481: the slot helper reads a RadioProfile (receiver_count,
+    # scope ranges) — scheduler._profile is a RadioAcquisitionProfile,
+    # which has neither. Same type guard as unobserved() below; a radio
+    # without one keeps the edge available.
+    radio_profile = getattr(server._radio, "_profile", None)
+    if (
+        isinstance(radio_profile, RadioProfile)
+        and scope_fixed_edge_slot(radio_profile, snapshot) is None
+    ):
         availability[FieldPath.scope_control("display", "fixed_edge")] = False
     return tuple(
         sorted(
@@ -775,6 +782,16 @@ async def _await_initial_state_acquisition(
 
     outstanding = unobserved()
     if not outstanding:
+        # MOR-4481: a refused read leaves the outstanding set at once, so
+        # the gate can arrive here already empty — but a refused/unanswered
+        # record still names paths the warning must name. Never release
+        # silently; the scheduler's own acquisition warning is not this
+        # gate warning.
+        already_lapsed = _unwarned_unavailable_paths(
+            server, scheduler, warned=set()
+        )
+        if already_lapsed:
+            _warn_lapsed_paths(server, scheduler, already_lapsed, elapsed=None)
         return
     logger.info(
         "waiting for initial state acquisition: %d fields outstanding",

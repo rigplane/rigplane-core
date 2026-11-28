@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
+from ...core.acquisition_scheduler import AcquisitionScheduler
 from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
@@ -1111,6 +1112,14 @@ class RigctldClientRadio:
             self._demote_ptt_read_after_timeout()
             raise
         self._ptt_read_refused = False
+        # MOR-4481: an answered ``t`` ends the refusal the RPRT error
+        # filed above — otherwise the public state keeps reporting PTT
+        # unavailable (and the startup warning keeps naming it) after the
+        # radio started answering. Same answer-ends-refusal rule the Yaesu
+        # adapter and the CI-V ingress hold (end_refusals).
+        scheduler = getattr(self, "_acquisition_scheduler", None)
+        if isinstance(scheduler, AcquisitionScheduler):
+            scheduler.end_refusals((FieldPath.global_("tx_state", "ptt"),))
         return value
 
     async def set_ptt(self, on: bool) -> None:
