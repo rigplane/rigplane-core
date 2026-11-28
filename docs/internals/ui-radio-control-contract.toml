@@ -400,7 +400,7 @@ gap_owner = "MOR-1409"
 [[families]]
 id = "audio_payload_and_routing"
 capabilities = ["audio", "mod_input"]
-intents = ["set_acc1_mod_level", "set_usb_mod_level", "set_lan_mod_level", "get_acc1_mod_level", "get_usb_mod_level", "get_lan_mod_level", "get_data_off_mod_input", "set_data_off_mod_input", "get_data1_mod_input", "set_data1_mod_input", "get_data2_mod_input", "set_data2_mod_input", "get_data3_mod_input", "set_data3_mod_input"]
+intents = ["audio_retry", "set_acc1_mod_level", "set_usb_mod_level", "set_lan_mod_level", "get_acc1_mod_level", "get_usb_mod_level", "get_lan_mod_level", "get_data_off_mod_input", "set_data_off_mod_input", "get_data1_mod_input", "set_data1_mod_input", "get_data2_mod_input", "set_data2_mod_input", "get_data3_mod_input", "set_data3_mod_input"]
 command_route = "existing modulation/routing command path; frozen audio transport"
 observation_route = "existing provider routing readback; PCM/Opus/FFT remains data-plane"
 field_paths = ["global.slow_state.data_off_mod_input", "global.slow_state.data1_mod_input", "global.slow_state.data2_mod_input", "global.slow_state.data3_mod_input"]
