@@ -1,4 +1,10 @@
-"""Tests for the reusable fake external ``rigctld`` simulator."""
+"""Tests for the reusable external ``rigctld`` simulator (MOR-4075).
+
+Clock-dependent waits run on the shared virtual clock
+(``virtual_clock`` fixture); every socket byte is a real event awaited with
+:func:`await_until`, never with a wall-clock ``asyncio.sleep`` or a raised
+``asyncio`` timeout.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,7 @@ import asyncio
 import pytest
 
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
+from rigplane.testing.timing import VirtualClock, await_until
 
 
 async def _connect(
@@ -28,19 +35,54 @@ async def _send_line(
     await writer.drain()
 
 
+async def _read_line(reader: asyncio.StreamReader) -> str:
+    """Wait for one reply line as a real socket event."""
+    read = asyncio.ensure_future(reader.readline())
+    try:
+        await await_until(
+            lambda: read.done(),
+            timeout=10.0,
+            description="the rigctld reply line",
+        )
+    except BaseException:
+        if not read.done():
+            read.cancel()
+        raise
+    line = read.result()
+    assert line != b""
+    return line.decode("ascii").rstrip("\n")
+
+
 async def _read_lines(
     reader: asyncio.StreamReader,
     count: int,
 ) -> list[str]:
     lines: list[str] = []
     for _ in range(count):
-        line = await asyncio.wait_for(reader.readline(), timeout=1.0)
-        assert line != b""
-        lines.append(line.decode("ascii").rstrip("\n"))
+        lines.append(await _read_line(reader))
     return lines
 
 
-async def test_rigctld_owned_frequency_mode_ptt_and_vfo_happy_paths() -> None:
+async def _read_eof(reader: asyncio.StreamReader, description: str) -> bytes:
+    """Wait for the real EOF bytes as a real socket event."""
+    read = asyncio.ensure_future(reader.read(4096))
+    try:
+        await await_until(
+            lambda: read.done(),
+            timeout=10.0,
+            description=description,
+        )
+    except BaseException:
+        if not read.done():
+            read.cancel()
+        raise
+    return read.result()
+
+
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_frequency_mode_ptt_and_vfo_happy_paths(
+    virtual_clock: VirtualClock,
+) -> None:
     async with FakeRigctldServer() as server:
         reader, writer = await _connect(server)
         try:
@@ -91,7 +133,10 @@ async def test_rigctld_owned_frequency_mode_ptt_and_vfo_happy_paths() -> None:
     ]
 
 
-async def test_rigctld_owned_unsupported_command_returns_enimpl() -> None:
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_unsupported_command_returns_enimpl(
+    virtual_clock: VirtualClock,
+) -> None:
     async with FakeRigctldServer() as server:
         reader, writer = await _connect(server)
         try:
@@ -101,20 +146,25 @@ async def test_rigctld_owned_unsupported_command_returns_enimpl() -> None:
             await _close(writer)
 
 
-async def test_rigctld_owned_disconnect_closes_socket_without_response() -> None:
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_disconnect_closes_socket_without_response(
+    virtual_clock: VirtualClock,
+) -> None:
     behavior = FakeRigctldBehavior(disconnect_commands={"f"})
 
     async with FakeRigctldServer(behavior=behavior) as server:
         reader, writer = await _connect(server)
         try:
             await _send_line(writer, "f")
-            data = await asyncio.wait_for(reader.read(4096), timeout=1.0)
-            assert data == b""
+            assert await _read_eof(reader, "the disconnect EOF") == b""
         finally:
             await _close(writer)
 
 
-async def test_rigctld_owned_malformed_response_can_be_scripted() -> None:
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_malformed_response_can_be_scripted(
+    virtual_clock: VirtualClock,
+) -> None:
     behavior = FakeRigctldBehavior(malformed_responses={"f": b"not-a-frequency\n"})
 
     async with FakeRigctldServer(behavior=behavior) as server:
@@ -126,35 +176,47 @@ async def test_rigctld_owned_malformed_response_can_be_scripted() -> None:
             await _close(writer)
 
 
-async def test_rigctld_owned_delayed_response_can_be_scripted() -> None:
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_delayed_response_can_be_scripted(
+    virtual_clock: VirtualClock,
+) -> None:
     behavior = FakeRigctldBehavior(command_delays={"f": 0.02})
 
     async with FakeRigctldServer(behavior=behavior) as server:
         reader, writer = await _connect(server)
         try:
             await _send_line(writer, "f")
+            # The scripted delay is a virtual timer: move the clock past it,
+            # then wait for the real socket bytes it releases.
+            await virtual_clock.elapse(0.1)
             assert await _read_lines(reader, 1) == ["14074000"]
         finally:
             await _close(writer)
 
 
-async def test_rigctld_owned_stop_cancels_active_delayed_response() -> None:
+@pytest.mark.timeout(30)
+async def test_rigctld_owned_stop_cancels_active_delayed_response(
+    virtual_clock: VirtualClock,
+) -> None:
     behavior = FakeRigctldBehavior(command_delays={"f": 10.0})
     server = FakeRigctldServer(behavior=behavior)
     await server.start()
     reader, writer = await _connect(server)
     try:
         await _send_line(writer, "f")
-        await asyncio.wait_for(_wait_for_command(server, "f"), timeout=1.0)
+        await await_until(
+            lambda: "f" in server.commands_seen,
+            timeout=10.0,
+            description="the server receiving 'f'",
+        )
 
-        loop = asyncio.get_running_loop()
-        started_at = loop.time()
-        await asyncio.wait_for(server.stop(), timeout=0.5)
+        started_at = virtual_clock()
+        await server.stop()
 
-        assert loop.time() - started_at < 0.5
+        assert virtual_clock() - started_at < 0.5
         assert server._tasks == set()
         assert server._writers == set()
-        assert await asyncio.wait_for(reader.read(4096), timeout=0.5) == b""
+        assert await _read_eof(reader, "the EOF after stop") == b""
     finally:
         await server.stop()
         if not writer.is_closing():
@@ -167,8 +229,3 @@ async def test_rigctld_owned_busy_port_rejects_second_simulator() -> None:
         with pytest.raises(OSError):
             await second.start()
         await second.stop()
-
-
-async def _wait_for_command(server: FakeRigctldServer, command: str) -> None:
-    while command not in server.commands_seen:
-        await asyncio.sleep(0)
