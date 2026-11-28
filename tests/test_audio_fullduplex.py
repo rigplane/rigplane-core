@@ -63,6 +63,28 @@ class TestFullDuplex:
         await radio.stop_audio_opus()  # should not raise
 
 
+class TestMockTransportAudioSurface:
+    """MockTransport must track the audio-start surface of IcomTransport.
+
+    The fence in ``AudioRuntimeMixin.start_rx`` retires pre-arm ingress via
+    the public ``discard_pending_audio``; if the fake ever loses that
+    method (or its drop-queued-packets semantics) these go red instead of
+    the full-duplex tests above failing with AttributeError.
+    """
+
+    def test_exposes_discard_pending_audio(self) -> None:
+        assert callable(getattr(MockTransport(), "discard_pending_audio", None))
+
+    @pytest.mark.asyncio
+    async def test_discard_drops_only_stale_packets(
+        self, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(b"stale")
+        mock_transport.discard_pending_audio()
+        mock_transport.queue_response(b"fresh")
+        assert await mock_transport.receive_packet(timeout=1.0) == b"fresh"
+
+
 class TestAudioStreamJitter:
     @pytest.mark.asyncio
     async def test_rx_with_jitter_buffer(self, mock_transport: MockTransport) -> None:

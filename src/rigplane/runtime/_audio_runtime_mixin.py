@@ -98,8 +98,7 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 # Retire pre-arm ingress before scheduling the RX reader:
                 # queued setup audio must not stamp a recovery heartbeat.
                 # No await separates retirement from start_rx below.
-                while not audio_transport._packet_queue.empty():
-                    audio_transport._packet_queue.get_nowait()
+                audio_transport.discard_pending_audio()
             audio_transport._discard_data_packets = False
         await self._audio_stream.start_rx(callback, jitter_depth=jitter_depth)
 
