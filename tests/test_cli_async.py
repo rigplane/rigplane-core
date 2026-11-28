@@ -1184,11 +1184,22 @@ def test_real_signal_children_in_parallel_do_not_share_the_radio_lock(
         # Child b starts late so child a has to wait for it at the barrier —
         # the lateness is the hold itself, observed through its own hook, not
         # a fixed sleep.
-        assert a_holding.wait(timeout=60), "child a never reached the hold"
+        wait_until(
+            a_holding.is_set,
+            timeout=60,
+            description="child a reaching the hold",
+            interval=0.05,
+        )
+    except BaseException:
+        # Break the rendezvous so a worker already parked at the barrier wakes
+        # with BrokenBarrierError instead of sitting out its 60 s budget while
+        # the joins below reap it; workers still kill and reap their children.
+        rendezvous.abort()
+        raise
     finally:
         b_may_start.set()  # never strand child b on its start gate
-    for thread in threads:
-        thread.join()
+        for thread in threads:
+            thread.join()
 
     assert not errors, errors
     for rc, out, journal in results.values():
