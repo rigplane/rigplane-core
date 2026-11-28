@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -73,10 +73,44 @@ async def _managed_serial_web(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
             await server.stop()
 
 
+async def _ws_connect_keyed(
+    host: str, port: int, path: str, protocol: str
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """WS upgrade carrying one controller subprotocol (the UI's re-attach).
+
+    Same framing as the shared keyless helper, plus the
+    ``Sec-WebSocket-Protocol: rigplane-controller-v1.<key>`` the UI's
+    ws-client offers on every (re)connect. A refused key never reaches
+    101 (the shared resolver answers JSON before the upgrade), so the
+    101 plus the protocol echo prove the fresh ticket attached.
+    """
+    reader, writer = await asyncio.open_connection(host, port)
+    key = "dGhlIHNhbXBsZSBub25jZQ=="
+    try:
+        writer.write(
+            (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                f"Sec-WebSocket-Protocol: {protocol}\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        await writer.drain()
+        resp = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2.0)
+        assert b"101" in resp, resp[:200]
+        assert protocol.encode("ascii") in resp, resp[:200]
+    except BaseException:
+        writer.close()
+        raise
+    return reader, writer
+
+
 @asynccontextmanager
-async def _local_client(
-    port: int, entry: str
-) -> AsyncIterator[Callable[[str], Awaitable[tuple[bool, dict]]]]:
+async def _local_client(port: int, entry: str) -> AsyncIterator[SimpleNamespace]:
     async with AsyncExitStack() as stack:
         if entry in ("commands", "http"):
 
@@ -89,16 +123,22 @@ async def _local_client(
                 status, body = await _request(port, "POST", path, payload)
                 return status == 200, body
 
+            async def reclaim() -> None:
+                """HTTP entries hold no controller state: nothing to re-establish."""
+
         else:
             # Both sockets stay live across the outage; neither acquires TX ownership.
+            sockets: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
             for _ in range(2 if entry == "second_websocket" else 1):
                 reader, writer = await _ws_connect("127.0.0.1", port, "/api/v1/ws")
                 stack.push_async_callback(writer.wait_closed)
                 stack.callback(writer.close)
+                sockets.append((reader, writer))
+            cell = {"reader": sockets[-1][0], "writer": sockets[-1][1]}
 
             async def send(text: str) -> tuple[bool, dict]:
                 await _ws_send_text(
-                    writer,
+                    cell["writer"],
                     json.dumps(
                         {
                             "type": "cmd",
@@ -109,12 +149,39 @@ async def _local_client(
                     ),
                 )
                 while True:
-                    _, payload = await _ws_recv_frame(reader)
+                    _, payload = await _ws_recv_frame(cell["reader"])
                     body = json.loads(payload)
                     if body.get("type") == "response" and body.get("id") == text:
                         return body["ok"], body
 
-        yield send
+            async def reclaim() -> None:
+                """Recover exactly as the UI does after a session loss.
+
+                The pre-outage socket's ticket died with the link-loss
+                generation, and a WS ticket binds at upgrade: like the
+                UI's ws-client on controller loss (disconnect, prepare()
+                POSTs /api/v1/controller for a fresh browser key,
+                reconnect with that key), drop the dead sockets and
+                attach a new one on the fresh key before sending again.
+                """
+                status, grant = await _request(
+                    port, "POST", "/api/v1/controller", {"kind": "browser"}
+                )
+                assert status == 201, grant
+                key = grant.get("controller_key")
+                assert type(key) is str and len(key) == 64, grant
+                protocol = f"rigplane-controller-v1.{key}"
+                for _, old in sockets:
+                    old.close()
+                reader, writer = await _ws_connect_keyed(
+                    "127.0.0.1", port, "/api/v1/ws?controller_role=primary", protocol
+                )
+                stack.push_async_callback(writer.wait_closed)
+                stack.callback(writer.close)
+                sockets.append((reader, writer))
+                cell["reader"], cell["writer"] = reader, writer
+
+        yield SimpleNamespace(send=send, reclaim=reclaim)
 
 
 @pytest.mark.asyncio
@@ -126,7 +193,7 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
     monkeypatch.delenv("ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S", raising=False)
     async with (
         _managed_serial_web(tmp_path) as s,
-        _local_client(s.port, entry) as send,
+        _local_client(s.port, entry) as client,
         AsyncExitStack() as tasks,
     ):
         await await_until(
@@ -139,7 +206,7 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
         )
         assert s.radio._civ_recovery_wait_timeout == 12.0
         stop_payload = s.radio._commands.stop_cw(to_addr=s.radio._radio_addr)[5:-1]
-        ok, body = await send(_BEFORE_TEXT)
+        ok, body = await client.send(_BEFORE_TEXT)
         assert ok, body
         assert [p for p in s.table.payloads if p != stop_payload] == [
             _BEFORE_TEXT.encode()
@@ -213,7 +280,7 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
                 scoped.setattr(radio, "_send_civ_raw", observe_send)
                 bookmark = len(s.fake.commands)
                 payload_bookmark = len(s.table.payloads)
-                sending = asyncio.create_task(send(_OUTAGE_TEXT))
+                sending = asyncio.create_task(client.send(_OUTAGE_TEXT))
                 tasks.push_async_callback(_cancel_task, sending)
                 ws_entry = entry in ("websocket", "second_websocket")
                 try:
@@ -266,7 +333,14 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
                     )
                     outage_ok, outage_body = await sending
                     await clock.elapse(1.0)
-                    fresh = asyncio.create_task(send(_AFTER_TEXT))
+                    if ws_entry:
+                        # The pre-outage socket's controller ticket died
+                        # with the link-loss generation, so the fresh CW
+                        # must go out on re-established control: the UI's
+                        # ws-client reconnects with a fresh browser key
+                        # after a session loss, and so does this client.
+                        await client.reclaim()
+                    fresh = asyncio.create_task(client.send(_AFTER_TEXT))
                     tasks.push_async_callback(_cancel_task, fresh)
                     await await_until(
                         fresh_admitted.is_set,
