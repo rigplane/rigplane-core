@@ -993,7 +993,12 @@ def install_ice_gathering_policy() -> None:
         return
     original_addresses = aioice_ice.get_host_addresses
     original_component = aioice_ice.Connection.get_component_candidates
+    original_reflexive = aioice_ice.server_reflexive_candidate
+    original_relayed = aioice_ice.relayed_candidate
     original_channel_bind = aioice_turn.TurnClientMixin.channel_bind
+    server_tasks: contextvars.ContextVar[
+        tuple[dict[asyncio.Task[Any], asyncio.Task[Any]], float] | None
+    ] = contextvars.ContextVar("rigplane_ice_server_tasks", default=None)
 
     def _filtered_host_addresses(
         use_ipv4: bool = True, use_ipv6: bool = True
@@ -1019,6 +1024,41 @@ def install_ice_gathering_policy() -> None:
             return addresses
         return selected
 
+    async def _server_candidate(call: Any, *, relay: bool = False) -> Any:
+        state = server_tasks.get()
+        if state is None:
+            return await call
+        tasks, bound = state
+        task = asyncio.current_task()
+        assert task is not None
+        query = asyncio.create_task(call)
+        tasks[task] = query
+        try:
+            result = await asyncio.wait_for(asyncio.shield(query), timeout=bound)
+        except (TimeoutError, asyncio.CancelledError):
+            if query.done() and not query.cancelled():
+                result = query.result()
+            else:
+                if not query.done():
+                    query.cancel()
+                # aioice reads task.exception() for every completed server query.
+                raise TimeoutError("ICE server query stopped") from None
+        if relay:
+            for pending in tasks:
+                if (
+                    pending is not task
+                    and not pending.done()
+                    and not pending.cancelling()
+                ):
+                    pending.cancel()
+        return result
+
+    async def _reflexive_candidate(protocol: Any, stun_server: Any) -> Any:
+        return await _server_candidate(original_reflexive(protocol, stun_server))
+
+    async def _relayed_candidate(**kwargs: Any) -> Any:
+        return await _server_candidate(original_relayed(**kwargs), relay=True)
+
     async def _await_component(call: Any) -> Any:
         """Await one bounded component call, tracked under the live scope.
 
@@ -1030,7 +1070,7 @@ def install_ice_gathering_policy() -> None:
         timer fires on a closed transport (MOR-4671). Registration is
         removed by a done-callback, so a cancelled hook never loses a
         still-running call. Outside a scope the call is awaited bare,
-        exactly like the original.
+        without scope tracking.
         """
         scope = _active_gather_scope.get()
         if scope is None:
@@ -1062,91 +1102,81 @@ def install_ice_gathering_policy() -> None:
     async def _policy_component_candidates(
         self: Any, component: int, addresses: list[str], bound: float
     ) -> Any:
+        operation = asyncio.create_task(
+            _settled_component_candidates(self, component, addresses, bound)
+        )
+        cancelled = False
+        while True:
+            try:
+                candidates = await asyncio.shield(operation)
+                break
+            except asyncio.CancelledError:
+                if operation.cancelled():
+                    raise
+                cancelled = True
+            except BaseException:
+                if cancelled:
+                    raise asyncio.CancelledError from None
+                raise
+        if cancelled:
+            raise asyncio.CancelledError
+        return candidates
+
+    async def _settled_component_candidates(
+        self: Any, component: int, addresses: list[str], bound: float
+    ) -> Any:
         try:
             infos = _enumerate_local_addresses()
         except Exception:
             infos = []
         default_ips = {info.ip for info in infos if info.is_default_route}
-        server_ips = set(addresses) & default_ips or set(addresses)
-        host_addresses = [addr for addr in addresses if addr in server_ips] + [
-            addr for addr in addresses if addr not in server_ips
-        ]
-        async with _gather_lock(self):
-            # Reuse aioice's host binding on this Connection. Serialize the
-            # temporary server settings across components, as in the route split.
-            saved = (self.stun_server, self.turn_server)
-            self.stun_server = None
-            self.turn_server = None
-            try:
-                candidates = await original_component(
-                    self, component, host_addresses, timeout=bound
+        first = [addr for addr in addresses if addr in default_ips]
+        rest = [addr for addr in addresses if addr not in default_ips]
+        tasks: dict[asyncio.Task[Any], asyncio.Task[Any]] = {}
+        token = server_tasks.set((tasks, bound))
+        candidates: list[Any] = []
+        try:
+            if not first or not rest:
+                # The server wrappers own the finite wait; aioice owns
+                # registration of the results they hand back.
+                candidates.extend(
+                    await original_component(
+                        self, component, addresses, timeout=float("inf")
+                    )
                 )
-            finally:
-                self.stun_server, self.turn_server = saved
-            host_protocols = [
-                protocol
-                for protocol in self._protocols
-                if protocol.local_candidate in candidates
-            ]
-
-        tasks: list[asyncio.Task[Any]] = []
-        if self.stun_server:
-            for protocol in host_protocols:
-                host = protocol.local_candidate.host
-                if host in server_ips and ipaddress.ip_address(host).version == 4:
-                    tasks.append(
-                        asyncio.create_task(
-                            aioice_ice.server_reflexive_candidate(
-                                protocol, self.stun_server
-                            )
+            else:
+                async with _gather_lock(self):
+                    candidates.extend(
+                        await original_component(
+                            self, component, first, timeout=float("inf")
                         )
                     )
-        if self.turn_server:
-            tasks.append(
-                asyncio.create_task(
-                    aioice_ice.relayed_candidate(
-                        component=component,
-                        hide_related_address=(
-                            self._transport_policy == aioice_ice.TransportPolicy.RELAY
-                        ),
-                        protocol_factory=lambda: aioice_ice.StunProtocol(self),
-                        turn_server=self.turn_server,
-                        turn_username=self.turn_username,
-                        turn_password=self.turn_password,
-                        turn_ssl=self.turn_ssl,
-                        turn_transport=self.turn_transport,
-                    )
-                )
-            )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + bound
-        pending = set(tasks)
-        try:
-            while pending:
-                done, pending = await asyncio.wait(
-                    pending,
-                    timeout=max(0.0, deadline - loop.time()),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if not done or any(
-                    not task.cancelled()
-                    and task.exception() is None
-                    and task.result()[0].type == "relay"
-                    for task in done
-                ):
-                    break
+                    saved = (self.stun_server, self.turn_server)
+                    self.stun_server = None
+                    self.turn_server = None
+                    try:
+                        candidates.extend(
+                            await original_component(
+                                self, component, rest, timeout=float("inf")
+                            )
+                        )
+                    finally:
+                        self.stun_server, self.turn_server = saved
         finally:
-            # Recheck task state at cancellation: a result can arrive at the
-            # deadline or while the wait's completion callback is queued.
             for task in tasks:
-                if not task.done():
+                if not task.done() and not task.cancelling():
                     task.cancel()
-            for result in await asyncio.gather(*tasks, return_exceptions=True):
-                if not isinstance(result, BaseException):
-                    candidate, relay_protocol = result
-                    candidates.append(candidate)
-                    if relay_protocol is not None:
-                        self._protocols.append(relay_protocol)
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for result in await asyncio.gather(
+                    *tasks.values(), return_exceptions=True
+                ):
+                    if not isinstance(result, BaseException):
+                        candidate, protocol = result
+                        if protocol is not None and candidate not in candidates:
+                            await protocol.close()
+            finally:
+                server_tasks.reset(token)
         return candidates
 
     async def _channel_bind_with_nonce_refresh(
@@ -1176,6 +1206,8 @@ def install_ice_gathering_policy() -> None:
 
     aioice_ice.get_host_addresses = _filtered_host_addresses
     aioice_ice.Connection.get_component_candidates = _bounded_component_candidates
+    aioice_ice.server_reflexive_candidate = _reflexive_candidate
+    aioice_ice.relayed_candidate = _relayed_candidate
     aioice_turn.TurnClientMixin.channel_bind = _channel_bind_with_nonce_refresh
     _installed = True
 
