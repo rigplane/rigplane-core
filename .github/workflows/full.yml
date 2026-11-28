@@ -58,7 +58,7 @@ jobs:
           PTTPROBE_OUT: ${{ runner.temp }}/pttprobe-${{ matrix.ref }}.jsonl
           RUNS: ${{ inputs.runs }}
         run: |
-          set -u
+          set +e -u
           : > "$PTTPROBE_OUT"
           shards=$(grep -m1 -oE 'QUICK_PYTHON_SHARDS: *"?[0-9]+' .github/workflows/quick.yml | grep -oE '[0-9]+$' || echo 4)
           echo "ref ${{ matrix.ref }} head $(git rev-parse HEAD) shards $shards arch $(uname -m) nproc $(nproc)"
@@ -66,7 +66,7 @@ jobs:
             before=$(wc -l < "$PTTPROBE_OUT" 2>/dev/null || echo 0)
             uv run pytest tests/ -p pytest_shard --shard "1/$shards" -p ptt_reboot_probe \
               -n auto --maxprocesses 4 --tb=line -q --timeout=300 --timeout-method=thread \
-              -p no:cacheprovider > out.txt 2>&1
+              -p no:cacheprovider > out.txt 2>&1 || true
             after=$(wc -l < "$PTTPROBE_OUT" 2>/dev/null || echo 0)
             echo "run $i: $(tail -1 out.txt) | probe rows $((after - before)) | load $(cut -d' ' -f1-3 /proc/loadavg)"
             grep -E "^FAILED|stayed" out.txt | head -5 || true
