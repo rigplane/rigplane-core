@@ -45,7 +45,6 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -59,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import await_until  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -102,6 +102,11 @@ class VfoDualWatchMockRadio(MockIcomRadio):
         # the pre-migration wire-encoding note below described.
         self._quick_dual_watch_on: bool = False
         self._quick_split_on: bool = False
+        # SET-delivery receipts: one (kind, value) entry appended every time
+        # the mock processes a SET. Tests await a *fresh* entry recorded
+        # after their own setter call, so a wait can never pass on state left
+        # behind by an earlier command (or equal to the mock defaults).
+        self.set_receipts: list[tuple[str, object]] = []
         # Unsolicited frame injection (for push-from-radio state update tests)
         self._civ_client_addr: tuple[str, int] | None = None
         self._civ_client_proto: object = None
@@ -144,6 +149,7 @@ class VfoDualWatchMockRadio(MockIcomRadio):
         if cmd == _CMD_TUNING_STEP:
             if payload:  # SET: [bcd_step_index]
                 self._tuning_step = payload[0]
+                self.set_receipts.append(("tuning_step", payload[0]))
                 return self._civ_ack(to, frm)
             # GET: respond with 1-byte BCD step index
             return self._civ_frame(
@@ -154,6 +160,7 @@ class VfoDualWatchMockRadio(MockIcomRadio):
         if cmd == _CMD_SCANNING:
             if payload:
                 self._scanning = payload[0] == 0x01
+                self.set_receipts.append(("scanning", self._scanning))
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
@@ -162,9 +169,11 @@ class VfoDualWatchMockRadio(MockIcomRadio):
             sub = payload[0]
             if sub == 0xC0:  # Dual Watch OFF
                 self._dual_watch_on = False
+                self.set_receipts.append(("dual_watch", False))
                 return self._civ_ack(to, frm)
             if sub == 0xC1:  # Dual Watch ON
                 self._dual_watch_on = True
+                self.set_receipts.append(("dual_watch", True))
                 return self._civ_ack(to, frm)
             if sub == 0xC2:  # Query Dual Watch
                 flag = 0x01 if self._dual_watch_on else 0x00
@@ -182,6 +191,9 @@ class VfoDualWatchMockRadio(MockIcomRadio):
             if payload[:3] == b"\x05\x00\x32":  # Quick Dual Watch
                 if len(payload) > 3:
                     self._quick_dual_watch_on = payload[3] != 0x00
+                    self.set_receipts.append(
+                        ("quick_dual_watch", self._quick_dual_watch_on)
+                    )
                     return self._civ_ack(to, frm)
                 flag = 0x01 if self._quick_dual_watch_on else 0x00
                 return self._civ_frame(
@@ -190,6 +202,7 @@ class VfoDualWatchMockRadio(MockIcomRadio):
             if payload[:3] == b"\x05\x00\x33":  # Quick Split
                 if len(payload) > 3:
                     self._quick_split_on = payload[3] != 0x00
+                    self.set_receipts.append(("quick_split", self._quick_split_on))
                     return self._civ_ack(to, frm)
                 flag = 0x01 if self._quick_split_on else 0x00
                 return self._civ_frame(
@@ -202,8 +215,6 @@ class VfoDualWatchMockRadio(MockIcomRadio):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before checking state
 
 
 @pytest.fixture
@@ -253,6 +264,31 @@ def _build_civ(
     return bytes(frame)
 
 
+async def _await_fresh_receipt(
+    mock: VfoDualWatchMockRadio,
+    kind: str,
+    value: object,
+    since: int,
+    *,
+    description: str,
+) -> None:
+    """Wait for a SET receipt recorded after index ``since``.
+
+    ``await_until`` returns at once when its predicate is already true, so
+    waiting on mock state alone cannot prove that *this* call's command was
+    delivered when the state already holds the expected value (a repeated
+    command, or a value equal to the mock default). A receipt entry is only
+    appended when the mock actually processes a SET, so awaiting a fresh one
+    proves delivery of the command under test. The 5 s timeout is a failure
+    bound for a stuck run, not a settle delay.
+    """
+    await await_until(
+        lambda: any(receipt == (kind, value) for receipt in mock.set_receipts[since:]),
+        timeout=5.0,
+        description=description,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. Tuning Step
 # ---------------------------------------------------------------------------
@@ -270,8 +306,15 @@ class TestTuningStep:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Set step index 1 (1Hz), verify GET returns 1 and mock state matches."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_tuning_step(1)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "tuning_step",
+            0x01,
+            since,
+            description="tuning step 1 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 1
         assert vfo_mock._tuning_step == 0x01
@@ -280,8 +323,15 @@ class TestTuningStep:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Set step index 4 (1kHz per IC-7610 table), verify roundtrip."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_tuning_step(4)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "tuning_step",
+            0x04,
+            since,
+            description="tuning step 4 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 4
         assert vfo_mock._tuning_step == 0x04
@@ -290,8 +340,15 @@ class TestTuningStep:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Set step index 7 (10kHz per IC-7610 table), verify roundtrip."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_tuning_step(7)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "tuning_step",
+            0x07,
+            since,
+            description="tuning step 7 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 7
         assert vfo_mock._tuning_step == 0x07
@@ -301,8 +358,15 @@ class TestTuningStep:
     ) -> None:
         """Step state persists across multiple SET → GET cycles."""
         for idx in (1, 3, 5, 8):
+            since = len(vfo_mock.set_receipts)
             await vfo_radio.set_tuning_step(idx)
-            await asyncio.sleep(_SETTLE)
+            await _await_fresh_receipt(
+                vfo_mock,
+                "tuning_step",
+                idx,
+                since,
+                description=f"tuning step {idx} SET reaching the mock",
+            )
             got = await vfo_radio.get_tuning_step()
             assert got == idx, f"step mismatch for index {idx}"
             assert vfo_mock._tuning_step == idx
@@ -334,40 +398,89 @@ class TestScanning:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """start_scan() sets mock scanning state to True."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
     async def test_scan_stop(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """stop_scan() clears mock scanning state."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            False,
+            since,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
     async def test_scan_start_stop_cycle(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Full start → stop → start → stop cycle verifies state at each step."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            False,
+            since,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan restart SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            False,
+            since,
+            description="scan final stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
 
@@ -394,20 +507,41 @@ class TestDualWatch:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """set_dual_watch(True) → mock._dual_watch_on becomes True."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
     async def test_dual_watch_turn_off(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """set_dual_watch(False) after on → mock._dual_watch_on becomes False."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            False,
+            since,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_on_off_cycle(
@@ -417,32 +551,74 @@ class TestDualWatch:
         # Initially off
         assert vfo_mock._dual_watch_on is False
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            False,
+            since,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_idempotent_on(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Setting dual watch ON twice does not cause an error."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="first dual watch ON SET reaching the mock",
+        )
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="second dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
     async def test_dual_watch_idempotent_off(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Setting dual watch OFF twice does not cause an error."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            False,
+            since,
+            description="first dual watch OFF SET reaching the mock",
+        )
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            False,
+            since,
+            description="second dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_unsolicited_on_fires_event(
@@ -457,7 +633,11 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x01"
         )
         vfo_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "dual_watch_changed" for name, _ in events),
+            timeout=5.0,
+            description="unsolicited dual-watch=ON firing dual_watch_changed",
+        )
 
         assert any(name == "dual_watch_changed" for name, _ in events), (
             f"dual_watch_changed not fired; events={[n for n, _ in events]}"
@@ -477,7 +657,14 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x01"
         )
         vfo_mock.inject_unsolicited_civ(on_frame)
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: any(
+                name == "dual_watch_changed" and d.get("on") is True
+                for name, d in events
+            ),
+            timeout=5.0,
+            description="unsolicited dual-watch=ON firing dual_watch_changed",
+        )
 
         events.clear()
 
@@ -485,7 +672,11 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x00"
         )
         vfo_mock.inject_unsolicited_civ(off_frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "dual_watch_changed" for name, _ in events),
+            timeout=5.0,
+            description="unsolicited dual-watch=OFF firing dual_watch_changed",
+        )
 
         assert any(name == "dual_watch_changed" for name, _ in events), (
             f"dual_watch_changed not fired; events={[n for n, _ in events]}"
@@ -516,23 +707,44 @@ class TestQuickDualWatch:
     async def test_set_quick_dual_watch_roundtrip(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_quick_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_dual_watch",
+            True,
+            since,
+            description="quick dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._quick_dual_watch_on is True
         assert await vfo_radio.get_quick_dual_watch() is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_quick_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_dual_watch",
+            False,
+            since,
+            description="quick dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._quick_dual_watch_on is False
         assert await vfo_radio.get_quick_dual_watch() is False
 
     async def test_set_quick_dual_watch_multiple_calls(
-        self, vfo_radio: IcomRadio
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Calling set_quick_dual_watch() repeatedly does not raise."""
         for _ in range(3):
+            since = len(vfo_mock.set_receipts)
             await vfo_radio.set_quick_dual_watch(True)
-            await asyncio.sleep(0.02)
+            await _await_fresh_receipt(
+                vfo_mock,
+                "quick_dual_watch",
+                True,
+                since,
+                description="quick dual watch ON SET reaching the mock",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -557,21 +769,44 @@ class TestQuickSplit:
     async def test_set_quick_split_roundtrip(
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_quick_split(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_split",
+            True,
+            since,
+            description="quick split ON SET reaching the mock",
+        )
         assert vfo_mock._quick_split_on is True
         assert await vfo_radio.get_quick_split() is True
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_quick_split(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_split",
+            False,
+            since,
+            description="quick split OFF SET reaching the mock",
+        )
         assert vfo_mock._quick_split_on is False
         assert await vfo_radio.get_quick_split() is False
 
-    async def test_set_quick_split_multiple_calls(self, vfo_radio: IcomRadio) -> None:
+    async def test_set_quick_split_multiple_calls(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
         """Calling set_quick_split() repeatedly does not raise."""
         for _ in range(3):
+            since = len(vfo_mock.set_receipts)
             await vfo_radio.set_quick_split(True)
-            await asyncio.sleep(0.02)
+            await _await_fresh_receipt(
+                vfo_mock,
+                "quick_split",
+                True,
+                since,
+                description="quick split ON SET reaching the mock",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -586,25 +821,60 @@ class TestStateIndependence:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Commands targeting different state variables stay independent."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_tuning_step(3)
         await vfo_radio.set_dual_watch(True)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "tuning_step",
+            0x03,
+            since,
+            description="tuning step SET reaching the mock",
+        )
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="dual watch ON SET reaching the mock",
+        )
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan start SET reaching the mock",
+        )
 
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is True
         assert vfo_mock._scanning is True
 
         # Disable dual watch — step and scan unchanged
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            False,
+            since,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is False
         assert vfo_mock._scanning is True
 
         # Stop scanning — step and dual watch unchanged
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            False,
+            since,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is False
         assert vfo_mock._scanning is False
@@ -615,13 +885,41 @@ class TestStateIndependence:
         """Quick Split / Quick Dual Watch are their own persistent toggles
         (MOR-2007 ruling 2) -- independent of the regular dual-watch/scan
         state exercised elsewhere in this file."""
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_dual_watch(True)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "dual_watch",
+            True,
+            since,
+            description="dual watch ON SET reaching the mock",
+        )
+        await _await_fresh_receipt(
+            vfo_mock,
+            "scanning",
+            True,
+            since,
+            description="scan start SET reaching the mock",
+        )
 
+        since = len(vfo_mock.set_receipts)
         await vfo_radio.set_quick_dual_watch(True)
         await vfo_radio.set_quick_split(True)
-        await asyncio.sleep(_SETTLE)
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_dual_watch",
+            True,
+            since,
+            description="quick dual watch ON SET reaching the mock",
+        )
+        await _await_fresh_receipt(
+            vfo_mock,
+            "quick_split",
+            True,
+            since,
+            description="quick split ON SET reaching the mock",
+        )
 
         # Regular dual-watch/scan state must be unchanged by the quick toggles.
         assert vfo_mock._dual_watch_on is True
