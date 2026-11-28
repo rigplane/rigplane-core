@@ -40,15 +40,15 @@ radio disconnect/connect, and pins:
   not probe/task capture is on — a persistent one still fails after the
   full window, and the settle gives up at its window or on a hung
   sample. The feeds are scripted; the window test drives a controlled
-  monotonic clock so the deadline itself ends the settle (one late
-  settle sample hangs for real and is bounded by the in-task timeout on
-  the remaining window), and the hung-sample test uses a real 50 ms
-  window against a real 30 s hang. The step sleep is clamped to the
-  remaining window, a sample cancelled inside the ``ps`` fallback kills
-  and reaps its child before the cancellation propagates, and the
-  settle's own bound adds no task to the counts it takes: on the live
-  loop a task delta exactly at tolerance must still settle, measured by
-  both count routes with the CI interpreter's task-wrapping
+  monotonic clock so the deadline itself ends the settle, and the
+  hung-sample test parks the late sample on an event against a virtual
+  50 ms window the test advances past, so the in-task timeout on the
+  remaining window ends it deterministically. The step sleep is clamped
+  to the remaining window, a sample cancelled inside the ``ps`` fallback
+  kills and reaps its child before the cancellation propagates, and the
+  settle's own bound adds no task to the counts it takes: on the shared
+  virtual clock a task delta exactly at tolerance must still settle,
+  measured by both count routes with the CI interpreter's task-wrapping
   ``wait_for`` semantics emulated (Python 3.11; 3.12+ await in-task);
  * the probe's own instruments cannot mask a real leak (MOR-3575 round
    2), over a live HTTP probe path with per-route assertions.
@@ -72,7 +72,7 @@ import aiohttp
 from serial_stub import SerialMockRadio
 
 from rigplane.runtime.controller_authority import ControllerAuthority
-from rigplane.testing.timing import VirtualClock, await_until
+from rigplane.testing.timing import VirtualClock, await_until, virtual_clock
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebServer
 from scripts.soak import soak_driver
@@ -1048,6 +1048,7 @@ async def _run_cycle_with_process_script(
     script: Callable[[], dict[str, int]],
     *,
     hang_call: int | None = None,
+    hang_event: asyncio.Event | None = None,
     probe_diagnostics: bool = False,
     task_provenance: bool = False,
     clock: _SettleClock | None = None,
@@ -1062,8 +1063,12 @@ async def _run_cycle_with_process_script(
     mode with it off.
 
     ``hang_call`` makes the Nth ``fetch_runtime`` call sleep 30 real
-    seconds (an unbounded sampler hang). ``clock``, when given, is
-    only advanced by every sample and sleep recorded here, driving
+    seconds (an unbounded sampler hang). ``hang_event``, when given,
+    parks that call on an event instead — set when the hang starts, and
+    never released: the caller drives the settle's virtual clock past
+    the window itself, so the in-task timeout on the remaining window
+    is what ends the sample, deterministically. ``clock``, when given,
+    is only advanced by every sample and sleep recorded here, driving
     the settle's deadline arithmetic; installing it as the driver's
     ``time.monotonic`` is the caller's job (see the window and clamp
     tests), because patching the ``time`` module attribute inside the
@@ -1088,7 +1093,11 @@ async def _run_cycle_with_process_script(
         nonlocal calls
         calls += 1
         if hang_call is not None and calls == hang_call:
-            await real_sleep(30.0)
+            if hang_event is not None:
+                hang_event.set()
+                await asyncio.Event().wait()
+            else:
+                await real_sleep(30.0)
         feed = script()
         if clock is not None:
             clock.advance_by_sample()
@@ -1263,28 +1272,35 @@ async def test_stability_settle_clamps_its_step_sleep_to_the_remaining_window(
     assert sleeps[1] < soak_driver._STABILITY_SETTLE_STEP_S
 
 
+@virtual_clock  # type: ignore[untyped-decorator]
 async def test_stability_settle_gives_up_on_a_hung_sample(
-    monkeypatch: pytest.MonkeyPatch,
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A sample past the window ends the settle; the cycle still concludes.
 
-    The 7th runtime call is the settle's first sample; it hangs 30 real
-    seconds against a real 50 ms window, and the in-task timeout on
-    the remaining window cancels it. The outer 5 s bound is the
-    discrimination: without the timeout in _settle_sample the injected
-    hang is unguarded, the bound fires TimeoutError, and this test goes
-    red instead of passing after 30 s.
+    The 7th runtime call is the settle's first sample; it parks on an
+    event (an unbounded sampler hang with no timer of any kind) against
+    a virtual 50 ms window. The test advances the shared virtual clock
+    past the window, which fires the in-task timeout on the remaining
+    window and ends the sample: without the timeout in _settle_sample
+    the parked sample never ends and the virtual-clock watchdog trips
+    instead of this test passing. Nothing here waits out real time.
     """
+    clock.scope_to(monkeypatch, soak_driver)
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
     script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
-    driver, sleeps = await asyncio.wait_for(
+    hung = asyncio.Event()
+    cycle = asyncio.create_task(
         _run_cycle_with_process_script(
             monkeypatch,
             script,
             hang_call=2 * soak_driver._STABILITY_PROBE_COUNT + 1,
-        ),
-        timeout=5.0,
+            hang_event=hung,
+        )
     )
+    await await_until(hung.is_set, description="the hung settle sample starting")
+    await clock.elapse(soak_driver._STABILITY_SETTLE_WINDOW_S + 0.01)
+    driver, sleeps = await cycle
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 48
@@ -1292,8 +1308,9 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
     assert sleeps == [3.0]
 
 
+@virtual_clock  # type: ignore[untyped-decorator]
 async def test_stability_settle_counts_no_task_of_its_own(
-    monkeypatch: pytest.MonkeyPatch,
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The settle's bound must not add a task to the counts it takes.
 
@@ -1347,6 +1364,14 @@ async def test_stability_settle_counts_no_task_of_its_own(
     ) -> Any:
         return await real_wait_for(asyncio.ensure_future(awaiting), timeout)
 
+    # The settle's window, deadlines and step sleeps all run on the shared
+    # virtual clock: each step sleep jumps it by exactly 0.25 s, so the four
+    # readings and the at-tolerance verdict are exact with no real waiting.
+    # No virtual timer has to fire for the settle to conclude (it ends on
+    # the calm streak, inside the window), so nothing is advanced explicitly
+    # — elapsing past the window would end the settle before the streak the
+    # assertions below pin.
+    clock.scope_to(monkeypatch, soak_driver)
     monkeypatch.setattr(
         soak_driver.asyncio, "wait_for", wait_for_wrapping_its_awaitable_in_a_task
     )
@@ -2245,9 +2270,15 @@ async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
                 f"127.0.0.1:{stack.rigctld_port}",
                 stack.sim,
             )
-            # Anchor elapsed time through the driver's own clock: identical to
-            # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
-            driver._t0 = driver._elapsed()
+            # Elapsed time and every deadline the driver computes read the
+            # shared virtual clock from here on; the constructor's _t0 of
+            # 0.0 already anchors elapsed time at the clock's start, so no
+            # wall-clock read is needed. The loop stays real: the full
+            # simulator stack (radio pollers, unsolicited CI-V) needs real
+            # timers to make progress, but every timer on this path outlives
+            # the test, so none of them gates an assertion.
+            clock = VirtualClock()
+            clock.scope_to(monkeypatch, soak_driver)
             driver._connection_state = "connected"
             driver._runtime_task_adapter = adapter
             driver._sampler = soak_driver.ProcessMetricsSampler(
@@ -2287,10 +2318,14 @@ async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
                 tasks.append(pre_task)
                 # Without the barrier, retain the replay through the whole pre
                 # trio; with it, release as soon as admission has paused.
-                while not pre_task.done() and not getattr(
-                    driver, "_transient_paused", False
-                ):
-                    await asyncio.sleep(0)
+                # The wait ends when the probe finishes either way, so a
+                # pause that flips back before this resumes cannot wedge it.
+                await await_until(
+                    lambda: (
+                        pre_task.done() or getattr(driver, "_transient_paused", False)
+                    ),
+                    description="the pre probe finishing or pausing admission",
+                )
                 release.set()
                 await replay_done.wait()
                 pre = await pre_task
@@ -2326,9 +2361,14 @@ async def test_stability_probe_defers_new_periodic_actions_until_trio_finishes(
     driver = soak_driver.SoakDriver(
         _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
     )
-    # Anchor elapsed time through the driver's own clock: identical to
-    # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
-    driver._t0 = driver._elapsed()
+    # Elapsed time and every deadline the driver computes read the shared
+    # virtual clock from here on; the constructor's _t0 of 0.0 already
+    # anchors elapsed time at the clock's start, so no wall-clock read is
+    # needed. The loop stays real: the live probe stack answers over real
+    # sockets, but every timer on this path (the 40 s quiesce bound, the 5 s
+    # fetch bound) outlives the test, so none of them gates an assertion.
+    clock = VirtualClock()
+    clock.scope_to(monkeypatch, soak_driver)
     driver._sampler = live.sampler
     sampling = asyncio.Event()
     finish = asyncio.Event()
@@ -2372,15 +2412,24 @@ async def test_stability_probe_defers_new_periodic_actions_until_trio_finishes(
 
 
 @pytest.mark.parametrize("interrupt", ["timeout", "cancel"])
+@virtual_clock  # type: ignore[untyped-decorator]
 async def test_stability_drain_is_bounded_and_restores_admission(
-    monkeypatch: pytest.MonkeyPatch, interrupt: str
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, interrupt: str
 ) -> None:
+    """A stuck drain ends the probe without wedging admission.
+
+    Elapsed time and the quiesce deadline read the shared virtual clock
+    (the constructor's _t0 of 0.0 anchors it), and the loop's own timers
+    are virtual too, so the drain bound fires only when this test
+    advances past it. The timeout case therefore cannot miss the pause:
+    admission stays paused until the bound is advanced, so there is no
+    poll loop to lose the race with. The cancel case interrupts only
+    once the probe is observably inside the drain.
+    """
     driver = soak_driver.SoakDriver(
         _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
     )
-    # Anchor elapsed time through the driver's own clock: identical to
-    # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
-    driver._t0 = driver._elapsed()
+    clock.scope_to(monkeypatch, soak_driver)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -2396,21 +2445,26 @@ async def test_stability_drain_is_bounded_and_restores_admission(
     traffic = asyncio.create_task(driver._run_periodic("rigctld", 3600, action))
     probe: asyncio.Task[Any] | None = None
     try:
-        async with asyncio.timeout(5.0):
-            await entered.wait()
-            probe = asyncio.create_task(driver._stability_probe())
-            while not driver._transient_paused:
-                await asyncio.sleep(0)
-            if interrupt == "cancel":
-                probe.cancel()
-            expected = (
-                TimeoutError if interrupt == "timeout" else asyncio.CancelledError
+        await await_until(entered.is_set, description="the periodic action parking")
+        probe = asyncio.create_task(driver._stability_probe())
+        if interrupt == "timeout":
+            # Expire the virtual drain bound while admission is paused:
+            # the probe must time out instead of draining.
+            await clock.elapse(soak_driver._TRANSIENT_DRAIN_TIMEOUT_S + 0.01)
+        else:
+            # Interrupt only once the probe is inside the drain, so the
+            # restore assertions below observe a real interruption.
+            await await_until(
+                lambda: driver._transient_paused,
+                description="the probe pausing admission",
             )
-            with pytest.raises(expected):
-                await probe
-            assert not driver._transient_paused
-            assert not driver._transient_condition.locked()
-            assert driver._transient_active == 1
+            probe.cancel()
+        expected = TimeoutError if interrupt == "timeout" else asyncio.CancelledError
+        with pytest.raises(expected):
+            await probe
+        assert not driver._transient_paused
+        assert not driver._transient_condition.locked()
+        assert driver._transient_active == 1
     finally:
         release.set()
         traffic.cancel()
