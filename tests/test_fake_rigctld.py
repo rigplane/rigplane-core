@@ -186,8 +186,16 @@ async def test_rigctld_owned_delayed_response_can_be_scripted(
         reader, writer = await _connect(server)
         try:
             await _send_line(writer, "f")
-            # The scripted delay is a virtual timer: move the clock past it,
-            # then wait for the real socket bytes it releases.
+            # Drain only queues the bytes: wait until the server has really
+            # received 'f' (its handler then sits on the scripted delay),
+            # because elapse() settles ready callbacks, not bytes still in
+            # the kernel. Only then move the clock past the virtual timer
+            # and wait for the real socket bytes it releases.
+            await await_until(
+                lambda: "f" in server.commands_seen,
+                timeout=10.0,
+                description="the server receiving 'f'",
+            )
             await virtual_clock.elapse(0.1)
             assert await _read_lines(reader, 1) == ["14074000"]
         finally:
@@ -210,10 +218,18 @@ async def test_rigctld_owned_stop_cancels_active_delayed_response(
             description="the server receiving 'f'",
         )
 
-        started_at = virtual_clock()
-        await server.stop()
-
-        assert virtual_clock() - started_at < 0.5
+        # Stop must finish without waiting out the 10 s scripted delay:
+        # drive it as a task under a coordinated virtual deadline (same
+        # 0.5 s bound the old wall-clock version enforced) and fail if it
+        # is still pending once the clock passes the bound. Each elapse
+        # step also settles the loop, so the real socket teardown inside
+        # stop() is delivered while virtual time moves.
+        stop_task = asyncio.ensure_future(server.stop())
+        deadline = virtual_clock() + 0.5
+        while not stop_task.done() and virtual_clock() < deadline:
+            await virtual_clock.elapse(0.05)
+        assert stop_task.done(), "stop() did not finish within 0.5 s of virtual time"
+        stop_task.result()
         assert server._tasks == set()
         assert server._writers == set()
         assert await _read_eof(reader, "the EOF after stop") == b""
