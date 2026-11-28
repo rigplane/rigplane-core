@@ -145,6 +145,7 @@ async def test_rx_open_timeout_keeps_event_loop_free(
 
     open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
     ticker = asyncio.create_task(_ticker())
+    timeout_warnings: list[logging.LogRecord] = []
     try:
         # Real event: the open reached the pool worker. ``open_rx`` runs on
         # the loop thread in the same yield-free stretch as the bounded wait,
@@ -161,6 +162,11 @@ async def test_rx_open_timeout_keeps_event_loop_free(
         await clock.elapse(_TEST_TIMEOUT_S)
         with pytest.raises(AudioCaptureOpenTimeoutError):
             await open_task
+        # Snapshot while the worker is still blocked on ``gate``: releasing
+        # it lets the abandoned open complete, and the late-handle close
+        # logs a SECOND warning (usb_driver.abandon_open) during the settle
+        # below -- reading caplog after that would see both (review round 2).
+        timeout_warnings = list(_warnings(caplog))
     finally:
         if not ticker.done():
             ticker.cancel()
@@ -172,9 +178,8 @@ async def test_rx_open_timeout_keeps_event_loop_free(
 
     assert driver.rx_running is False
 
-    warnings = _warnings(caplog)
-    assert len(warnings) == 1, "exactly one actionable warning on timeout"
-    message = warnings[0].getMessage()
+    assert len(timeout_warnings) == 1, "exactly one actionable warning on timeout"
+    message = timeout_warnings[0].getMessage()
     assert "MOR-1420" in message
     assert "consent" in message.lower()
 
@@ -696,11 +701,13 @@ async def test_duplex_open_routes_off_loop_and_times_out(
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     driver, backend = _make_driver()
-    # Bounded even in the not-yet-fixed case: a direct (on-loop) call would
-    # otherwise block this test's entire event loop for as long as the gate
-    # stays unset. Once routed off-loop, the driver's own capture-open
-    # timeout (0.05s) fires long before this 1s bound is reached.
-    backend.block_duplex_open = lambda: gate.wait(timeout=1.0)
+    # Blocked until the explicit ``gate.set()`` in ``finally``: no thread
+    # timeout literal here -- the realtime guard (MOR-4075) flags those and
+    # the virtual clock does not advance them, so a 1 s self-release would
+    # race the driver's 0.05 s virtual bound. Backstop against a regressed
+    # on-loop open (which would wedge the loop with the gate unset) is the
+    # file-wide 10 s pytest timeout, not a real-time wait.
+    backend.block_duplex_open = gate.wait
 
     progressed = 0
 
