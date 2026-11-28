@@ -692,6 +692,7 @@ class CoreRadioSessionLifecycle:
         not_ready_cooldown_s: float = _STATUS_RETRY_PAUSE,
         reject_cooldown_s: float = _STATUS_REJECT_COOLDOWN,
         full_reconnect_once: Callable[[], Awaitable[bool]] | None = None,
+        on_recovery_exit: Callable[[], None] | None = None,
         max_recovery_attempts: int = _MAX_RECONNECTS,
         recovery_backoff_s: tuple[float, ...] = _RECONNECT_BACKOFF,
         max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
@@ -703,6 +704,7 @@ class CoreRadioSessionLifecycle:
         self._mech = mechanism
         # Only the LAN session mechanism can renew a control login during repair.
         self._full_reconnect_once = full_reconnect_once
+        self._on_recovery_exit = on_recovery_exit
         self._full_recovery_requested = False
         self._not_ready_cooldown_s = not_ready_cooldown_s
         self._reject_cooldown_s = reject_cooldown_s
@@ -881,6 +883,13 @@ class CoreRadioSessionLifecycle:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
+        recovery = self._recover_task
+        if recovery is not None and not recovery.done():
+            if recovery is not asyncio.current_task():
+                await asyncio.shield(recovery)
+            return
+        if self._state is LifecycleState.CLOSING:
+            raise RigplaneConnectionError("Session is closing")
         # T9: coalesce a concurrent/duplicate connect onto the in-flight one.
         if self._connect_task is not None and not self._connect_task.done():
             await self._connect_task
@@ -1274,6 +1283,30 @@ class CoreRadioSessionLifecycle:
             and self._recovery_waiters.get(task) is recovery
         )
 
+    async def stop_recovery_awaited_by(self, waiter: asyncio.Task[None]) -> None:
+        """Stop the shared recovery when explicitly retiring its watchdog handoff."""
+        recovery = self._recover_task
+        if (
+            recovery is None
+            or recovery.done()
+            or recovery is asyncio.current_task()
+            or self._recovery_waiters.get(waiter) is not recovery
+        ):
+            return
+        # This stop retires the watchdog too, so the owner must not re-arm it.
+        recovery.remove_done_callback(self._finish_recovery)
+        recovery.cancel()
+        try:
+            await asyncio.gather(recovery, return_exceptions=True)
+        finally:
+            if self._recover_task is recovery:
+                self._recover_task = None
+
+    @property
+    def recovery_active(self) -> bool:
+        task = self._recover_task
+        return task is not None and not task.done()
+
     @property
     def full_recovery_pending(self) -> bool:
         return self._full_recovery_requested
@@ -1281,7 +1314,7 @@ class CoreRadioSessionLifecycle:
     def request_full_recovery(self) -> bool:
         """Record a FULL request and report whether an owner is running."""
         self._full_recovery_requested = True
-        return self._recover_task is not None and not self._recover_task.done()
+        return self.recovery_active
 
     async def soft_reconnect(self) -> None:
         if self._state is LifecycleState.CLOSING:
@@ -1291,16 +1324,28 @@ class CoreRadioSessionLifecycle:
         if recovery is None or recovery.done():
             recovery = asyncio.ensure_future(self._run_recover())
             self._recover_task = recovery
+            recovery.add_done_callback(self._finish_recovery)
         caller = asyncio.current_task()
         if caller is not None:
             self._recovery_waiters[caller] = recovery
         try:
-            await recovery
+            await asyncio.shield(recovery)
         finally:
             if caller is not None and self._recovery_waiters.get(caller) is recovery:
                 del self._recovery_waiters[caller]
-            if self._recover_task is recovery and recovery.done():
-                self._recover_task = None
+
+    def _finish_recovery(self, recovery: asyncio.Task[None]) -> None:
+        # All waiters may have cancelled by the time the owner exits.
+        if not recovery.cancelled():
+            recovery.exception()
+        if self._recover_task is not recovery:
+            return
+        self._recover_task = None
+        if self._on_recovery_exit is not None and self._state in (
+            LifecycleState.CONNECTED,
+            LifecycleState.RECOVERING,
+        ):
+            self._on_recovery_exit()
 
     async def _run_recover(self) -> None:
         last_exc: BaseException | None = None

@@ -20,13 +20,16 @@ from test_radio_connect import (
 )
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
-from rigplane.core.transport import ConnectionState, IcomTransport
+from rigplane.core import transport
+from rigplane.core.exceptions import DiscoveryTimeout
+from rigplane.core.transport import ConnectionState, IcomTransport, _UdpProtocol
 from rigplane.core.tx_safety import RadioTx, TxOutcome, TxOwner, TxSource
 from rigplane.runtime import (
     _civ_rx,
     _control_phase,
     managed_radio_runtime,
     radio as radio_module,
+    radio_reconnect,
     session_lifecycle,
 )
 from rigplane.runtime.radio import CoreRadio
@@ -36,31 +39,61 @@ from rigplane.testing.timing import VirtualClock
 pytestmark = pytest.mark.timeout(10)
 
 
-class Control(ConnectMockTransport):
-    _route_data_packet = IcomTransport._route_data_packet
+class ControlEndpoint(asyncio.DatagramTransport):
+    def __init__(self, protocol: _UdpProtocol, close_delay: float) -> None:
+        super().__init__()
+        self.protocol = protocol
+        self.close_delay = close_delay
+        self.closing = False
+        self.closed = False
+        self.packets: list[bytes] = []
+
+    def sendto(self, data: bytes, addr: object = None) -> None:
+        self.packets.append(data)
+
+    def close(self) -> None:
+        self.closing = True
+        asyncio.get_running_loop().call_later(self.close_delay, self._finish_close)
+
+    def _finish_close(self) -> None:
+        self.closed = True
+        self.protocol.connection_lost(None)
+
+
+class Control(IcomTransport):
+    """Mock endpoint and radio replies, with production discovery and close."""
 
     def __init__(self) -> None:
         super().__init__()
-        self._udp_transport: object | None = None
-        self._conninfo_notice_callback: Callable[[bytes], None] | None = None
-        self.rx_packet_count = 0
-        self.logins: list[asyncio.Task[object] | None] = []
+        self.endpoints: list[ControlEndpoint] = []
+        self.logins: list[asyncio.Task[None] | None] = []
         self.down = False
+        self.silent = False
+        self.close_delay = 0.0
+        self.park_next_open: asyncio.Event | None = None
 
     async def connect(self, host: str, port: int, **kwargs: object) -> None:
         if self.down:
             raise TimeoutError("simulated radio is down")
-        await super().connect(host, port)
-        self.my_id += 1
-        self._udp_transport = object()
+        self.state = ConnectionState.CONNECTING
+        self.my_id = 0x10000 + len(self.endpoints) + 1
+        self._udp_close_event = asyncio.Event()
+        protocol = _UdpProtocol(self)
+        endpoint = ControlEndpoint(protocol, self.close_delay)
+        self.endpoints.append(endpoint)
+        protocol.connection_made(endpoint)
+        park, self.park_next_open = self.park_next_open, None
+        if park is not None:
+            await park.wait()
+        if self.silent:
+            await self._discover()
+        self.remote_id = 0xDEADBEEF
 
     async def reconnect(self, host: str, port: int, **kwargs: object) -> None:
         await self.connect(host, port, **kwargs)
 
-    async def disconnect(self) -> None:
-        await super().disconnect()
-        self.state = ConnectionState.DISCONNECTED
-        self._udp_transport = None
+    def queue_response(self, packet: bytes) -> None:
+        self._packet_queue.put_nowait(packet)
 
     async def send_tracked(
         self, data: bytes, *, is_current: Callable[[], bool] | None = None
@@ -201,7 +234,9 @@ class Civ(ConnectMockTransport):
 
 @pytest.fixture
 async def link(
-    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    request: pytest.FixtureRequest,
 ) -> AsyncIterator[Link]:
     clock = virtual_clock
     for module in (
@@ -209,7 +244,9 @@ async def link(
         _control_phase,
         radio_module,
         managed_radio_runtime,
+        radio_reconnect,
         session_lifecycle,
+        transport,
     ):
         clock.scope_to(monkeypatch, module)
         monkeypatch.setattr(module, "asyncio", asyncio)
@@ -221,7 +258,9 @@ async def link(
         ),
     )
     monkeypatch.setenv("RIGPLANE_MANAGED_TX", "1")
-    radio = CoreRadio("192.0.2.1", model="IC-7610", auto_reconnect=False)
+    radio = CoreRadio(
+        "192.0.2.1", model="IC-7610", auto_reconnect=getattr(request, "param", False)
+    )
     result = Link(radio, Control(), clock)
 
     def new_port() -> Civ:
@@ -377,24 +416,230 @@ async def test_recipient_zero_during_full_tail_rechecks_readiness(
     link.assert_recovery_exit()
 
 
+async def hold_tx(link: Link, owner: str) -> None:
+    await link.complete(link.radio.rearm_managed_tx())
+    tx = link.radio._managed_tx_runtime
+    assert tx is not None
+    outcome = await link.complete(tx.request_on(TxOwner(TxSource.WEBSOCKET, owner)))
+    assert outcome.outcome is TxOutcome.ACCEPTED and link.ptt
+    assert tx.tx_snapshot.lease_id is not None
+
+
+async def test_recipient_zero_while_ready_recovers_ping_only_link(link: Link) -> None:
+    await hold_tx(link, "recipient-zero")
+    original = link.ports[-1]
+    original.payload()
+    await link.clock.elapse(0)
+    assert link.radio.radio_ready
+    link.control.notice(recipient=0)
+    for _ in range(28):
+        original.rx_packet_count += 1
+        await link.clock.elapse(0.5)
+    assert len(link.control.logins) == 1
+    assert link.ptt_writes[-1][1] is False
+    link.ports[-1].payload()
+    await link.clock.elapse(0)
+    assert link.radio.radio_ready
+    link.assert_recovery_exit()
+
+
+async def test_current_payload_clears_recipient_zero_notice(link: Link) -> None:
+    assert link.radio.radio_ready
+    link.control.notice(recipient=0)
+    link.ports[-1].payload()
+    await link.clock.elapse(0)
+    for _ in range(30):
+        link.ports[-1].rx_packet_count += 1
+        await link.clock.elapse(0.5)
+    assert not link.control.logins
+    link.assert_recovery_exit()
+
+
+@pytest.mark.parametrize("cancel", ["waiter", "owner"])
+async def test_full_recovery_survives_cancellation(link: Link, cancel: str) -> None:
+    await hold_tx(link, "cancelled-waiter")
+    lifecycle = link.radio._session_lifecycle
+    link.control.silent = True
+    link.control.notice()
+    await link.clock.elapse(0.5)
+    owner = lifecycle._recover_task
+    assert owner is not None and not owner.done()
+    assert len(link.control.endpoints) == 2 and not link.control.logins
+    waiter = asyncio.create_task(link.radio.soft_reconnect())
+    await link.clock.elapse(0)
+    assert lifecycle._recovery_waiters[waiter] is owner
+    (waiter if cancel == "waiter" else owner).cancel()
+    await link.clock.elapse(0)
+    assert waiter.cancelled()
+    assert owner.cancelled() is (cancel == "owner")
+    link.assert_recovery_exit()
+    link.control.silent = False
+    await link.clock.elapse(15)
+    link.assert_recovery_exit()
+    assert len(link.control.logins) == 1
+    assert link.ptt_writes[-1][1] is False
+    link.ports[-1].payload()
+    await link.clock.elapse(0)
+    assert link.radio.radio_ready
+
+
+async def test_disconnect_at_recovery_pump_join_writes_off(
+    link: Link, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = link.radio
+    await hold_tx(link, "disconnect-at-join")
+    await link.clock.elapse(5.1)
+    stop = radio._civ_runtime.stop_pump
+    disconnect: asyncio.Task[None] | None = None
+
+    async def disconnect_at_join() -> None:
+        nonlocal disconnect
+        if disconnect is None:
+            disconnect = asyncio.create_task(radio.disconnect())
+        await stop()
+
+    monkeypatch.setattr(radio._civ_runtime, "stop_pump", disconnect_at_join)
+    repair = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await link.clock.elapse(4)
+        assert disconnect is not None and disconnect.done()
+        disconnect.result()
+        assert link.ptt_writes[-1][1] is False
+        assert all(port._udp_transport is None for port in link.ports)
+        assert all(endpoint.closed for endpoint in link.control.endpoints)
+        link.assert_recovery_exit(stopped=True)
+    finally:
+        repair.cancel()
+        await asyncio.gather(repair, return_exceptions=True)
+
+
 @pytest.mark.parametrize("stop", ["disconnect", "shutdown"])
-@pytest.mark.parametrize("outcome", ["success", "error"])
+async def test_stop_joins_control_retirement_before_reconnect(
+    link: Link, stop: str
+) -> None:
+    radio = link.radio
+    old_endpoint = link.control.endpoints[0]
+    old_endpoint.close_delay = 0.8
+    link.control.notice()
+    await link.clock.elapse(0)
+    assert old_endpoint.closing and not old_endpoint.closed
+    operation = (
+        radio.disconnect
+        if stop == "disconnect"
+        else (radio._session_lifecycle.request_shutdown)
+    )
+    stopping = asyncio.create_task(operation())
+    await link.clock.elapse(0.1)
+    returned_early = stopping.done()
+    if not returned_early:
+        await link.clock.elapse(0.8)
+    assert stopping.done()
+    stopping.result()
+    await link.complete(radio.connect())
+    assert old_endpoint.closed
+    assert link.control.state is ConnectionState.CONNECTED
+    assert not returned_early, "stop returned before the UDP close callback"
+    assert link.control._udp_transport is link.control.endpoints[-1]
+
+
+async def test_connect_joins_full_control_open(link: Link) -> None:
+    link.control.park_next_open = opened = asyncio.Event()
+    link.control.notice()
+    await link.clock.elapse(0)
+    assert len(link.control.endpoints) == 2 and not link.control.logins
+    connecting = asyncio.create_task(link.radio.connect())
+    try:
+        await link.clock.elapse(0.5)
+        assert len(link.control.endpoints) == 2, "connect opened a second endpoint"
+        assert not connecting.done()
+        opened.set()
+        await link.complete(connecting)
+        assert len(link.control.logins) == 1
+        await link.complete(link.radio.disconnect())
+        assert all(endpoint.closed for endpoint in link.control.endpoints)
+        assert all(port._udp_transport is None for port in link.ports)
+        link.assert_recovery_exit(stopped=True)
+    finally:
+        opened.set()
+        connecting.cancel()
+        await asyncio.gather(connecting, return_exceptions=True)
+
+
+@pytest.mark.parametrize("link", [True, False], indirect=True, ids=["auto", "manual"])
+async def test_unreachable_radio_stays_recovering_until_disconnect(link: Link) -> None:
+    radio = link.radio
+    lifecycle = radio._session_lifecycle
+    link.stale = True
+    link.control.silent = True
+    await link.clock.elapse(120)
+    assert lifecycle.state is LifecycleState.RECOVERING
+    assert not radio.connected and not radio.radio_ready
+    assert len(link.control.endpoints) > 2 and not link.control.logins
+    owner = lifecycle._recover_task
+    if owner is None or owner.done():
+        await link.clock.elapse(2)
+        owner = lifecycle._recover_task
+    assert owner is not None and not owner.done()
+    assert link.control._discover_ping_event is not None
+    await link.complete(radio.disconnect(), budget=0.1)
+    assert lifecycle.state is LifecycleState.DISCONNECTED
+    assert all(endpoint.closed for endpoint in link.control.endpoints)
+    attempts = len(link.control.endpoints)
+    await link.clock.elapse(30)
+    assert len(link.control.endpoints) == attempts
+    link.assert_recovery_exit(stopped=True)
+
+
+async def test_explicit_recovery_on_silent_link_raises_discovery_timeout(
+    link: Link,
+) -> None:
+    assert not link.radio._auto_reconnect
+    link.stale = True
+    link.control.silent = True
+    await link.clock.elapse(4)
+    with pytest.raises(DiscoveryTimeout):
+        await link.complete(link.radio.soft_reconnect(), budget=45)
+    link.assert_recovery_exit()
+
+
+@pytest.mark.parametrize("stop", ["disconnect", "shutdown"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "error", "pump-error", "watchdog-error"]
+)
 async def test_owner_stop_releases_tx_debt_and_closes_transports(
     link: Link, monkeypatch: pytest.MonkeyPatch, stop: str, outcome: str
 ) -> None:
     radio, lifecycle = link.radio, link.radio._session_lifecycle
-    await link.complete(radio.rearm_managed_tx())
+    await hold_tx(link, stop)
     tx = radio._managed_tx_runtime
     assert tx is not None
-    outcome_on = await link.complete(tx.request_on(TxOwner(TxSource.WEBSOCKET, stop)))
-    assert outcome_on.outcome is TxOutcome.ACCEPTED and link.ptt
     lease = tx.tx_snapshot.lease_id
-    assert lease is not None
     release = AsyncMock(wraps=tx.shutdown)
     monkeypatch.setattr(tx, "shutdown", release)
     lifecycle._max_recovery_attempts = 1
     link.control.down = outcome == "error"
-    radio._civ_stream_ready = False
+    failed_task = None
+    if outcome in ("pump-error", "watchdog-error"):
+        rt = radio._civ_runtime
+        if outcome == "pump-error":
+            loop_name = "_civ_rx_loop"
+            stop_child, start_child = rt.stop_pump, rt.start_pump
+            task_attr = "_civ_rx_task"
+        else:
+            loop_name = "_civ_data_watchdog_loop"
+            stop_child, start_child = rt.stop_data_watchdog, rt.start_data_watchdog
+            task_attr = "_civ_data_watchdog_task"
+        child_loop = getattr(rt, loop_name)
+
+        async def raise_on_cancel(**kwargs: int) -> None:
+            await child_loop(**kwargs)
+            raise OSError("child failed during cancellation")
+
+        await stop_child()
+        monkeypatch.setattr(rt, loop_name, raise_on_cancel)
+        start_child()
+        failed_task = getattr(radio, task_attr)
+        assert failed_task is not None
     if outcome == "success":
         link.pause_soft = True
         await link.clock.elapse(5.1)
@@ -403,11 +648,13 @@ async def test_owner_stop_releases_tx_debt_and_closes_transports(
     else:
         repair = None
     try:
-        link.control.notice()
-        await link.clock.elapse(3)
+        if failed_task is None:
+            radio._civ_stream_ready = False
+            link.control.notice()
+            await link.clock.elapse(3)
         release.assert_not_awaited()
         assert radio._managed_tx_runtime is tx
-        if outcome != "error":
+        if outcome == "success":
             assert link.control.logins == [link.soft_discoveries[0][1]]
             assert repair is not None and repair.done()
             repair.result()
@@ -421,10 +668,15 @@ async def test_owner_stop_releases_tx_debt_and_closes_transports(
         )
         await link.complete(operation(), budget=4)
         release.assert_awaited_once()
+        if failed_task is not None:
+            assert failed_task.cancelling()
+            assert isinstance(failed_task.exception(), OSError)
+            assert link.ptt_writes[-1][1] is False
         assert radio.managed_tx is None
         assert radio._civ_transport is None
         assert all(port._udp_transport is None for port in link.ports)
         assert link.control._udp_transport is None
+        assert all(endpoint.closed for endpoint in link.control.endpoints)
         assert lifecycle.state is LifecycleState.DISCONNECTED
         link.assert_recovery_exit(stopped=True)
     finally:

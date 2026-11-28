@@ -66,6 +66,9 @@ class CivRuntimeHost(Protocol):
     _civ_recovery_wait_timeout: float
     _session_lifecycle: CoreRadioSessionLifecycle
 
+    @property
+    def radio_ready(self) -> bool: ...
+
     # CI-V watchdog / last data timestamps
     _last_civ_data_received: "float | None"
     _civ_waiter_ttl_gc_interval: float

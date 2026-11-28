@@ -752,6 +752,7 @@ class CivRuntime:
         # awaits the lifecycle's shared recovery.
         self._fast_reconnect_task: asyncio.Task[None] | None = None
         self._soft_recovery_epoch: int | None = None
+        self._session_free_pending = False
         self._raw_received_frame_bytes: dict[int, tuple[CivFrame, bytes]] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
@@ -1131,6 +1132,7 @@ class CivRuntime:
             and not owned_recovery
             and not rc_task.done()
         ):
+            await self._host._session_lifecycle.stop_recovery_awaited_by(rc_task)
             rc_task.cancel()
             await asyncio.gather(rc_task, return_exceptions=True)
             if self._reconnect_task is rc_task:
@@ -1139,16 +1141,8 @@ class CivRuntime:
             self._reconnect_task = None
 
         # Forget the poller's in-flight fast-reconnect task without cancelling
-        # it (MOR-2083). The task only awaits the lifecycle's shared
-        # ``_recover_task`` (``CoreRadioSessionLifecycle.soft_reconnect`` does
-        # ``await recovery``), and cancelling a task that awaits another task
-        # forwards the cancel to the awaited one — so cancelling here would
-        # kill the shared recovery. This teardown can even run from inside
-        # that very recovery: the stalled-transport branch of
-        # ``ControlPhaseRuntime.soft_reconnect`` calls ``_force_cleanup_civ``
-        # → ``stop_data_watchdog`` from within ``_run_recover``, which would
-        # self-cancel the run in progress (cf. #1217 invariant 2 above, which
-        # is why ``_reconnect_task`` uses ``is_current_recovery_awaited_by``).
+        # it (MOR-2083). This teardown can run from within recovery, and the
+        # poller can still observe its outcome through the shielded join.
         # The task ends by itself when the recovery ends or the lifecycle's
         # own disconnect cancels it; forgetting the reference only makes a
         # later wait start a fresh kick instead of reusing a stale one.
@@ -1603,12 +1597,20 @@ class CivRuntime:
                     lifecycle.full_recovery_pending
                     and lifecycle.state is LifecycleState.CONNECTED
                 ) or (
-                    self._host._conn_state is RadioConnectionState.RECONNECTING
-                    and lifecycle.state is LifecycleState.RECOVERING
-                    and self._host._ctrl_transport._udp_transport is None
+                    lifecycle.state is LifecycleState.RECOVERING
+                    and not lifecycle.recovery_active
                 ):
                     if self.request_recovery_now("full recovery still pending"):
                         return
+                if (
+                    self._session_free_pending
+                    and not self._host.radio_ready
+                    and self.request_recovery_now(
+                        "CI-V did not refresh after session-free notice"
+                    )
+                ):
+                    self._session_free_pending = False
+                    return
 
                 now = time.monotonic()
                 if last_rx_advance is None:
@@ -1793,6 +1795,10 @@ class CivRuntime:
         )
         return self._reconnect_task
 
+    def defer_session_free_notice(self) -> None:
+        """Keep the broadcast notice while waiting for fresh CI-V data."""
+        self._session_free_pending = True
+
     def request_recovery_now(self, reason: str) -> bool:
         """Record FULL even while SOFT is running or the detector is nudging."""
         host = self._host
@@ -1969,6 +1975,7 @@ class CivRuntime:
                     ):
                         self._host._last_civ_data_received = now
                         self._soft_recovery_epoch = None
+                        self._session_free_pending = False
                         self._host._civ_stream_ready = True
                         self._host._civ_recovering = False
                     lifetime = self._ptt_reply_ledger.lifetime
