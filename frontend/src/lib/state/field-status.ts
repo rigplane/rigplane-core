@@ -1,4 +1,6 @@
 import type { FieldAvailability, FieldStatus, ServerState } from '$lib/types/state';
+import { t } from '$lib/i18n';
+import { fieldStatusMessageKey } from '$lib/i18n/field-status-messages';
 
 export function getFieldStatus(
   state: ServerState | null,
@@ -79,7 +81,71 @@ export function getFieldAvailabilityMessage(
   publicPath: string,
 ): FieldStatus['message'] {
   const { availability, status } = resolveFieldAvailability(state, publicPath);
-  return availability === 'available' ? undefined : status?.message;
+  if (availability === 'available') return undefined;
+  // A refusal sentence belongs to an `unavailable` row: the producer
+  // contract projects a refused read as `unavailable`, and the recovered
+  // row drops its message. Any other non-available row keeps the legacy
+  // raw `message` read, so a stale key lingering on a missing row cannot
+  // render as a refusal (field-reason e2e: 'Not yet observed').
+  if (availability !== 'unavailable') return status?.message;
+  return resolveFieldStatusMessage(status);
+}
+
+/**
+ * The operator-legible sentence for one field-status row (MOR-4828).
+ *
+ * Rows that carry a `messageKey` the catalog knows render through the
+ * locale table (`t(key, params)`); every other row — an unknown key, a
+ * missing key from an older sender, or a row with no key at all — renders
+ * the English `message` the server always sends alongside. Receivers
+ * tolerate unknown/missing keys by design: the fallback is the full
+ * sentence, never a bare code or a `[missing:…]` marker.
+ */
+export function resolveFieldStatusMessage(
+  status: FieldStatus | null | undefined,
+): string | undefined {
+  if (!status) return undefined;
+  const key = fieldStatusMessageKey(status.messageKey);
+  if (key !== undefined) {
+    const rendered = t(key, status.messageParams ?? undefined);
+    // resolve() falls back to en-US silently; when even en-US lacks the
+    // key it returns the key itself (prod) or `[missing:key]` (dev) —
+    // neither is operator text, so the English wire sentence wins.
+    if (rendered !== key && !rendered.startsWith('[missing:')) return rendered;
+  }
+  return status.message ?? undefined;
+}
+
+/** One refusal row the health area names: the refused field and its reason. */
+export interface RefusedFieldEntry {
+  storePath: string;
+  publicPath: string;
+  text: string;
+}
+
+/**
+ * Every refused field-status row as operator-legible text (MOR-4828).
+ *
+ * Only `unavailable` rows with a resolvable sentence qualify — a refused
+ * read is projected as `unavailable` by the producer contract, and the
+ * recovered row drops its message, so it disappears here on recovery.
+ * Public-path aliases of one store path (e.g. `micGain` / `micGainAlias`)
+ * collapse to a single entry, first path wins, mirroring the status-bar
+ * tooltip loop this feeds.
+ */
+export function refusedFieldEntries(state: ServerState | null): RefusedFieldEntry[] {
+  const fieldStatus = state?.fieldStatus;
+  if (!fieldStatus) return [];
+  const byStore = new Map<string, RefusedFieldEntry>();
+  for (const [publicPath, status] of Object.entries(fieldStatus)) {
+    if (!status || status.availability !== 'unavailable') continue;
+    const text = resolveFieldStatusMessage(status);
+    if (!text?.trim()) continue;
+    if (!byStore.has(status.storePath)) {
+      byStore.set(status.storePath, { storePath: status.storePath, publicPath, text });
+    }
+  }
+  return [...byStore.values()];
 }
 
 export function isFieldAvailable(

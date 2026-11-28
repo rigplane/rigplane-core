@@ -552,6 +552,30 @@ def civ_transport_budget_hz(radio: object) -> float | None:
     return 1.0 / max(interval, rtt)
 
 
+# Wire codes for the localisable refusal sentence a read failure carries in
+# the public field status (MOR-4828). The codes are stable protocol: the
+# frontend maps them to its locale-table keys and renders the sentence in
+# the operator's language. The English ``message`` stays on the wire as the
+# fallback for receivers that do not know the codes yet.
+READ_REFUSAL_MESSAGE_KEY: Final = "readRefused"
+MALFORMED_READ_MESSAGE_KEY: Final = "readMalformed"
+
+
+class FieldRefusalWire(TypedDict):
+    """Localisable refusal record for one public field-status row.
+
+    ``message`` is the English-stable sentence (unchanged from MOR-4058);
+    ``message_key`` selects the locale-table template and ``message_params``
+    carries its interpolation values (``field`` is the display name the
+    legacy sentence already used, e.g. ``"mic gain"``). Receivers that do
+    not know a key keep rendering ``message``.
+    """
+
+    message: str
+    message_key: str
+    message_params: dict[str, str]
+
+
 @dataclass(slots=True)
 class _ReadRefusal:
     """A path whose read cannot answer now, and when to ask again.
@@ -566,6 +590,24 @@ class _ReadRefusal:
     retry_at: float
     failure: DeclaredCommandDefect | None = None
     malformed: bool = False
+
+    def message_key(self) -> str:
+        """The locale-table code for this refusal variant (MOR-4828)."""
+        return (
+            MALFORMED_READ_MESSAGE_KEY if self.malformed else READ_REFUSAL_MESSAGE_KEY
+        )
+
+    def message_params(self, path: FieldPath) -> dict[str, str]:
+        """The interpolation values for :meth:`message_key` (MOR-4828)."""
+        return {"field": path.name.replace("_", " ")}
+
+    def wire(self, path: FieldPath) -> FieldRefusalWire:
+        """The localisable refusal record for one field-status row."""
+        return {
+            "message": self.message(path),
+            "message_key": self.message_key(),
+            "message_params": self.message_params(path),
+        }
 
     def message(self, path: FieldPath) -> str:
         name = path.name.replace("_", " ")
@@ -1925,10 +1967,15 @@ class AcquisitionScheduler:
 
         return frozenset(self._refused_paths)
 
-    def declared_read_refusals(self) -> dict[FieldPath, str]:
-        """Return the active declared-read failures for the public field status."""
+    def declared_read_refusals(self) -> dict[FieldPath, FieldRefusalWire]:
+        """Return the active declared-read failures for the public field status.
+
+        MOR-4828: each record carries the English ``message`` plus the
+        locale-table ``message_key`` and its ``message_params``; receivers
+        that do not know the key keep rendering ``message``.
+        """
         return {
-            path: refusal.message(path)
+            path: refusal.wire(path)
             for path, refusal in self._refused_paths.items()
             if refusal.failure is not None
         }

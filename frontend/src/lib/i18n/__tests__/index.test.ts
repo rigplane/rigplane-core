@@ -78,6 +78,33 @@ describe('t()', () => {
     expect(t('core.disabledReason.missing')).toBe('Не поддерживается этим радио');
     expect(t('core.disabledReason.unobserved')).toBe('Ещё не считано');
   });
+
+  // MOR-4828: the en-US refusal templates stay byte-identical to the legacy
+  // wire sentences (with `{field}` for the display name), so en-locale
+  // rendering and every existing English pin are unchanged by localisation.
+  it('carries the MOR-4828 field-status refusal strings in en-US', () => {
+    expect(t('core.fieldStatus.readRefused', { field: 'mic gain' })).toBe(
+      'The radio refused to report mic gain. The control is unavailable ' +
+      'until the radio answers. The app is still connected.',
+    );
+    expect(t('core.fieldStatus.readMalformed', { field: 'mic gain' })).toBe(
+      'The radio returned an invalid reply for mic gain. The control is ' +
+      'unavailable until the radio answers. The app is still connected.',
+    );
+  });
+
+  it('carries the MOR-4828 field-status refusal strings in ru-RU and ja-JP (own catalog entries)', () => {
+    setLocale('ru-RU');
+    expect(t('core.fieldStatus.readRefused', { field: 'mic gain' })).toBe(
+      'Радио отказалось сообщить mic gain. Элемент управления недоступен, ' +
+      'пока радио не ответит. Приложение остаётся на связи.',
+    );
+    setLocale('ja-JP');
+    expect(t('core.fieldStatus.readRefused', { field: 'mic gain' })).toBe(
+      'トランシーバーがmic gainの報告を拒否しました。このコントロールは' +
+      'トランシーバーが応答するまで利用できません。アプリは接続を維持しています。',
+    );
+  });
 });
 
 describe('tPlural()', () => {

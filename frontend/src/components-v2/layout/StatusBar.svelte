@@ -109,6 +109,7 @@
   } from '$lib/stores/connection.svelte';
   import { getActiveFrequencyHz } from '$lib/runtime/adapters/panel-adapters';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
+  import { refusedFieldEntries } from '$lib/state/field-status';
   import { getAudioState } from '$lib/stores/audio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
   import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
@@ -237,6 +238,13 @@
   let radioHealthLabel = $derived(
     deriveRadioHealthLabel({ health: radioHealth, rigConnected, radioReady, radioState }),
   );
+  // MOR-4828: the refused reads the producer projects as `unavailable`
+  // field-status rows, as operator-legible sentences (locale table with the
+  // English wire sentence as fallback). Shown in the radio tooltip AND as a
+  // visible line: the tooltip alone is invisible on a phone and unnoticed
+  // on a desktop.
+  let refusedEntries = $derived(rigConnected ? refusedFieldEntries(runtime.state) : []);
+  let refusedLine = $derived(refusedEntries.map((entry) => entry.text).join(' '));
   let radioTooltip = $derived.by(() => {
     const summary = radioHealthLabel
       ? t('core.statusbar.indicator.radioWithReason', {
@@ -244,13 +252,7 @@
           reason: radioHealthLabel,
         })
       : t('core.statusbar.indicator.radio', { state: radioState });
-    const unavailable = new Map<string, string>();
-    if (rigConnected) {
-      for (const field of Object.values(runtime.state?.fieldStatus ?? {})) {
-        if (field.message) unavailable.set(field.storePath, field.message);
-      }
-    }
-    return [summary, ...unavailable.values()].join('\n');
+    return [summary, ...refusedEntries.map((entry) => entry.text)].join('\n');
   });
 
   let connectionTooltip = $derived(
@@ -385,6 +387,12 @@
 
 {#if !hostDeclaration.health && controlState === 'disconnected'}
   <div class="control-link-lost">{t('core.statusbar.controlLinkLost')}</div>
+{/if}
+{#if !hostDeclaration.health && refusedLine}
+  <!-- MOR-4828: the visible twin of the radio-tooltip refusal lines above:
+       a refused read is informational (the app stays connected), so this is
+       a quiet line, not the red fault banner. -->
+  <div class="refusal-line" role="status" data-testid="refusal-line">{refusedLine}</div>
 {/if}
 <!-- MOR-1240: this bar publishes `--rp-status-bar-bottom` while mounted;
      AppGlobalHost's powered-off overlay consumes it in CSS. -->
@@ -572,6 +580,16 @@
     text-align: center;
     padding: 2px 0;
     user-select: none;
+  }
+
+  /* MOR-4828: the visible refusal line — quiet by design. A refused read
+     leaves the app connected, so this never takes the red fault banner. */
+  .refusal-line {
+    color: var(--v2-text-dim, #888);
+    font-size: 11px;
+    text-align: center;
+    padding: 2px 8px;
+    user-select: text;
   }
 
   .http-lost-label {

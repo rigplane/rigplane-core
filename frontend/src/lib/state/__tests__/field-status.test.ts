@@ -10,13 +10,17 @@
  * keys the toolbar/LCD gate on (`scopeControls.mode`, `main.agc`, …) actually
  * match the keys the backend emits and resolve to unavailable.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { ServerState } from '$lib/types/state';
+import { setLocale } from '$lib/i18n';
+import { _resetLocale } from '$lib/i18n/store.svelte';
 import {
   getFieldAvailability,
   getFieldAvailabilityMessage,
   isFieldAvailable,
   areFieldsAvailable,
+  resolveFieldStatusMessage,
+  refusedFieldEntries,
 } from '../field-status';
 import emptyStoreFieldStatus from './fixtures/empty-store-field-status.json';
 
@@ -139,5 +143,124 @@ describe('field-status anchored to the real backend payload', () => {
       expect(backendKeys, `backend must emit ${key}`).toContain(key);
       expect(isFieldAvailable(state, key), `${key} should be unavailable`).toBe(false);
     }
+  });
+});
+
+describe('field-status refusal localisation (MOR-4828)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    _resetLocale();
+    setLocale('en-US');
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    _resetLocale();
+  });
+
+  const EN_REFUSED =
+    'The radio refused to report mic gain. The control is unavailable ' +
+    'until the radio answers. The app is still connected.';
+  const RU_REFUSED =
+    'Радио отказалось сообщить mic gain. Элемент управления недоступен, ' +
+    'пока радио не ответит. Приложение остаётся на связи.';
+  const JA_REFUSED =
+    'トランシーバーがmic gainの報告を拒否しました。このコントロールは' +
+    'トランシーバーが応答するまで利用できません。アプリは接続を維持しています。';
+
+  const refusedRow = (overrides: Record<string, unknown> = {}) => ({
+    storePath: 'global.operator_controls.mic_gain',
+    observed: false,
+    freshness: 'unknown',
+    availability: 'unavailable',
+    message: EN_REFUSED,
+    messageKey: 'readRefused',
+    messageParams: { field: 'mic gain' },
+    ...overrides,
+  });
+
+  it('renders the keyed refusal sentence in en-US, byte-identical to the wire fallback', () => {
+    const state = stateWith({ micGain: refusedRow() });
+    expect(resolveFieldStatusMessage(state.fieldStatus?.['micGain'])).toBe(EN_REFUSED);
+    expect(getFieldAvailabilityMessage(state, 'micGain')).toBe(EN_REFUSED);
+  });
+
+  it('renders the keyed refusal sentence in ru-RU', () => {
+    setLocale('ru-RU');
+    const state = stateWith({ micGain: refusedRow() });
+    expect(resolveFieldStatusMessage(state.fieldStatus?.['micGain'])).toBe(RU_REFUSED);
+  });
+
+  it('renders the keyed refusal sentence in ja-JP', () => {
+    setLocale('ja-JP');
+    const state = stateWith({ micGain: refusedRow() });
+    expect(resolveFieldStatusMessage(state.fieldStatus?.['micGain'])).toBe(JA_REFUSED);
+  });
+
+  it('renders the malformed variant through its own key', () => {
+    const state = stateWith({
+      micGain: refusedRow({
+        message: 'The radio returned an invalid reply for mic gain. The control is unavailable until the radio answers. The app is still connected.',
+        messageKey: 'readMalformed',
+      }),
+    });
+    expect(getFieldAvailabilityMessage(state, 'micGain')).toBe(
+      'The radio returned an invalid reply for mic gain. The control is unavailable until the radio answers. The app is still connected.',
+    );
+  });
+
+  it('falls back to the English message when the key is unknown', () => {
+    const state = stateWith({ micGain: refusedRow({ messageKey: 'notARealCode' }) });
+    expect(resolveFieldStatusMessage(state.fieldStatus?.['micGain'])).toBe(EN_REFUSED);
+  });
+
+  it('falls back to the English message when the key is missing (old sender)', () => {
+    const { messageKey: _key, messageParams: _params, ...legacy } = refusedRow();
+    const state = stateWith({ micGain: legacy });
+    expect(resolveFieldStatusMessage(state.fieldStatus?.['micGain'])).toBe(EN_REFUSED);
+    expect(refusedFieldEntries(state)).toHaveLength(1);
+  });
+
+  it('does not render a stale refusal key on a missing row (field-reason e2e)', () => {
+    // The e2e unobserved replay grafts a refused snapshot and clears only
+    // `message`: the stale `messageKey` must not surface as a refusal on a
+    // row the producer no longer marks `unavailable`.
+    const state = stateWith({ micGain: refusedRow({ availability: 'missing', message: undefined }) });
+    expect(getFieldAvailabilityMessage(state, 'micGain')).toBeUndefined();
+  });
+
+  it('dedups public-path aliases of one store path into a single entry', () => {
+    const state = stateWith({ micGain: refusedRow(), micGainAlias: refusedRow() });
+    const entries = refusedFieldEntries(state);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      storePath: 'global.operator_controls.mic_gain',
+      publicPath: 'micGain',
+      text: EN_REFUSED,
+    });
+  });
+
+  it('ignores available rows and rows without a resolvable sentence', () => {
+    const state = stateWith({
+      micGain: refusedRow(),
+      powerMeter: {
+        storePath: 'global.meters.power',
+        observed: false,
+        freshness: 'unknown',
+        availability: 'unavailable',
+      },
+      mainMode: {
+        storePath: 'receiver.main.active.freq_mode.mode',
+        observed: true,
+        freshness: 'fresh',
+        availability: 'available',
+        message: 'Obsolete leaf message',
+      },
+    });
+    expect(refusedFieldEntries(state).map((entry) => entry.publicPath)).toEqual(['micGain']);
+  });
+
+  it('returns no entries without state', () => {
+    expect(refusedFieldEntries(null)).toEqual([]);
   });
 });

@@ -1076,13 +1076,18 @@
   @media (min-width: 1680px) {
     .radio-layout.semantic-deck:not(.desktop-control-face) {
       grid-template-columns: 228px minmax(0, 1fr) 228px;
-      grid-template-rows: 28px minmax(240px, auto) minmax(320px, 1fr) auto;
+      grid-template-rows: auto 28px minmax(240px, auto) minmax(320px, 1fr) auto;
       grid-template-areas:
+        "health health health"
         "status status status"
         "left   deck   right"
         "left   center right"
         "dock   dock   dock";
     }
+    /* MOR-4828: the refusal row is a direct grid item (a StatusBar sibling),
+       like `.status-bar` — without its own area it auto-places into the
+       sidebar column. Absent, the `auto` health row collapses to zero. */
+    .radio-layout.semantic-deck:not(.desktop-control-face) > :global(.refusal-line) { grid-area: health; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > :global(.status-bar) { grid-area: status; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .receiver-deck { grid-area: deck; }
     .radio-layout.semantic-deck:not(.desktop-control-face) > .bottom-dock { grid-area: dock; }
@@ -1100,7 +1105,7 @@
   .radio-layout.desktop-control-face {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
     /* Wrapped scope controls must contribute to the row above station meters. */
-    grid-template-rows: auto 28px auto minmax(min-content, 1fr) auto;
+    grid-template-rows: [banner] auto [status] 28px [deck] auto [controls] minmax(min-content, 1fr) [dock] auto;
     gap: 4px;
     overflow-y: auto;
   }
@@ -1108,23 +1113,32 @@
     grid-template-columns: 228px minmax(0, 1fr) 228px;
     /* The center column keeps its 320px floor; short viewports scroll instead
        of overlapping the station meters dock. */
-    grid-template-rows: auto 28px minmax(200px, auto) minmax(min-content, 1fr) auto;
+    grid-template-rows: [banner] auto [status] 28px [deck] minmax(200px, auto) [controls] minmax(min-content, 1fr) [dock] auto;
     gap: 5px;
+  }
+  /* MOR-4828: add the health track only for a rendered refusal. A zero-height
+     empty track still adds a gap (production design-language capture). */
+  .radio-layout.desktop-control-face:has(> :global(.refusal-line)) {
+    grid-template-rows: [banner] auto [refusal] auto [status] 28px [deck] auto [controls] minmax(min-content, 1fr) [dock] auto;
+  }
+  .radio-layout.desktop-control-face.standard-face:has(> :global(.refusal-line)) {
+    grid-template-rows: [banner] auto [refusal] auto [status] 28px [deck] minmax(200px, auto) [controls] minmax(min-content, 1fr) [dock] auto;
   }
   .desktop-control-face > .receiver-deck,
   .desktop-control-face :global(.semantic-surfaces) { display: contents; }
   .desktop-control-face > :global(.control-link-lost) { grid-area: 1 / 1 / 2 / -1; }
-  .desktop-control-face > :global(.status-bar) { grid-area: 2 / 1 / 3 / -1; }
-  .desktop-control-face :global([data-zone-id='receiver-deck']) { grid-area: 3 / 1 / 4 / -1; }
-  .desktop-control-face :global(.desktop-controls-left) { grid-area: 4 / 1 / 5 / 2; }
+  .desktop-control-face > :global(.refusal-line) { grid-area: refusal / 1 / span 1 / -1; }
+  .desktop-control-face > :global(.status-bar) { grid-area: status / 1 / span 1 / -1; }
+  .desktop-control-face :global([data-zone-id='receiver-deck']) { grid-area: deck / 1 / span 1 / -1; }
+  .desktop-control-face :global(.desktop-controls-left) { grid-area: controls / 1 / span 1 / 2; }
   .desktop-control-face :global(.desktop-controls-center) {
-    grid-area: 4 / 2 / 5 / 3;
+    grid-area: controls / 2 / span 1 / 3;
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 320px;
   }
-  .desktop-control-face :global(.desktop-controls-right) { grid-area: 4 / 3 / 5 / 4; }
+  .desktop-control-face :global(.desktop-controls-right) { grid-area: controls / 3 / span 1 / 4; }
   .desktop-control-face :global(.desktop-controls-left),
   .desktop-control-face :global(.desktop-controls-right) {
     /* Positioned so absolutely positioned descendants (visually hidden
@@ -1143,7 +1157,7 @@
      above on purpose); its container queries own the overflow. */
   .desktop-control-face :global(.spectrum-toolbar.hosted) { flex-wrap: nowrap; }
   .desktop-control-face :global([data-zone-id='meters']),
-  .desktop-control-face .standard-bottom-dock { grid-area: 5 / 1 / 6 / -1; }
+  .desktop-control-face .standard-bottom-dock { grid-area: dock / 1 / span 1 / -1; }
   .standard-panel-owner,
   .standard-bottom-dock {
     display: flex;
@@ -1408,23 +1422,34 @@
     .radio-layout.desktop-control-face { grid-template-columns: 190px minmax(0, 1fr) 190px; }
     .radio-layout.desktop-control-face.standard-face {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto 28px auto auto minmax(min-content, 1fr) auto auto;
+      grid-template-rows: [banner] auto [status] 28px [deck] auto [left] auto [center] minmax(min-content, 1fr) [right] auto [dock] auto;
+    }
+    .radio-layout.desktop-control-face.standard-face:has(> :global(.refusal-line)) {
+      grid-template-rows: [banner] auto [refusal] auto [status] 28px [deck] auto [left] auto [center] minmax(min-content, 1fr) [right] auto [dock] auto;
+    }
+    /* MOR-4828: the stacked band keeps the same health rows — the refusal
+       line would otherwise auto-flow past every placed row to the bottom. */
+    .desktop-control-face.standard-face > :global(.refusal-line) {
+      grid-area: refusal / 1 / span 1 / 2;
+    }
+    .desktop-control-face.standard-face > :global(.status-bar) {
+      grid-area: status / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global([data-zone-id='receiver-deck']) {
-      grid-area: 3 / 1 / 4 / 2;
+      grid-area: deck / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-left) {
-      grid-area: 4 / 1 / 5 / 2;
+      grid-area: left / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-center) {
-      grid-area: 5 / 1 / 6 / 2;
+      grid-area: center / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-right) {
-      grid-area: 6 / 1 / 7 / 2;
+      grid-area: right / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global([data-zone-id='meters']),
     .desktop-control-face.standard-face .standard-bottom-dock {
-      grid-area: 7 / 1 / 8 / 2;
+      grid-area: dock / 1 / span 1 / 2;
     }
     .desktop-control-face.standard-face :global(.desktop-controls-left),
     .desktop-control-face.standard-face :global(.desktop-controls-right) {

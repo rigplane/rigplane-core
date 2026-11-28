@@ -134,6 +134,8 @@ def test_ftx1_mic_gain_replay_publishes_refusal_and_recovery() -> None:
             "The radio refused to report mic gain. The control is unavailable "
             "until the radio answers. The app is still connected."
         ),
+        "messageKey": "readRefused",
+        "messageParams": {"field": "mic gain"},
         "observed": False,
         "storePath": "global.operator_controls.mic_gain",
     }

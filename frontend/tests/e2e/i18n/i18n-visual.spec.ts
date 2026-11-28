@@ -864,6 +864,18 @@ test.describe('MOR-1400 production design-language contract', () => {
       await assertProductionLanguageCss(page, item);
       await assertProductionLanguageAccessibility(page, item);
       await stabilizeProductionCapture(page);
+      await expect(page.getByTestId('refusal-line')).toHaveCount(0);
+      const chromeOffset = await page.locator('.radio-layout.desktop-control-face').evaluate((root) => {
+        const bar = root.querySelector('.status-bar')!;
+        const style = getComputedStyle(root);
+        return {
+          actual: bar.getBoundingClientRect().top - root.getBoundingClientRect().top,
+          // The existing empty disconnected-banner row contributes one gap.
+          expected: Number.parseFloat(style.rowGap) + Number.parseFloat(style.borderTopWidth)
+            + Number.parseFloat(style.paddingTop),
+        };
+      });
+      expect(chromeOffset.actual).toBeCloseTo(chromeOffset.expected, 1);
       // This is deliberately the real built `/' entry, served via the
       // immutable dist wrapper above. Fixture screenshots live in a separate
       // Playwright config and are not candidates for this expectation.

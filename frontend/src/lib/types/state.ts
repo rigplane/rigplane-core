@@ -435,7 +435,10 @@ export interface AudioDeviceCandidatePublic {
  *
  * Observed entries can add ``lastObservedMonotonic``, ``maxAge``,
  * ``source`` and ``quality``. A declared read failure adds a
- * ``message`` to its unobserved entry.
+ * ``message`` to its unobserved entry, plus the ``messageKey`` locale-table
+ * code and its ``messageParams`` so receivers render the sentence in the
+ * operator's language (``message`` stays as the fallback for receivers
+ * that do not know the key).
  *
  * ``available`` and ``stale`` come from an observed entry's freshness
  * (``runtime_helpers._freshness_availability``). ``missing``,
@@ -454,6 +457,10 @@ export interface FieldStatusPublic {
   freshness: "unknown" | "fresh" | "stale";
   availability: "missing" | "available" | "stale" | "unavailable" | "undeclared";
   message?: string | null;
+  messageKey?: string | null;
+  messageParams?: {
+    [k: string]: string;
+  } | null;
   lastObservedMonotonic?: number | null;
   maxAge?: number | null;
   source?: {

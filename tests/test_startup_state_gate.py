@@ -3023,6 +3023,10 @@ async def test_ftx1_refused_mic_gain_does_not_abort_startup(
                 "until the radio answers. The app is still connected."
             )
             assert mic_gain_status["message"] == refusal["message"]
+            # MOR-4828: the refusal travels with a locale-table key plus
+            # params; the English sentence stays as the fallback.
+            assert mic_gain_status["messageKey"] == "readRefused"
+            assert mic_gain_status["messageParams"] == {"field": "mic gain"}
 
             fake.change_mode_from_front_panel("2")  # MD02; on the wire
 
