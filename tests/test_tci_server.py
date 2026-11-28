@@ -218,6 +218,9 @@ async def test_command_routing_sender_and_others(virtual_clock: VirtualClock) ->
         reader_a.feed_data(client_frame(WS_OP_TEXT, b"vfo:0,0,14074000;"))
         frames_a = await wait_for_frames(writer_a, len(BURST) + 1)
         assert frames_a[-1] == (WS_OP_TEXT, b"vfo:0,0,14074000;")
+        # The observer copy is coalesced: the flush timer only fires on
+        # the virtual clock, so elapse past the window before awaiting it.
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.02)
         frames_b = await wait_for_frames(writer_b, len(BURST) + 1)
         assert frames_b[-1] == (WS_OP_TEXT, b"vfo:0,0,14074000;")
         # The sender got exactly one reply; the sync went only to others.
@@ -411,7 +414,7 @@ async def test_multi_command_frame_in_order(virtual_clock: VirtualClock) -> None
 
 
 async def test_silence_for_empty_input(virtual_clock: VirtualClock) -> None:
-    handler = FakeHandler()
+    handler = FakeHandler(replies={"ok": CommandOutcome(to_sender=["ok:1;"])})
     server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
@@ -424,8 +427,14 @@ async def test_silence_for_empty_input(virtual_clock: VirtualClock) -> None:
             timeout=10.0,
             description="empty input consumed",
         )
-        assert handler.commands == []
-        assert len(parse_server_frames(writer.buffer)) == len(BURST)
+        # The dispatch loop runs behind the reader: a sentinel command
+        # proves the empty input was dispatched (in order) before we
+        # assert it produced nothing.
+        reader.feed_data(client_frame(WS_OP_TEXT, b"ok;"))
+        frames = await wait_for_frames(writer, len(BURST) + 1)
+        assert frames[-1] == (WS_OP_TEXT, b"ok:1;")
+        assert handler.commands == [("ok", ())]
+        assert len(frames) == len(BURST) + 1
     finally:
         await session.finish()
 
