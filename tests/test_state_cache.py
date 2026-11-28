@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+import rigplane.core._state_cache as state_cache_module
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.testing.timing import VirtualClock
 
 
 # ---------------------------------------------------------------------------
@@ -132,17 +132,25 @@ def test_is_fresh_zero_ttl_mode(cache: StateCache) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_is_fresh_expired_when_timestamp_is_old(cache: StateCache) -> None:
+def test_is_fresh_expired_when_timestamp_is_old(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
     cache.update_freq(14_074_000)
-    # Back-date the timestamp so it looks old.
-    cache.freq_ts = time.monotonic() - 10.0
+    # Age the entry 10 s on the virtual clock so it looks old.
+    clock.advance(10.0)
     assert cache.is_fresh("freq", 5.0) is False
 
 
-def test_is_fresh_not_expired_within_ttl(cache: StateCache) -> None:
+def test_is_fresh_not_expired_within_ttl(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
     cache.update_freq(14_074_000)
-    # Slightly back-date but within TTL.
-    cache.freq_ts = time.monotonic() - 0.1
+    # Slightly age but stay within TTL.
+    clock.advance(0.1)
     assert cache.is_fresh("freq", 0.5) is True
 
 
@@ -156,8 +164,12 @@ def test_update_freq_stores_value(cache: StateCache) -> None:
     assert cache.freq == 7_050_000
 
 
-def test_update_freq_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_freq_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    before = clock.now
     cache.update_freq(14_074_000)
     assert cache.freq_ts >= before
 
@@ -196,8 +208,12 @@ def test_update_mode_stores_none_filter(cache: StateCache) -> None:
     assert cache.filter_width is None
 
 
-def test_update_mode_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_mode_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    before = clock.now
     cache.update_mode("USB", 1)
     assert cache.mode_ts >= before
 
@@ -232,8 +248,12 @@ def test_update_ptt_false(cache: StateCache) -> None:
     assert cache.ptt is False
 
 
-def test_update_ptt_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_ptt_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    before = clock.now
     cache.update_ptt(True)
     assert cache.ptt_ts >= before
 
@@ -248,8 +268,12 @@ def test_update_s_meter_stores_value(cache: StateCache) -> None:
     assert cache.s_meter == 120
 
 
-def test_update_s_meter_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_s_meter_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    before = clock.now
     cache.update_s_meter(0)
     assert cache.s_meter_ts >= before
 
@@ -259,8 +283,12 @@ def test_update_rf_power_stores_value(cache: StateCache) -> None:
     assert cache.rf_power == pytest.approx(0.5)
 
 
-def test_update_rf_power_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_rf_power_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    before = clock.now
     cache.update_rf_power(1.0)
     assert cache.rf_power_ts >= before
 
