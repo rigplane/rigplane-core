@@ -10,7 +10,6 @@ leaves the port bound and the follow-up bind fails with EADDRINUSE.
 from __future__ import annotations
 
 import asyncio
-import socket
 import struct
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
@@ -69,30 +68,23 @@ async def echo_port() -> AsyncGenerator[int]:
     transport.close()
 
 
-def _free_local_port() -> int:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-    return port
-
-
 async def test_disconnect_releases_the_local_udp_port_before_returning(
     echo_port: int,
 ) -> None:
     """A reconnecting bind of the same local port must succeed immediately
     after ``disconnect()`` returns, with no intervening await."""
-    local_port = _free_local_port()
-
     t1 = IcomTransport()
     t2 = IcomTransport()
     try:
-        await t1.connect("127.0.0.1", echo_port, local_port=local_port)
+        await t1.connect("127.0.0.1", echo_port, local_host="127.0.0.1", local_port=0)
         assert t1._udp_transport is not None
+        local_port = t1._udp_transport.get_extra_info("sockname")[1]
+        assert local_port != 0
         assert t1.remote_id == _RADIO_ID
         await t1.disconnect()
         await t2.connect("127.0.0.1", echo_port, local_port=local_port)
         assert t2._udp_transport is not None
+        assert t2._udp_transport.get_extra_info("sockname")[1] == local_port
     finally:
         await t1.disconnect()
         await t2.disconnect()

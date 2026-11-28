@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from rigplane_testkit.ports import unavailable_tcp_port as unavailable_tcp_port
 
 import fake_rigctld
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
@@ -1259,38 +1260,18 @@ async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
     ]
 
 
-async def test_radio_reports_actionable_connection_failure() -> None:
-    # Take a free ephemeral port, then release it: nothing listens there, so
-    # the connect is refused at once on Linux and macOS. A socket that stays
-    # bound without listen() is not a substitute: macOS swallows the SYN and
-    # the connect hangs until the timeout. A fixed low port is not one either:
-    # WSL2 drops SYNs to closed ports below the ephemeral range.
-    # MOR-4278: releasing the port is a small race under parallel workers --
-    # another test's listener can land on it in the window -- so a connect
-    # that unexpectedly reaches someone is retried on a fresh port instead
-    # of failing the test, and only the refusal error itself (naming
-    # host:port) passes.
-    failure: BaseException | None = None
-    for _ in range(5):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-        # Default timeout: refusal is immediate, no short budget is needed.
-        radio = RigctldClientRadio(host="127.0.0.1", port=port)
-        try:
-            await radio.connect()
-        except RadioConnectionError as exc:
-            assert f"127.0.0.1:{port}" in str(exc)
-            return
-        except Exception as exc:  # a raced listener answered with garbage
-            failure = exc
-            continue
-        # A parallel worker's listener raced onto the released port: give
-        # the radio back and try a fresh one.
-        await radio.disconnect()
-    if failure is not None:
-        raise failure
-    pytest.fail("every released ephemeral port was taken by another listener")
+async def test_radio_reports_actionable_connection_failure(
+    unavailable_tcp_port: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "rigplane.backends.rigctld_client.transport.asyncio.open_connection",
+        AsyncMock(side_effect=ConnectionRefusedError("connection refused")),
+    )
+    radio = RigctldClientRadio(host="127.0.0.1", port=unavailable_tcp_port)
+    with pytest.raises(RadioConnectionError) as excinfo:
+        await radio.connect()
+    assert f"127.0.0.1:{unavailable_tcp_port}" in str(excinfo.value)
 
 
 async def test_radio_rejects_unsupported_data_mode() -> None:

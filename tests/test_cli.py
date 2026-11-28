@@ -2171,14 +2171,7 @@ class TestListAudioDevices:
 
 class TestCheckPortsAvailable:
     def test_free_port_does_not_raise(self):
-        import socket
-
-        # Find a free port dynamically.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            port = s.getsockname()[1]
-        # Port is free now — should not raise.
-        check_ports_available([("", port)])
+        check_ports_available([("", 0)])
 
     def test_occupied_port_raises_runtime_error(self):
         import socket
@@ -2289,11 +2282,7 @@ class TestCheckPortsAvailable:
 
         from rigplane.cli import _run
 
-        # A free web port (released before use — same pattern as the
-        # existing web-port preflight test above).
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
-            free_probe.bind(("", 0))
-            free_web_port = free_probe.getsockname()[1]
+        free_web_port = 0
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -3269,16 +3258,22 @@ class TestStartupBusyHoldOrdering:
 
         from rigplane.cli import _run
         from rigplane.core.exceptions import ConnectionError as RigplaneConnectionError
+        from rigplane.rigctld.server import RigctldServer
         from rigplane.runtime._control_phase import _session_reject_hint
 
         radio = _BusyHoldRadio()
         composition = _busy_hold_composition()
         _BusyHoldWebServer.instances.clear()
-        import socket
+        rigctld_port = 0
+        bound_rigctld_port = 0
+        start_rigctld = RigctldServer.start
 
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            rigctld_port = probe.getsockname()[1]
+        async def start_and_record_port(candidate: RigctldServer) -> None:
+            nonlocal bound_rigctld_port
+            await start_rigctld(candidate)
+            assert candidate._server is not None
+            bound_rigctld_port = candidate._server.sockets[0].getsockname()[1]
+
         args = _build_parser().parse_args(
             [
                 "--host",
@@ -3288,13 +3283,19 @@ class TestStartupBusyHoldOrdering:
                 "web",
                 "--managed",
                 "--port",
-                "8080",
+                "0",
                 "--rigctld-port",
                 str(rigctld_port),
             ]
         )
         p1, p2, p3, p4 = self._patches(radio, composition)
-        with p1, p2, p3, p4:
+        with (
+            p1,
+            p2,
+            p3,
+            p4,
+            patch.object(RigctldServer, "start", start_and_record_port),
+        ):
             radio.startup_busy_hold_event.set()
             radio.fail_with = RigplaneConnectionError(
                 "radio busy: another client holds the session. "
@@ -3330,9 +3331,12 @@ class TestStartupBusyHoldOrdering:
         composition.transport_ready.assert_not_awaited()
         assert len(radio.exits) == 1
         assert rigctld_addr == f"127.0.0.1:{rigctld_port}"
+        # Runtime metadata keeps the configured port (0); probe the socket's
+        # actual port so this still detects a listener leaked by shutdown.
+        assert bound_rigctld_port > 0
         with pytest.raises(ConnectionRefusedError):
             await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", rigctld_port), timeout=5.0
+                asyncio.open_connection("127.0.0.1", bound_rigctld_port), timeout=5.0
             )
 
     @pytest.mark.asyncio
@@ -4073,9 +4077,7 @@ class TestRemainingPortPreflight:
 
         from rigplane.cli import _run
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
-            free_probe.bind(("", 0))
-            free_web_port = free_probe.getsockname()[1]
+        free_web_port = 0
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -4141,9 +4143,7 @@ class TestRemainingPortPreflight:
 
         from rigplane.cli import _run
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_probe:
-            free_probe.bind(("127.0.0.1", 0))
-            free_web_port = free_probe.getsockname()[1]
+        free_web_port = 0
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
