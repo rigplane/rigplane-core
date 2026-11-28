@@ -16,6 +16,7 @@ from rigplane.core.exceptions import (
     ConnectionError as RadioConnectionError,
     RadioSessionHeldError,
 )
+from rigplane.core.radio_protocol import Radio
 from rigplane.core.startup_failure import (
     STARTUP_FAILURE_PREFIX,
     StartupCause,
@@ -285,7 +286,7 @@ async def test_pending_radio_ownership_abort_wins_over_web_scope(
     web_starting = asyncio.Event()
     web_stopped = asyncio.Event()
     error = error_type("synthetic-secret")
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Radio)
     radio.startup_busy_hold_event = asyncio.Event()
     radio.startup_busy_hold_event.set()
 
@@ -370,7 +371,7 @@ async def test_listener_preflight_abort_uses_errno(number, cause, capsys):
 async def test_serial_open_abort_emits_one_document(capsys):
     args = cli._build_parser().parse_args(["web", "--no-rigctld"])
     config = SerialBackendConfig(device="/private/device", baudrate=19200)
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Radio)
     radio.__aenter__.side_effect = OSError(errno.EACCES, "synthetic-secret")
     with (
         patch("rigplane.cli._build_backend_config", new=AsyncMock(return_value=config)),
@@ -622,7 +623,7 @@ async def test_lan_radio_open_abort_retains_exit_code(held, capsys):
 
     args = cli._build_parser().parse_args(["web", "--no-rigctld"])
     config = LanBackendConfig(host="127.0.0.1")
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Radio)
     error_type = RadioSessionHeldError if held else ConnectionError
     radio.__aenter__.side_effect = error_type("synthetic-secret")
     with (
@@ -742,13 +743,15 @@ def test_every_producer_cause_has_short_fixed_detail(cause, capsys):
 
     with startup_failure_scope(StartupCause.UNKNOWN, StartupPhase.CONFIGURATION):
         record_startup_failure(None, cause, StartupPhase.CONFIGURATION)
-    _failure(capsys, cause.value, "configuration")
+    failure = _failure(capsys, cause.value, "configuration")
+    assert failure.cause == cause.value
+    assert 0 < len(failure.detail) <= 160
 
 
 @pytest.mark.asyncio
 async def test_cli_and_server_abort_share_one_report(capsys):
     args = cli._build_parser().parse_args(["web", "--no-rigctld", "--no-discovery"])
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Radio)
     with (
         patch("rigplane.cli._build_backend_config", new=AsyncMock()),
         patch("rigplane.cli.guards_backend", return_value=False),
