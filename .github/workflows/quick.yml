@@ -681,6 +681,18 @@ jobs:
           uv run rigplane --model FTX-1 validate --provider native --dry-run
           --gate tests/golden/validation/ftx1.dry-run.json
 
+      - name: Assertion-free ledger fresh
+        if: needs.classify.outputs.core == 'true'
+        # Group 5 (stale generated text): a product change that adds an
+        # assertion-free test stales tests/assertion_free_uncovered.txt. The
+        # meta test fails WITH THE DIFF, but it runs inside one
+        # quick-python-tests shard, so the red surfaced late and unrelated.
+        # This step regenerates the ledger in memory first and fails with the
+        # diff plus the one regen command, so the offending change shows the
+        # exact line to add. Regen after an intentional change:
+        #   uv run python scripts/regen_assertion_free_ledger.py
+        run: uv run python scripts/regen_assertion_free_ledger.py --check
+
       - name: Type-check web boundary
         if: needs.classify.outputs.core == 'true' && needs.classify.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web
