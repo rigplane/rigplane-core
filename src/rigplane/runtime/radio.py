@@ -1343,8 +1343,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _shutdown_managed_tx(self) -> None:
         """Stop supervised TX while the CI-V path can still carry the OFF.
 
-        Ordered ahead of the session teardown in :meth:`disconnect` for the one
-        reason that matters: ``shutdown`` emergency-releases a held lease, and
+        Lifecycle release calls this before transport teardown.
+        ``shutdown`` emergency-releases a held lease, and
         a WRITE_OFF issued after the transport is gone is a rig left keyed with
         nobody watching it. Bounded for the mirror-image reason — a supervisor
         wedged on a rig that stopped answering must not hold ``disconnect()``
@@ -1885,6 +1885,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ``connect()`` returns with ``managed_tx`` published either way.
         """
         async with self._connect_lock:
+            if self._session_lifecycle.recovery_active:
+                await self._session_lifecycle.connect()
+                return
             if self.connected:
                 return
             # A new connect starts a fresh audio-silence episode (MOR-3401):
@@ -1940,10 +1943,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         fall back to the control-phase graceful teardown so a genuinely live
         session is always released (graceful-close invariant).
 
-        Managed TX is shut down first (MOR-1016), bounded, because the OFF a
-        held lease owes the rig has to go out over a transport that is still
-        open — see :meth:`_shutdown_managed_tx`, which is also where the radio
-        stops being managed until the next ``connect()``.
+        The lifecycle stops recovery before shutting down managed TX
+        (MOR-1016) and retiring the transport that can carry the owed OFF.
         """
         self._cancel_identity_read()
         self._cancel_connect_tail()
@@ -1956,7 +1957,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             repair_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await repair_task
-        await self._shutdown_managed_tx()
         # Owner teardown stops the resident loops explicitly: during
         # RECONNECTING after a failed attempt the lifecycle is already
         # released and unclaimed, so the lifecycle disconnect below is a
@@ -1965,11 +1965,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._owner_stop_epoch += 1
         self._control_phase._stop_watchdog()
         self._control_phase._stop_reconnect()
-        if self._conn_state is RadioConnectionState.RECONNECTING:
-            # Make conn_state read DISCONNECTED when the lifecycle
-            # teardown below has nothing to release.
-            self._conn_state = RadioConnectionState.DISCONNECTED
         await self._session_lifecycle.disconnect()
+        # A transport assembled outside the lifecycle can still have managed TX.
+        await self._shutdown_managed_tx()
+        if self._conn_state is RadioConnectionState.RECONNECTING:
+            # Reflect an owner stop even if the lifecycle had nothing to release.
+            self._conn_state = RadioConnectionState.DISCONNECTED
         if self._conn_state == RadioConnectionState.CONNECTED:
             await self._control_phase.disconnect()
         self._connection_identity = None
