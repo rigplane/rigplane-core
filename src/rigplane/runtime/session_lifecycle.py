@@ -885,6 +885,13 @@ class CoreRadioSessionLifecycle:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
+        recovery = self._recover_task
+        if recovery is not None and not recovery.done():
+            if recovery is not asyncio.current_task():
+                await asyncio.shield(recovery)
+            return
+        if self._state is LifecycleState.CLOSING:
+            raise RigplaneConnectionError("Session is closing")
         # T9: coalesce a concurrent/duplicate connect onto the in-flight one.
         if self._connect_task is not None and not self._connect_task.done():
             await self._connect_task
@@ -1275,6 +1282,11 @@ class CoreRadioSessionLifecycle:
             and asyncio.current_task() is recovery
             and self._recovery_waiters.get(task) is recovery
         )
+
+    @property
+    def recovery_active(self) -> bool:
+        task = self._recover_task
+        return task is not None and not task.done()
 
     def supersede_recovery(self) -> None:
         """Cancel the in-flight recovery run because a replacement takes over.
