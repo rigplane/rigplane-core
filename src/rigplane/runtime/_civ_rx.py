@@ -1163,10 +1163,8 @@ class CivRuntime:
             and not rc_task.done()
         ):
             rc_task.cancel()
-            try:
-                await rc_task
-            except asyncio.CancelledError:
-                pass
+            # Recovery logs its own failure and reports it to repair callers.
+            await asyncio.gather(rc_task, return_exceptions=True)
             if self._reconnect_task is rc_task:
                 self._reconnect_task = None
         elif rc_task is not current and not owned_recovery:

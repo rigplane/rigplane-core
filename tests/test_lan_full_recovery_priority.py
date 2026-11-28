@@ -7,10 +7,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from socket import socket
 from typing import TypeVar
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
 
+from rigplane.core.exceptions import ConnectionError, DiscoveryTimeout
 from rigplane.core.transport import IcomTransport
 from rigplane.radio import IcomRadio
 from rigplane.testing.timing import VirtualClock
@@ -154,3 +156,63 @@ async def test_session_free_before_control_loss_restores_readyz(
                 await complete_on_clock(clock, radio.disconnect(), budget=10.0)
             finally:
                 await sim.stop()
+
+
+@pytest.mark.mock_integration
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("stop", ["disconnect", "shutdown"])
+async def test_owner_stop_after_failed_full_recovery(
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, stop: str
+) -> None:
+    clock = virtual_clock
+    sim = MockIcomRadio(single_owner=True, enable_audio=True, clock=clock)
+    await sim.start()
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model="IC-7610",
+        timeout=2.0,
+        auto_reconnect=False,
+    )
+    try:
+        monkeypatch.setenv("RIGPLANE_MANAGED_TX", "1")
+        lifecycle = radio._session_lifecycle
+        await complete_on_clock(clock, radio.connect(), budget=30.0)
+        assert radio.radio_ready
+        managed_tx = radio._managed_tx_runtime
+        assert managed_tx is not None
+        release = AsyncMock(wraps=managed_tx.shutdown)
+        monkeypatch.setattr(managed_tx, "shutdown", release)
+        monkeypatch.setattr(lifecycle, "_max_recovery_attempts", 1)
+
+        runtime = radio._civ_runtime
+        with hold_control_close(monkeypatch, sim) as (notice_seen, close):
+            sim.reboot(at=0, down_for=120.0, notice=True, hold_notice_window=True)
+            await advance_to(clock, notice_seen.is_set, budget=1.0)
+            assert notice_seen.is_set()
+            recovery = runtime._reconnect_task
+            assert recovery is not None and lifecycle.is_full_recovery_owner(recovery)
+            sim.end_notice_window()
+            close.set()
+            with pytest.raises(
+                ConnectionError, match="Soft reconnect exhausted"
+            ) as failure:
+                await complete_on_clock(clock, recovery, budget=20.0)
+            assert isinstance(failure.value.__cause__, DiscoveryTimeout)
+
+        stop_radio = (
+            radio.disconnect if stop == "disconnect" else lifecycle.request_shutdown
+        )
+        await complete_on_clock(clock, stop_radio(), budget=10.0)
+
+        release.assert_awaited_once()
+        assert radio.managed_tx is None
+        assert radio._civ_transport is None
+        assert radio._ctrl_transport._udp_transport is None
+    finally:
+        try:
+            await complete_on_clock(clock, radio.disconnect(), budget=10.0)
+        finally:
+            await sim.stop()

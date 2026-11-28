@@ -105,6 +105,50 @@ async def test_full_request_preempts_running_soft_recovery(
 
 
 @pytest.mark.timeout(10)
+async def test_repeated_session_free_notices_keep_the_running_full_recovery(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    events: list[str] = []
+    radio = _radio(events)
+    runtime = radio._civ_runtime
+    lifecycle = radio._session_lifecycle
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    attempt = 0
+
+    async def reconnect() -> None:
+        nonlocal attempt
+        attempt += 1
+        radio._conn_state = RadioConnectionState.CONNECTING
+        started.set()
+        await finished.wait()
+        radio._conn_state = RadioConnectionState.CONNECTED
+
+    monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", reconnect)
+    notice = bytes(0x90)
+    radio._control_phase._on_conninfo_notice(notice)
+    full = runtime._reconnect_task
+    assert full is not None
+    try:
+        await started.wait()
+        for _ in range(4):
+            await virtual_clock.elapse(1)
+            radio._control_phase._on_conninfo_notice(notice)
+            assert runtime._reconnect_task is full
+            assert lifecycle.is_full_recovery_owner(full)
+
+        finished.set()
+        await full
+        assert attempt == 1
+        assert lifecycle.status.state is LifecycleState.CONNECTED
+        assert radio._conn_state is RadioConnectionState.CONNECTED
+    finally:
+        await radio._civ_runtime.stop_data_watchdog()
+        await radio.disconnect()
+        await asyncio.gather(full, return_exceptions=True)
+
+
+@pytest.mark.timeout(10)
 async def test_previous_waiter_cleanup_preserves_the_next_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

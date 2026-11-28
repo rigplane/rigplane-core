@@ -941,6 +941,34 @@ async def test_stop_data_watchdog_cancels_pending_reconnect_task(
     assert radio._civ_runtime._reconnect_task is None
 
 
+@pytest.mark.parametrize("error", [ConnectionError, RuntimeError])
+@pytest.mark.timeout(10)
+async def test_stop_data_watchdog_absorbs_full_recovery_failure_during_cancel(
+    radio: IcomRadio, error: type[Exception]
+) -> None:
+    _arm_notice_recovery(radio)
+    runtime = radio._civ_runtime
+    entered = asyncio.Event()
+
+    async def fail_while_stopping() -> None:
+        entered.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError as exc:
+            raise error("recovery failed during stop") from exc
+
+    radio.soft_reconnect = fail_while_stopping
+    assert runtime.request_recovery_now("session free")
+    recovery = runtime._reconnect_task
+    assert recovery is not None
+    await entered.wait()
+
+    await runtime.stop_data_watchdog()
+
+    assert isinstance(recovery.exception(), error)
+    assert runtime._reconnect_task is None
+
+
 async def test_watchdog_patient_openclose_before_escalation(
     radio: IcomRadio,
 ) -> None:
@@ -1041,6 +1069,20 @@ def _arm_notice_recovery(radio: IcomRadio) -> tuple[list[str], AsyncMock]:
 
     radio.soft_reconnect = record_soft_reconnect
     return order, released
+
+
+async def test_plain_recovery_does_not_escalate_before_first_civ_open() -> None:
+    radio = IcomRadio("192.0.2.1", model="IC-7610")
+    runtime = radio._civ_runtime
+    order, released = _arm_notice_recovery(radio)
+    remote_id = radio._ctrl_transport.remote_id
+    assert radio._civ_epoch == 0
+    assert runtime._soft_recovery_epoch is None
+
+    await runtime._spawn_recovery_task()
+
+    assert order == ["force_cleanup", "soft_reconnect", f"remote_id={remote_id}"]
+    released.assert_not_awaited()
 
 
 async def test_request_recovery_now_starts_one_full_reconnect(
