@@ -780,8 +780,8 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
         audio_stream = self._audio_stream
         if audio_stream is not None:
             try:
-                await audio_stream.stop_rx()
                 await audio_stream.stop_tx()
+                await audio_stream.stop_rx()
             except Exception:
                 logger.debug("audio teardown: stream stop failed", exc_info=True)
             self._audio_stream = None

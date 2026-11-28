@@ -209,6 +209,7 @@ from rigplane.core.radio_protocol import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
     ObservedPtt,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
@@ -538,6 +539,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # whole rebuild runs under it; no teardown ever takes it.
         self._audio_ensure_lock = asyncio.Lock()
         self._audio_tx_admission_lock = asyncio.Lock()
+        self._audio_raw_ptt_admission: tuple[int, float | None] | None = None
+        self._raw_ptt_release_epoch = 0
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
         self._pcm_transcoder_fmt: tuple[int, int, int] | None = None
@@ -1692,9 +1695,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         from rigplane.core.acquisition_scheduler import derive_tx_active
         from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 
-        if project_observed_ptt(
-            self.state_store.snapshot()
-        ) is ObservedPtt.ON or derive_tx_active(self.state_store):
+        observed_snapshot = self.state_store.snapshot()
+        observed = project_observed_ptt(observed_snapshot)
+        reservation = self._audio_raw_ptt_admission
+        if reservation is not None:
+            civ_epoch, sent_at = reservation
+            if civ_epoch != self._civ_epoch:
+                self._audio_raw_ptt_admission = None
+            elif (
+                sent_at is None
+                or observed is not ObservedPtt.OFF
+                or observed_snapshot.field(OBSERVED_PTT_PATH).last_observed_monotonic
+                <= sent_at
+            ):
+                return True
+            else:
+                self._audio_raw_ptt_admission = None
+        if observed is ObservedPtt.ON or derive_tx_active(self.state_store):
             return True
         composition = self._managed_tx_composition
         if composition is not None:
@@ -1796,13 +1813,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                             self._audio_silence_repair_teardown_completed = (
                                 asyncio.get_running_loop().time()
                             )
-                            if not self._silence_repair_preconditions_ok(
+                            if not self._silence_repair_episode_current(
                                 civ_epoch,
                                 owner_stop_epoch,
                             ):
                                 continue
                             await self._ensure_audio_transport(reestablish=False)
-                            if not self._silence_repair_preconditions_ok(
+                            if not self._silence_repair_episode_current(
                                 civ_epoch,
                                 owner_stop_epoch,
                             ):
@@ -4536,7 +4553,39 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if on
             else self._commands.ptt_off(to_addr=self._radio_addr)
         )
-        await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
+        if on:
+            release_epoch = self._raw_ptt_release_epoch
+            civ_epoch = self._civ_epoch
+            owner_stop_epoch = self._owner_stop_epoch
+            async with self._audio_tx_admission_lock:
+                self._check_connected()
+                if (
+                    release_epoch != self._raw_ptt_release_epoch
+                    or civ_epoch != self._civ_epoch
+                    or owner_stop_epoch != self._owner_stop_epoch
+                ):
+                    raise StaleBeforeWireError("PTT key superseded before admission")
+                previous = self._audio_raw_ptt_admission
+                reservation = (civ_epoch, None)
+                self._audio_raw_ptt_admission = reservation
+                try:
+                    await self._send_civ_raw(
+                        civ, priority=Priority.IMMEDIATE, wait_response=False
+                    )
+                except (StaleBeforeWireError, CommandRejectedError):
+                    self._audio_raw_ptt_admission = previous
+                    raise
+                finally:
+                    if self._audio_raw_ptt_admission is reservation:
+                        self._audio_raw_ptt_admission = (
+                            civ_epoch,
+                            asyncio.get_running_loop().time(),
+                        )
+        else:
+            self._raw_ptt_release_epoch += 1
+            await self._send_civ_raw(
+                civ, priority=Priority.IMMEDIATE, wait_response=False
+            )
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
 
     _PTT_READBACK_SETTLE_S: float = 0.2
@@ -4602,13 +4651,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
             try:
-                reply = await self._send_civ_raw(
-                    civ,
-                    priority=priority,
-                    wait_response=True,
-                    reply_timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
-                    is_current=is_current,
-                )
+                async with self._audio_tx_admission_lock:
+                    reply = await self._send_civ_raw(
+                        civ,
+                        priority=priority,
+                        wait_response=True,
+                        reply_timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
+                        is_current=is_current,
+                    )
             except CommandRejectedError:
                 return ActuationResult.REJECTED
             except (StaleBeforeWireError, CommandError) as exc:
@@ -4759,7 +4809,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         civ = (self._commands.ptt_on if on else self._commands.ptt_off)(
             to_addr=self._radio_addr
         )
-        await self._civ_runtime.write_managed_ptt(civ, provider_generation)
+        if on:
+            async with self._audio_tx_admission_lock:
+                await self._civ_runtime.write_managed_ptt(civ, provider_generation)
+        else:
+            await self._civ_runtime.write_managed_ptt(civ, provider_generation)
 
     async def _retire_managed_tx_port(self, provider_generation: int) -> None:
         await self._civ_runtime.retire_managed_tx_port(provider_generation)

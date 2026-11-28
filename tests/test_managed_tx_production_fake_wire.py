@@ -68,6 +68,7 @@ class _IcomActuator(_DelayedWire):
 
     def __init__(self) -> None:
         super().__init__()
+        self._audio_tx_admission_lock = asyncio.Lock()
         self._commands = type(
             "Commands",
             (),
