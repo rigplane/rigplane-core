@@ -9,15 +9,36 @@ Covers:
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 
+import rigplane.core._state_cache as state_cache_module
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.testing.timing import VirtualClock
 
 
 @pytest.fixture
 def cache() -> StateCache:
     return StateCache()
+
+
+def _scope_time_to(monkeypatch: pytest.MonkeyPatch, clock: VirtualClock) -> None:
+    """Point ``_state_cache``'s own ``time`` name at ``clock``.
+
+    The shared ``VirtualClock.scope_to`` also replaces the module's
+    ``asyncio`` name, which ``rigplane.core._state_cache`` does not define
+    (it only calls ``time.monotonic()``), so the same time view is applied
+    here with the shared clock doing the timekeeping — no per-file clock.
+    """
+
+    class _TimeView:
+        monotonic = staticmethod(clock)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(state_cache_module, "time", _TimeView())
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +110,12 @@ def test_update_rf_gain_stores_value(cache: StateCache) -> None:
     assert cache.rf_gain == pytest.approx(150.0)
 
 
-def test_update_rf_gain_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_rf_gain_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_rf_gain(200.0)
     assert cache.rf_gain_ts >= before
 
@@ -105,8 +130,12 @@ def test_update_af_level_stores_value(cache: StateCache) -> None:
     assert cache.af_level == pytest.approx(64.0)
 
 
-def test_update_af_level_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_af_level_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_af_level(32.0)
     assert cache.af_level_ts >= before
 
@@ -121,8 +150,12 @@ def test_update_swr_stores_value(cache: StateCache) -> None:
     assert cache.swr == pytest.approx(2.3)
 
 
-def test_update_swr_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_swr_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_swr(1.0)
     assert cache.swr_ts >= before
 
@@ -132,8 +165,12 @@ def test_update_alc_stores_value(cache: StateCache) -> None:
     assert cache.alc == pytest.approx(0.5)
 
 
-def test_update_alc_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_alc_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_alc(0.9)
     assert cache.alc_ts >= before
 
@@ -148,8 +185,12 @@ def test_update_attenuator_stores_value(cache: StateCache) -> None:
     assert cache.attenuator == 18
 
 
-def test_update_attenuator_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_attenuator_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_attenuator(0)
     assert cache.attenuator_ts >= before
 
@@ -159,8 +200,12 @@ def test_update_preamp_stores_value(cache: StateCache) -> None:
     assert cache.preamp == 2
 
 
-def test_update_preamp_sets_timestamp(cache: StateCache) -> None:
-    before = time.monotonic()
+def test_update_preamp_sets_timestamp(
+    cache: StateCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = VirtualClock(start=1000.0)
+    _scope_time_to(monkeypatch, clock)
+    before = clock.now
     cache.update_preamp(1)
     assert cache.preamp_ts >= before
 
