@@ -11,6 +11,12 @@ against a localhost mock receiver implementing
 multipart shape, required metadata fields, and mints stable success /
 typed-error responses.
 
+The direct-upload tests (Groups 1–2) run on the shared virtual clock
+(``rigplane.testing.timing.VirtualClock`` via the ``virtual_clock``
+fixture): each ``upload_bundle`` call is driven by ``_bounded``, which
+advances virtual time in granules while real localhost I/O settles, so
+the client's loop-time timeouts never depend on the wall clock.
+
 Performance budget: <60s for the entire file on CI (acceptance §9).
 """
 
@@ -23,9 +29,9 @@ import sys
 import time
 import uuid
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 import pytest_asyncio
@@ -42,8 +48,59 @@ from rigplane.diagnostics import (
     upload_bundle,
 )
 from rigplane.diagnostics import _discovery
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.server import WebConfig, WebServer
 from _diagnostics_mock_server import MockReceiver
+
+T = TypeVar("T")
+
+
+async def _bounded(
+    clock: VirtualClock,
+    step: str,
+    coro: Coroutine[Any, Any, T],
+    budget_s: float,
+    granule_s: float = 0.1,
+) -> T:
+    """Drive ``clock`` until ``coro`` finishes or ``budget_s`` virtual seconds pass.
+
+    The coroutine runs as a task while the clock advances in ``granule_s``
+    steps (each :meth:`VirtualClock.elapse` fires every timer on the way and
+    settles loop callbacks, so real localhost I/O interleaves with timer
+    progress). Awaiting the task directly would freeze on a missing reply:
+    the client's timeouts run on this clock and nothing else moves it. On
+    success the task's own result (or exception) is returned (or raised);
+    only an exhausted budget raises
+    ``AssertionError("<step> did not finish within N virtual s")``. Budget
+    exhaustion — or a :meth:`VirtualClock.elapse` failure — cancels the step
+    task and awaits it (suppressing ``CancelledError``) before raising, so no
+    upload keeps running into teardown.
+    """
+    task = asyncio.create_task(coro)
+    spent = 0.0
+    try:
+        while not task.done():
+            if spent >= budget_s:
+                break
+            await clock.elapse(min(granule_s, budget_s - spent))
+            spent += granule_s
+        if task.done():
+            return task.result()
+    except BaseException:  # noqa: BLE001 — must free the orphaned step task
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        raise
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    raise AssertionError(f"{step} did not finish within {budget_s:g} virtual s")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -112,17 +169,25 @@ def _metadata_for(submission_id: str | None = None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Group 1 — upload_bundle direct flow
+# Group 1 — upload_bundle direct flow (shared virtual clock + _bounded driver)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(60)
 async def test_upload_succeeds_against_mock(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     metadata = _metadata_for()
 
-    result = await upload_bundle(bundle_file, metadata, endpoint=url)
+    result = await _bounded(
+        virtual_clock,
+        "upload",
+        upload_bundle(bundle_file, metadata, endpoint=url),
+        30.0,
+    )
 
     assert isinstance(result, ReportSubmitted)
     assert result.report_id.startswith("rpt_")
@@ -135,30 +200,51 @@ async def test_upload_succeeds_against_mock(
     assert rec["bundle_size"] == bundle_file.stat().st_size
 
 
+@pytest.mark.timeout(60)
 async def test_upload_with_header_provider_passes_auth(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
 
     async def provider() -> dict[str, str]:
         return {"Authorization": "Bearer fake-token"}
 
-    result = await upload_bundle(
-        bundle_file, _metadata_for(), endpoint=url, header_provider=provider
+    result = await _bounded(
+        virtual_clock,
+        "upload",
+        upload_bundle(
+            bundle_file, _metadata_for(), endpoint=url, header_provider=provider
+        ),
+        30.0,
     )
 
     assert result.auth_class == "authenticated"
     assert receiver.received[0]["headers"].get("Authorization") == "Bearer fake-token"
 
 
+@pytest.mark.timeout(60)
 async def test_upload_idempotency_same_submission_id(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     sub_id = str(uuid.uuid4())
 
-    r1 = await upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url)
-    r2 = await upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url)
+    r1 = await _bounded(
+        virtual_clock,
+        "first upload",
+        upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url),
+        30.0,
+    )
+    r2 = await _bounded(
+        virtual_clock,
+        "deduped upload",
+        upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url),
+        30.0,
+    )
 
     assert r1.report_id == r2.report_id
     assert r1.support_url == r2.support_url
@@ -166,8 +252,11 @@ async def test_upload_idempotency_same_submission_id(
     assert len(receiver.received) == 1
 
 
+@pytest.mark.timeout(60)
 async def test_upload_401_retry_with_header_refresh(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     receiver.response_mode = "401_once"
@@ -177,8 +266,13 @@ async def test_upload_401_retry_with_header_refresh(
         provider_calls["n"] += 1
         return {"Authorization": f"Bearer token-{provider_calls['n']}"}
 
-    result = await upload_bundle(
-        bundle_file, _metadata_for(), endpoint=url, header_provider=provider
+    result = await _bounded(
+        virtual_clock,
+        "upload",
+        upload_bundle(
+            bundle_file, _metadata_for(), endpoint=url, header_provider=provider
+        ),
+        30.0,
     )
 
     # Provider called twice: initial 401 + retry.
@@ -189,60 +283,100 @@ async def test_upload_401_retry_with_header_refresh(
 
 
 # ---------------------------------------------------------------------------
-# Group 2 — Typed error mapping
+# Group 2 — Typed error mapping (shared virtual clock + _bounded driver)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(60)
 async def test_rate_limited_raises_typed(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     receiver.response_mode = "rate_limited"
 
     with pytest.raises(RateLimited) as ei:
-        await upload_bundle(bundle_file, _metadata_for(), endpoint=url)
+        await _bounded(
+            virtual_clock,
+            "upload",
+            upload_bundle(bundle_file, _metadata_for(), endpoint=url),
+            30.0,
+        )
     assert ei.value.retry_after_seconds == 30
 
 
+@pytest.mark.timeout(60)
 async def test_bundle_too_large_raises_typed(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     receiver.response_mode = "bundle_too_large"
 
     with pytest.raises(BundleTooLarge):
-        await upload_bundle(bundle_file, _metadata_for(), endpoint=url)
+        await _bounded(
+            virtual_clock,
+            "upload",
+            upload_bundle(bundle_file, _metadata_for(), endpoint=url),
+            30.0,
+        )
 
 
+@pytest.mark.timeout(60)
 async def test_forbidden_content_raises_typed(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     receiver.response_mode = "forbidden"
 
     with pytest.raises(ForbiddenContent) as ei:
-        await upload_bundle(bundle_file, _metadata_for(), endpoint=url)
+        await _bounded(
+            virtual_clock,
+            "upload",
+            upload_bundle(bundle_file, _metadata_for(), endpoint=url),
+            30.0,
+        )
     assert ei.value.pattern == "test-pattern"
 
 
+@pytest.mark.timeout(60)
 async def test_metadata_invalid_raises_typed(
-    mock_pair: tuple[MockReceiver, str], bundle_file: Path
+    mock_pair: tuple[MockReceiver, str],
+    bundle_file: Path,
+    virtual_clock: VirtualClock,
 ) -> None:
     receiver, url = mock_pair
     receiver.response_mode = "metadata_invalid"
 
     with pytest.raises(MetadataInvalid) as ei:
-        await upload_bundle(bundle_file, _metadata_for(), endpoint=url)
+        await _bounded(
+            virtual_clock,
+            "upload",
+            upload_bundle(bundle_file, _metadata_for(), endpoint=url),
+            30.0,
+        )
     assert ei.value.field == "test"
 
 
-async def test_network_error_on_closed_port(bundle_file: Path) -> None:
+@pytest.mark.timeout(60)
+async def test_network_error_on_closed_port(
+    bundle_file: Path, virtual_clock: VirtualClock
+) -> None:
     # Port 1 is privileged + nothing listening: connection refused.
     with pytest.raises(NetworkError):
-        await upload_bundle(
-            bundle_file,
-            _metadata_for(),
-            endpoint="http://127.0.0.1:1/v1/diagnostics/upload",
+        await _bounded(
+            virtual_clock,
+            "upload",
+            upload_bundle(
+                bundle_file,
+                _metadata_for(),
+                endpoint="http://127.0.0.1:1/v1/diagnostics/upload",
+            ),
+            30.0,
         )
 
 
