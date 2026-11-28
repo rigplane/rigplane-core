@@ -22,6 +22,7 @@ import pytest
 
 from rigplane.rigctld.contract import RigctldCommand, RigctldConfig, RigctldResponse
 from rigplane.rigctld.server import RigctldServer
+from rigplane.testing.timing import VirtualClock, await_until
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -181,17 +182,20 @@ async def test_start_creates_protocol_and_handler_when_none(
 # ---------------------------------------------------------------------------
 
 
-async def test_quit_command_closes_connection(server: RigctldServer) -> None:
+async def test_quit_command_closes_connection(
+    server: RigctldServer, virtual_clock: VirtualClock
+) -> None:
     """Sending 'q\\n' must close the connection cleanly."""
     reader, writer = await _connect(server)
     try:
         writer.write(b"q\n")
         await writer.drain()
-        # Server closes the connection
-        await asyncio.wait_for(reader.read(1024), timeout=1.0)
-        # Connection closed — either empty bytes or some data then EOF
-    except asyncio.TimeoutError:
-        pass
+        # The server answers nothing and closes the socket: the read ends at EOF.
+        closed = asyncio.ensure_future(reader.read(1024))
+        assert await await_until(
+            lambda: closed.done(), timeout=5.0, description="the quit close"
+        )
+        assert closed.result() == b""
     finally:
         await _close(writer)
 
@@ -201,7 +205,9 @@ async def test_quit_command_closes_connection(server: RigctldServer) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_rate_limited_client_receives_eio(mock_radio: MagicMock) -> None:
+async def test_rate_limited_client_receives_eio(
+    mock_radio: MagicMock, virtual_clock: VirtualClock
+) -> None:
     """Rate-limited commands should return RPRT -6 (EIO)."""
     cfg = RigctldConfig(
         host="127.0.0.1",
@@ -212,19 +218,22 @@ async def test_rate_limited_client_receives_eio(mock_radio: MagicMock) -> None:
     )
     proto = _make_proto()
     handler = _make_handler()
-    srv = RigctldServer(mock_radio, cfg, _protocol=proto, _handler=handler)
+    # Drive the server's 1-second rate-limit window with the virtual clock:
+    # with time frozen, the second command lands inside the first one's window.
+    srv = RigctldServer(
+        mock_radio, cfg, _protocol=proto, _handler=handler, clock=virtual_clock
+    )
     await srv.start()
     try:
         reader, writer = await _connect(srv)
         # First command — allowed
         writer.write(b"f\n")
         await writer.drain()
-        await asyncio.wait_for(reader.read(256), timeout=1.0)
+        assert b"RPRT 0" in await reader.read(256)
         # Second command immediately — rate limited
         writer.write(b"f\n")
         await writer.drain()
-        data = await asyncio.wait_for(reader.read(256), timeout=1.0)
-        assert b"RPRT -6" in data or b"RPRT" in data
+        assert b"RPRT -6" in await reader.read(256)
     finally:
         await _close(writer)
         await srv.stop()
@@ -235,7 +244,9 @@ async def test_rate_limited_client_receives_eio(mock_radio: MagicMock) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_command_timeout_returns_etimeout(mock_radio: MagicMock) -> None:
+async def test_command_timeout_returns_etimeout(
+    mock_radio: MagicMock, virtual_clock: VirtualClock
+) -> None:
     """When handler.execute times out, RPRT -5 (ETIMEOUT) should be returned."""
     cfg = RigctldConfig(
         host="127.0.0.1",
@@ -246,8 +257,11 @@ async def test_command_timeout_returns_etimeout(mock_radio: MagicMock) -> None:
     proto = _make_proto()
     handler = _make_handler()
 
+    started = asyncio.Event()
+
     async def slow_execute(cmd: RigctldCommand) -> RigctldResponse:
-        await asyncio.sleep(10.0)  # will timeout
+        started.set()
+        await asyncio.sleep(10.0)  # runs on the virtual clock; never reaches it
         return _FREQ_RESP
 
     handler.execute = slow_execute
@@ -257,8 +271,13 @@ async def test_command_timeout_returns_etimeout(mock_radio: MagicMock) -> None:
         reader, writer = await _connect(srv)
         writer.write(b"f\n")
         await writer.drain()
-        data = await asyncio.wait_for(reader.read(256), timeout=1.0)
-        assert b"RPRT -5" in data
+        # The slow command starting is a real worker event; the 0.05 s
+        # command timeout is a virtual timer, so elapse past it explicitly.
+        assert await await_until(
+            lambda: started.is_set(), timeout=5.0, description="the slow command start"
+        )
+        await virtual_clock.elapse(0.2)
+        assert b"RPRT -5" in await reader.read(256)
     finally:
         await _close(writer)
         await srv.stop()
@@ -270,7 +289,7 @@ async def test_command_timeout_returns_etimeout(mock_radio: MagicMock) -> None:
 
 
 async def test_generic_parse_error_returns_eproto(
-    mock_radio: MagicMock, cfg: RigctldConfig
+    mock_radio: MagicMock, cfg: RigctldConfig, virtual_clock: VirtualClock
 ) -> None:
     """A non-ValueError exception from parse_line must return EPROTO."""
     proto = _make_proto(parse_raises=RuntimeError("internal error"))
@@ -281,8 +300,7 @@ async def test_generic_parse_error_returns_eproto(
         reader, writer = await _connect(srv)
         writer.write(b"f\n")
         await writer.drain()
-        data = await asyncio.wait_for(reader.read(256), timeout=1.0)
-        assert b"RPRT -8" in data  # EPROTO
+        assert b"RPRT -8" in await reader.read(256)  # EPROTO
     finally:
         await _close(writer)
         await srv.stop()
@@ -294,7 +312,7 @@ async def test_generic_parse_error_returns_eproto(
 
 
 async def test_handler_exception_returns_eio(
-    mock_radio: MagicMock, cfg: RigctldConfig
+    mock_radio: MagicMock, cfg: RigctldConfig, virtual_clock: VirtualClock
 ) -> None:
     """If handler.execute raises an unexpected error, RPRT -6 (EIO) is returned."""
     proto = _make_proto()
@@ -306,8 +324,7 @@ async def test_handler_exception_returns_eio(
         reader, writer = await _connect(srv)
         writer.write(b"f\n")
         await writer.drain()
-        data = await asyncio.wait_for(reader.read(256), timeout=1.0)
-        assert b"RPRT -6" in data  # EIO
+        assert b"RPRT -6" in await reader.read(256)  # EIO
     finally:
         await _close(writer)
         await srv.stop()
@@ -318,7 +335,9 @@ async def test_handler_exception_returns_eio(
 # ---------------------------------------------------------------------------
 
 
-async def test_readline_line_too_long_closes_connection(mock_radio: MagicMock) -> None:
+async def test_readline_line_too_long_closes_connection(
+    mock_radio: MagicMock, virtual_clock: VirtualClock
+) -> None:
     """A command line that exceeds max_line_length should close the connection."""
     cfg = RigctldConfig(
         host="127.0.0.1",
@@ -335,11 +354,12 @@ async def test_readline_line_too_long_closes_connection(mock_radio: MagicMock) -
         # Send a line that's longer than max_line_length
         writer.write(b"x" * 50 + b"\n")
         await writer.drain()
-        # Server should close the connection
-        await asyncio.wait_for(reader.read(1024), timeout=1.0)
-        # Connection closed (empty read or partial)
-    except asyncio.TimeoutError:
-        pass
+        # The server answers nothing and closes the socket: the read ends at EOF.
+        closed = asyncio.ensure_future(reader.read(1024))
+        assert await await_until(
+            lambda: closed.done(), timeout=5.0, description="the framing-error close"
+        )
+        assert closed.result() == b""
     finally:
         await _close(writer)
         await srv.stop()
@@ -350,14 +370,16 @@ async def test_readline_line_too_long_closes_connection(mock_radio: MagicMock) -
 # ---------------------------------------------------------------------------
 
 
-async def test_max_clients_rejected(mock_radio: MagicMock) -> None:
+async def test_max_clients_rejected(
+    mock_radio: MagicMock, virtual_clock: VirtualClock
+) -> None:
     """Connections beyond max_clients must be rejected immediately."""
     cfg = RigctldConfig(host="127.0.0.1", port=0, max_clients=1, client_timeout=2.0)
     proto = _make_proto()
     handler = _make_handler()
 
     async def slow_execute(cmd: RigctldCommand) -> RigctldResponse:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)  # runs on the virtual clock; holds the slot
         return _FREQ_RESP
 
     handler.execute = slow_execute
@@ -367,11 +389,16 @@ async def test_max_clients_rejected(mock_radio: MagicMock) -> None:
         r1, w1 = await _connect(srv)
         w1.write(b"f\n")
         await w1.drain()
-        # Second connection should be rejected
+        # The first client holds the only slot, so the second connection is
+        # refused at accept time and its socket closes without an answer.
         r2, w2 = await _connect(srv)
-        data = await asyncio.wait_for(r2.read(1024), timeout=1.0)
-        # Should get EOF or nothing (rejected)
-        assert data == b"" or True  # just verify no crash
+        refused = asyncio.ensure_future(r2.read(1024))
+        assert await await_until(
+            lambda: refused.done(),
+            timeout=5.0,
+            description="the refused connection close",
+        )
+        assert refused.result() == b""
     finally:
         for w in [w1, w2]:
             try:
@@ -388,6 +415,7 @@ async def test_max_clients_rejected(mock_radio: MagicMock) -> None:
 
 async def test_wsjtx_compat_prewarm_triggers_on_first_client(
     mock_radio: MagicMock,
+    virtual_clock: VirtualClock,
 ) -> None:
     """With wsjtx_compat=True, prewarm coroutine should be scheduled on first connect."""
     from rigplane.types import Mode
@@ -409,8 +437,13 @@ async def test_wsjtx_compat_prewarm_triggers_on_first_client(
     await srv.start()
     try:
         reader, writer = await _connect(srv)
-        # Give prewarm coroutine time to run
-        await asyncio.sleep(0.1)
+        # Prewarm runs as a background task on first connect: wait for its
+        # first radio read instead of sleeping a fixed wall-time delay.
+        assert await await_until(
+            lambda: mock_radio.get_mode_info.await_count > 0,
+            timeout=5.0,
+            description="the WSJT-X compat prewarm",
+        )
         mock_radio.get_mode_info.assert_awaited()
         await _close(writer)
     finally:
@@ -419,6 +452,7 @@ async def test_wsjtx_compat_prewarm_triggers_on_first_client(
 
 async def test_wsjtx_compat_prewarm_applies_configured_data2_lan(
     mock_radio: MagicMock,
+    virtual_clock: VirtualClock,
 ) -> None:
     """Route-derived config should steer WSJT-X packet mode to DATA2/LAN."""
     from rigplane.types import Mode
@@ -444,7 +478,13 @@ async def test_wsjtx_compat_prewarm_applies_configured_data2_lan(
     await srv.start()
     try:
         _reader, writer = await _connect(srv)
-        await asyncio.sleep(0.1)
+        # Prewarm runs as a background task on first connect: wait for its
+        # final radio write instead of sleeping a fixed wall-time delay.
+        assert await await_until(
+            lambda: mock_radio.set_data_mode.await_count > 0,
+            timeout=5.0,
+            description="the WSJT-X compat DATA2 prewarm",
+        )
         mock_radio.set_data2_mod_input.assert_awaited_once_with(5)
         mock_radio.set_data_mode.assert_awaited_once_with(2)
         mock_radio.set_data1_mod_input.assert_not_called()
