@@ -7594,7 +7594,10 @@ class WebServer:
 
         try:
             result = await self._webrtc_session_manager().negotiate(
-                offer.sdp, offer.type, offer.ice_servers
+                offer.sdp,
+                offer.type,
+                offer.ice_servers,
+                correlation_id=offer.correlation_id,
             )
         except WebRtcSessionError as exc:
             await self._webrtc_error(

@@ -387,10 +387,11 @@ async def test_failed_peer_fences_cat_owner_before_drop(
 
         pc.connectionState = "failed"
         with caplog.at_level("INFO", logger=webrtc_session.__name__):
-            failed = asyncio.create_task(handlers["connectionstatechange"]())
+            failed = asyncio.ensure_future(handlers["connectionstatechange"]())
             await virtual_clock.elapse(0)
             assert failed.done()
             await failed
+            drop.assert_awaited_once()
 
         assert (
             f"WebRTC session {answer['sessionId']} closing on answerer: peer_failed"
