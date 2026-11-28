@@ -51,6 +51,17 @@ _ADAPTER_SERIAL = "IC705-ADAPTER-SN-4645"
 _ADAPTER_VID = 0x0403
 _ADAPTER_PID = 0x6001
 
+
+class _ReenumerationStall(Exception):
+    """Core never followed the re-enumerated node (MOR-4645).
+
+    Raised ONLY when the post-rename recovery deadline expires. Every
+    other failure — setup, phase barriers, unexpected identity states —
+    stays an ordinary failure so the ``xfail`` below can only hide the
+    reproduction itself, never a broken test.
+    """
+
+
 # Compressed cadence (same shape as test_serial_usb_silence_recovery.py):
 # short answer window and watchdog tick so the silence evidence crosses the
 # link-down threshold in well under a second, and a short identity re-read
@@ -121,6 +132,7 @@ async def _poll_loop(radio, stop: asyncio.Event) -> None:
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=_ReenumerationStall,
     reason="MOR-4645: the identity hold keeps asking on the stale (renamed-away) "
     "link and never reopens the re-enumerated node",
 )
@@ -204,15 +216,32 @@ async def test_usb_reenumeration_renamed_node_recovers(model: str, tmp_path) -> 
         # Phase 2: the port stays listed but goes silent. The watchdog
         # declares link-down; soft_reconnect reopens the still-listed old
         # node; the silent gate parks the connect in the identity hold.
+        # The barrier waits for the COMPLETED hold — CONNECTING with the
+        # unanswered gate returned and the background re-read driving —
+        # not the in-flight gate: soft_reconnect runs the gate while still
+        # RECONNECTING, so the bare ownership check is already true
+        # during CHECKING and would let the topology change land before
+        # the hold exists.
         old_fake.silence(3600.0)
+
+        def _settled_in_identity_hold() -> bool:
+            identity = radio.connection_identity
+            reread = radio._serial_identity_reread_task  # noqa: SLF001
+            return (
+                radio.conn_state is RadioConnectionState.CONNECTING
+                and identity is not None
+                and identity.status is RadioIdentityStatus.NO_RESPONSE
+                and not radio._serial_identity_gate_running  # noqa: SLF001
+                and reread is not None
+                and not reread.done()
+                and radio._identity_phase_owns_open_link()  # noqa: SLF001
+            )
+
         assert await await_until(
-            lambda: radio._identity_phase_owns_open_link(),  # noqa: SLF001
+            _settled_in_identity_hold,
             timeout=10.0,
             description="the silent gate never parked the connect in the identity hold",
         ), "silent link never entered the identity hold"
-        assert radio.conn_state is RadioConnectionState.CONNECTING
-        assert radio.connection_identity is not None
-        assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
 
         # Phase 3: USB re-enumeration — the old node disappears, the same
         # adapter (same USB serial) reappears under a new name, answering.
@@ -225,15 +254,23 @@ async def test_usb_reenumeration_renamed_node_recovers(model: str, tmp_path) -> 
         topology["live"][str(new_path)] = new_fake
 
         # Desired: Core adopts the new node, reopens it, the gate answers.
-        assert await await_until(
-            lambda: (
-                radio.connected
-                and radio.conn_state is RadioConnectionState.CONNECTED
-                and radio._serial_device == str(new_path)  # noqa: SLF001
-            ),
-            timeout=20.0,
-            description="station never followed the re-enumerated node",
-        ), "the running station did not reopen the re-enumerated port"
+        # Only THIS deadline may raise the expected stall: a timeout here
+        # is the MOR-4645 reproduction, everything else stays loud.
+        try:
+            recovered = await await_until(
+                lambda: (
+                    radio.connected
+                    and radio.conn_state is RadioConnectionState.CONNECTED
+                    and radio._serial_device == str(new_path)  # noqa: SLF001
+                ),
+                timeout=20.0,
+                description="station never followed the re-enumerated node",
+            )
+        except AssertionError as exc:
+            raise _ReenumerationStall(
+                "the running station did not reopen the re-enumerated port"
+            ) from exc
+        assert recovered, "the running station did not reopen the re-enumerated port"
         identity = radio.connection_identity
         assert identity is not None
         assert identity.status in (
