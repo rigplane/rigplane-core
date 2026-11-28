@@ -17,7 +17,6 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -31,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import await_until  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -45,8 +45,6 @@ _SUB_RIT_TX = 0x02
 
 _CMD_TUNER = 0x1C
 _SUB_TUNER_STATUS = 0x01
-
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +280,11 @@ class TestRitFrequency:
     ) -> None:
         """Set RIT offset to +150 Hz and verify roundtrip."""
         await rit_tuner_radio.set_rit_frequency(150)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == 150,
+            timeout=5.0,
+            description="RIT +150 Hz SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_frequency()
         assert result == 150
@@ -293,7 +295,11 @@ class TestRitFrequency:
     ) -> None:
         """Set RIT offset to -200 Hz and verify roundtrip."""
         await rit_tuner_radio.set_rit_frequency(-200)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == -200,
+            timeout=5.0,
+            description="RIT -200 Hz SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_frequency()
         assert result == -200
@@ -304,7 +310,11 @@ class TestRitFrequency:
     ) -> None:
         """Set RIT offset to +9999 Hz (maximum)."""
         await rit_tuner_radio.set_rit_frequency(9999)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == 9999,
+            timeout=5.0,
+            description="RIT +9999 Hz SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_frequency()
         assert result == 9999
@@ -315,27 +325,47 @@ class TestRitFrequency:
     ) -> None:
         """Set RIT offset to -9999 Hz (minimum)."""
         await rit_tuner_radio.set_rit_frequency(-9999)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == -9999,
+            timeout=5.0,
+            description="RIT -9999 Hz SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_frequency()
         assert result == -9999
         assert rit_tuner_mock._rit_offset_hz == -9999
 
-    async def test_multiple_changes(self, rit_tuner_radio: IcomRadio) -> None:
+    async def test_multiple_changes(
+        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
+    ) -> None:
         """Change RIT offset through several values and verify each."""
         for offset in (150, -200, 0, 1000, -500, 9999, -9999):
             await rit_tuner_radio.set_rit_frequency(offset)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda o=offset: rit_tuner_mock._rit_offset_hz == o,
+                timeout=5.0,
+                description=f"RIT {offset} Hz SET reaching the mock",
+            )
             result = await rit_tuner_radio.get_rit_frequency()
             assert result == offset, f"Expected {offset} Hz, got {result} Hz"
 
-    async def test_reset_to_zero(self, rit_tuner_radio: IcomRadio) -> None:
+    async def test_reset_to_zero(
+        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
+    ) -> None:
         """Set non-zero offset then reset to 0."""
         await rit_tuner_radio.set_rit_frequency(500)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == 500,
+            timeout=5.0,
+            description="RIT +500 Hz SET reaching the mock",
+        )
 
         await rit_tuner_radio.set_rit_frequency(0)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_offset_hz == 0,
+            timeout=5.0,
+            description="RIT 0 Hz SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_frequency()
         assert result == 0
@@ -359,7 +389,11 @@ class TestRitStatus:
     ) -> None:
         """Set RIT ON and verify via GET."""
         await rit_tuner_radio.set_rit_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 1,
+            timeout=5.0,
+            description="RIT ON SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_status()
         assert result is True
@@ -370,27 +404,49 @@ class TestRitStatus:
     ) -> None:
         """Set RIT ON then OFF; GET returns False."""
         await rit_tuner_radio.set_rit_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 1,
+            timeout=5.0,
+            description="RIT ON SET reaching the mock",
+        )
 
         await rit_tuner_radio.set_rit_status(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 0,
+            timeout=5.0,
+            description="RIT OFF SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_status()
         assert result is False
         assert rit_tuner_mock._rit_on == 0
 
-    async def test_toggle_on_off_on(self, rit_tuner_radio: IcomRadio) -> None:
+    async def test_toggle_on_off_on(
+        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
+    ) -> None:
         """Toggle RIT on → off → on."""
         await rit_tuner_radio.set_rit_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 1,
+            timeout=5.0,
+            description="RIT ON SET reaching the mock",
+        )
         assert await rit_tuner_radio.get_rit_status() is True
 
         await rit_tuner_radio.set_rit_status(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 0,
+            timeout=5.0,
+            description="RIT OFF SET reaching the mock",
+        )
         assert await rit_tuner_radio.get_rit_status() is False
 
         await rit_tuner_radio.set_rit_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 1,
+            timeout=5.0,
+            description="RIT ON SET reaching the mock",
+        )
         assert await rit_tuner_radio.get_rit_status() is True
 
 
@@ -412,7 +468,11 @@ class TestRitTxStatus:
     ) -> None:
         """Set RIT TX ON and verify via GET."""
         await rit_tuner_radio.set_rit_tx_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_tx_on == 1,
+            timeout=5.0,
+            description="RIT TX ON SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_tx_status()
         assert result is True
@@ -423,27 +483,45 @@ class TestRitTxStatus:
     ) -> None:
         """Set RIT TX ON then OFF; GET returns False."""
         await rit_tuner_radio.set_rit_tx_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_tx_on == 1,
+            timeout=5.0,
+            description="RIT TX ON SET reaching the mock",
+        )
 
         await rit_tuner_radio.set_rit_tx_status(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_tx_on == 0,
+            timeout=5.0,
+            description="RIT TX OFF SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_rit_tx_status()
         assert result is False
         assert rit_tuner_mock._rit_tx_on == 0
 
-    async def test_rit_and_rit_tx_independent(self, rit_tuner_radio: IcomRadio) -> None:
+    async def test_rit_and_rit_tx_independent(
+        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
+    ) -> None:
         """RIT status and RIT TX status are independent flags."""
         await rit_tuner_radio.set_rit_status(True)
         await rit_tuner_radio.set_rit_tx_status(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 1 and rit_tuner_mock._rit_tx_on == 0,
+            timeout=5.0,
+            description="RIT ON + RIT TX OFF SETs reaching the mock",
+        )
 
         assert await rit_tuner_radio.get_rit_status() is True
         assert await rit_tuner_radio.get_rit_tx_status() is False
 
         await rit_tuner_radio.set_rit_status(False)
         await rit_tuner_radio.set_rit_tx_status(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._rit_on == 0 and rit_tuner_mock._rit_tx_on == 1,
+            timeout=5.0,
+            description="RIT OFF + RIT TX ON SETs reaching the mock",
+        )
 
         assert await rit_tuner_radio.get_rit_status() is False
         assert await rit_tuner_radio.get_rit_tx_status() is True
@@ -467,7 +545,11 @@ class TestTunerStatus:
     ) -> None:
         """Set tuner ON (1) and verify via GET."""
         await rit_tuner_radio.set_tuner_status(1)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._tuner_status == 1,
+            timeout=5.0,
+            description="tuner ON SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_tuner_status()
         assert result == 1
@@ -478,17 +560,27 @@ class TestTunerStatus:
     ) -> None:
         """Set tuner TUNING (2) and verify via GET."""
         await rit_tuner_radio.set_tuner_status(2)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._tuner_status == 2,
+            timeout=5.0,
+            description="tuner TUNING SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_tuner_status()
         assert result == 2
         assert rit_tuner_mock._tuner_status == 2
 
-    async def test_cycle_all_states(self, rit_tuner_radio: IcomRadio) -> None:
+    async def test_cycle_all_states(
+        self, rit_tuner_radio: IcomRadio, rit_tuner_mock: RitTunerMockRadio
+    ) -> None:
         """Cycle through all tuner states: 0 → 1 → 2 → 0."""
         for state in (0, 1, 2, 0):
             await rit_tuner_radio.set_tuner_status(state)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda s=state: rit_tuner_mock._tuner_status == s,
+                timeout=5.0,
+                description=f"tuner state {state} SET reaching the mock",
+            )
             result = await rit_tuner_radio.get_tuner_status()
             assert result == state, f"Expected tuner state {state}, got {result}"
 
@@ -497,10 +589,18 @@ class TestTunerStatus:
     ) -> None:
         """Set tuner ON then OFF; GET returns 0."""
         await rit_tuner_radio.set_tuner_status(1)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._tuner_status == 1,
+            timeout=5.0,
+            description="tuner ON SET reaching the mock",
+        )
 
         await rit_tuner_radio.set_tuner_status(0)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: rit_tuner_mock._tuner_status == 0,
+            timeout=5.0,
+            description="tuner OFF SET reaching the mock",
+        )
 
         result = await rit_tuner_radio.get_tuner_status()
         assert result == 0
