@@ -32,7 +32,6 @@ simulated.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -714,7 +713,7 @@ async def test_unstorable_memory_values_refuse_before_sending(
     model: str, overrides: dict, match: str
 ) -> None:
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match=match):
             await radio.set_memory_contents(_mem(model, **overrides))
@@ -730,7 +729,7 @@ async def test_unstorable_memory_values_refuse_before_sending(
 @pytest.mark.parametrize("name", [None, [], {}, 123, b"NAME"])
 async def test_non_string_names_refuse_before_sending(model: str, name: object) -> None:
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match="name must be a string"):
             await radio.set_memory_contents(_mem(model, name=name))
@@ -744,7 +743,7 @@ async def test_non_string_names_refuse_before_sending(model: str, name: object) 
 async def test_a_refused_write_sends_nothing_on_the_wire(model: str) -> None:
     """The builder refusal surfaces at the radio and nothing is sent."""
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match="name"):
             await radio.set_memory_contents(_mem(model, name="X" * 40))
@@ -793,7 +792,7 @@ def test_the_ic7610_keeps_its_legacy_clear_frame() -> None:
 @pytest.mark.parametrize("model", ["IC-705", "IC-7300"])
 async def test_an_out_of_range_clear_address_refuses(model: str) -> None:
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match="channel"):
             await radio.memory_clear(100, group=_CASES[model][1])
@@ -882,18 +881,9 @@ class _MemoryStoreTransport(_MemoryAckTransport):
         await super().send_tracked(data)
 
 
-def _radio(model: str, transport: MockTransport) -> IcomRadio:
-    radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
-    radio._civ_transport = radio._ctrl_transport = transport
-    radio._connected = True
-    radio._civ_stream_ready = True
-    radio._last_civ_data_received = time.monotonic()
-    return radio
-
-
 def _sim_radio(model: str, transport: MockTransport) -> IcomRadio:
-    """The ``_radio`` harness without a wall-clock read: new tests are not
-    allowed one (the realtime guard), so a fixed timestamp plus an infinite
+    """The simulator-double harness without a wall-clock read (the
+    realtime guard forbids one), so a fixed timestamp plus an infinite
     idle timeout keeps the link "ready" for the simulator double."""
     radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
     radio._civ_transport = radio._ctrl_transport = transport
@@ -920,7 +910,7 @@ async def test_sdk_memory_write_refuses_before_sending(
     model: str, overrides: dict
 ) -> None:
     transport = _MemoryAckTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError):
             await radio.set_memory_contents(_mem(model, **overrides))
@@ -939,7 +929,7 @@ async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
     """The SDK gate applies the loader's domain rule: a spliced-in default
     tone the profile's CTCSS table lacks refuses like no layout at all."""
     transport = _MemoryAckTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     profile = radio._profile
     layout = replace(profile.memory.write_layout, default_tone_centihz=default_tone)
     radio._profile = replace(
@@ -961,7 +951,7 @@ async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
 @pytest.mark.parametrize("operation", ["write", "clear"])
 async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
     transport = _MemoryAckTransport(reply_command=0xFA)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(CommandRejectedError):
             if operation == "write":
@@ -980,7 +970,7 @@ async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
 async def test_memory_mutations_need_an_ack(
     model: str, operation: str, reply: CivFrame | None
 ) -> None:
-    radio = _radio(model, MockTransport())
+    radio = _sim_radio(model, MockTransport())
     radio._send_civ_raw = AsyncMock(return_value=reply)
     try:
         with pytest.raises(CommandError):
@@ -1007,7 +997,7 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         await radio.set_memory_contents(mem)
         entries = await radio.read_memory_entries(group, [channel])
@@ -1152,7 +1142,7 @@ async def test_boolean_addresses_refuse_without_sending(model: str) -> None:
     group/band 1; the shared encoder refuses it before any byte is built
     (the SDK path -- the dispatch arm checks the same rule eagerly)."""
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match="group must be an integer"):
             await radio.memory_clear(5, group=True)  # type: ignore[arg-type]
@@ -1176,7 +1166,7 @@ async def test_a_grouped_radio_refuses_an_unnamed_group(model: str) -> None:
     channel-only store/clear flow is exactly that hazard; it is refused
     until the UI carries one explicit slot address)."""
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(ValueError, match="a memory group/band is required"):
             await radio.memory_clear(5)
@@ -1198,7 +1188,7 @@ async def test_the_written_wire_bytes_are_the_manual_record(model: str) -> None:
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         await radio.set_memory_contents(mem)
         await radio.memory_clear(channel, group=group)
@@ -1228,7 +1218,7 @@ async def test_a_cleared_slot_reads_back_empty_ic705() -> None:
     empty on the next read."""
     radio_addr, group, channel = _CASES["IC-705"]
     transport = _MemoryStoreTransport(_memory("IC-705"), radio_addr)
-    radio = _radio("IC-705", transport)
+    radio = _sim_radio("IC-705", transport)
     try:
         await radio.set_memory_contents(_mem("IC-705"))
         entry = (await radio.read_memory_entries(group, [channel]))[0]
@@ -1249,7 +1239,7 @@ async def test_a_cleared_slot_reads_back_empty_ic705() -> None:
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
 async def test_radios_without_a_layout_still_refuse(model: str) -> None:
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport)
     try:
         with pytest.raises(MemoryWriteUnverifiedError) as excinfo:
             await radio.set_memory_contents(_mem("IC-705"))
