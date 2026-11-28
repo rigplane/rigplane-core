@@ -37,8 +37,9 @@ the runtime path imports it: ``import rigplane`` must not load ``rigplane.testin
   (``tests/testkit/test_timing.py`` pins it). Never patch them process-wide.
 * :func:`wait_until` / :func:`await_until` wait for a REAL event (child process,
   socket, worker thread). Polling never advances an installed :class:`VirtualClock`.
-  Deadlines use real time unless the caller passes ``clock=`` explicitly
-  (``tests/testkit/test_timing.py``).
+  :func:`wait_until` deadlines use real time unless the caller passes ``clock=``
+  explicitly; :func:`await_until` adopts the installed clock's virtual bound by
+  default and only stays real on a plain loop (``tests/testkit/test_timing.py``).
 
 Inside a :func:`virtual_clock` test, ``run_in_executor`` / ``asyncio.to_thread`` run
 inline on the loop thread, so a thread hop cannot make the order depend on
@@ -484,21 +485,28 @@ async def await_until(
 ) -> T:
     """:func:`wait_until` for async tests, including loop callbacks.
 
-    Defaults retain real deadlines. On a virtual loop the default pause is a
-    short blocking sleep plus a bare loop turn so I/O callbacks still run.
-    With explicit ``clock=``, real poll timers let a concurrent ``clock.elapse()``
-    settle the loop without the waiter spinning. Only that clock bounds the wait;
-    pair opt-in tests with a real-time watchdog, as for :class:`VirtualClock`.
+    On a loop with an installed :class:`VirtualClock` (the ``virtual_clock``
+    fixture, :func:`virtual_clock`, :meth:`VirtualClock.on_running_loop`) the
+    installed clock bounds the wait by default: the bound counts virtual time,
+    so a loaded runner cannot exhaust it, and polling parks on real time
+    without adding virtual timers, so a concurrent ``clock.elapse()`` still
+    settles the loop. Pass ``clock=`` explicitly to bound by a different
+    clock. On a plain loop the deadline stays real and the pause is
+    ``asyncio.sleep``. Pair virtual-bound waits with a real-time watchdog
+    (``@pytest.mark.timeout``): a condition nothing delivers and no elapse
+    releases waits past any virtual bound.
     """
-    virtual = isinstance(asyncio.get_running_loop().time, VirtualClock)
-    now = _wait_clock(clock, interval)
+    loop = asyncio.get_running_loop()
+    installed = loop.time if isinstance(loop.time, VirtualClock) else None
+    effective = clock if clock is not None else installed
+    now = _wait_clock(effective, interval)
     deadline = now() + timeout
     while True:
         value = condition()
         if value:
             return value
         if now() >= deadline:
-            if clock is not None:
+            if effective is not None:
                 raise AssertionError(
                     f"condition not met after {timeout}s of virtual time waiting for "
                     f"{description}; virtual clock not advanced?"
@@ -506,10 +514,7 @@ async def await_until(
             raise AssertionError(
                 f"timed out after {timeout}s waiting for {description}"
             )
-        if clock is not None:
+        if effective is not None:
             await _real_poll_delay(interval)
-        elif virtual:
-            time.sleep(interval)
-            await asyncio.sleep(0)
         else:
             await asyncio.sleep(interval)

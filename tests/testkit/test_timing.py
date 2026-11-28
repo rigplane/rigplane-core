@@ -255,12 +255,11 @@ async def test_await_until_polls_real_time_on_a_real_loop() -> None:
     assert await await_until(lambda: box and box[0], timeout=10.0) == 1
 
 
-@pytest.mark.parametrize("synchronous", [False, True], ids=["async", "sync"])
-async def test_default_wait_keeps_real_deadline_when_virtual_time_advances(
+async def test_wait_until_keeps_a_real_deadline_while_virtual_time_advances(
     virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
-    synchronous: bool,
 ) -> None:
+    """The synchronous form keeps real time: it cannot observe an elapse."""
     monkeypatch.setattr(
         timing,
         "time",
@@ -272,11 +271,70 @@ async def test_default_wait_keeps_real_deadline_when_virtual_time_advances(
         samples.append(virtual_clock.advance(0.5))
         return 42 if len(samples) == 3 else 0
 
-    if synchronous:
-        assert wait_until(delivered, timeout=0.25) == 42
-    else:
-        assert await await_until(delivered, timeout=0.25) == 42
+    assert wait_until(delivered, timeout=0.25) == 42
     assert len(samples) == 3
+
+
+async def test_await_until_counts_its_default_bound_in_virtual_time(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On an installed clock the default bound is virtual, not wall.
+
+    A loaded runner cannot exhaust it, and the wait never reads the wall
+    clock: with ``time.monotonic`` rigged to raise, the bound still fires
+    once the virtual clock has advanced past it.
+    """
+    started = virtual_clock()
+    wall = Mock(side_effect=AssertionError("the virtual bound read wall time"))
+    monkeypatch.setattr(
+        timing, "time", types.SimpleNamespace(monotonic=wall, sleep=lambda _: None)
+    )
+
+    def missing_event() -> bool:
+        virtual_clock.advance(0.125)
+        return False
+
+    with pytest.raises(
+        AssertionError,
+        match=r"condition not met.*a missing event.*virtual clock not advanced\?",
+    ):
+        await await_until(missing_event, timeout=0.25, description="a missing event")
+    wall.assert_not_called()
+    assert virtual_clock() - started == pytest.approx(0.25)
+
+
+@pytest.mark.timeout(30)
+async def test_await_until_lets_a_concurrent_elapse_release_the_wait(
+    virtual_clock: VirtualClock,
+) -> None:
+    """The installed clock bounds the wait, and the waiter never drives it.
+
+    A timer delivery released by the test's own ``elapse`` wakes the waiter;
+    the clock moves exactly by the elapsed amount: ``await_until`` parks on
+    real time without adding virtual timers of its own.
+    """
+    started = virtual_clock()
+    delivered: list[int] = []
+    handle = asyncio.get_running_loop().call_later(0.25, delivered.append, 42)
+    waiter = asyncio.create_task(
+        await_until(
+            lambda: delivered and delivered[0],
+            timeout=5.0,
+            description="the timer delivery",
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert virtual_clock() == started
+        assert not waiter.done()
+        await virtual_clock.elapse(0.25)
+        assert await waiter == 42
+        assert virtual_clock() - started == pytest.approx(0.25)
+    finally:
+        handle.cancel()
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 @pytest.mark.timeout(30)
