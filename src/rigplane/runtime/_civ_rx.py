@@ -1167,7 +1167,8 @@ class CivRuntime:
                 await rc_task
             except asyncio.CancelledError:
                 pass
-            self._reconnect_task = None
+            if self._reconnect_task is rc_task:
+                self._reconnect_task = None
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 
@@ -1819,47 +1820,72 @@ class CivRuntime:
         Single construction point for the watchdog hand-off and
         :meth:`request_recovery_now` (including the tail-preempt restart).
         """
-        self._reconnect_task = asyncio.create_task(
+        full_reconnect_reason = self._full_reconnect_reason(full_reconnect_reason)
+        recovery = asyncio.create_task(
             self._watchdog_recover(
                 full_reconnect_reason=full_reconnect_reason, preempt=preempt
             ),
             name="civ-watchdog-recover",
         )
+        self._reconnect_task = recovery
         if preempt is not None:
-            self._pending_replacement = (self._reconnect_task, preempt)
-        return self._reconnect_task
+            self._pending_replacement = (recovery, preempt)
+        if full_reconnect_reason is not None:
+            # Reserve the lifecycle slot in the datagram callback's turn.
+            # A fast CI-V caller can otherwise start soft recovery while
+            # the full handoff is still closing the old control socket.
+            self._host._session_lifecycle.prioritize_full_recovery(recovery)
+            recovery.add_done_callback(self._observe_full_recovery_result)
+        return recovery
+
+    def _full_reconnect_reason(self, reason: str | None) -> str | None:
+        if reason is None and self._soft_recovery_epoch == self._host._civ_epoch:
+            return "soft reconnect restored no data"
+        return reason
+
+    def _observe_full_recovery_result(self, task: asyncio.Task[None]) -> None:
+        self._host._session_lifecycle.finish_full_recovery(task)
+        # The detached handoff logs failure before raising it to joiners.
+        if not task.cancelled():
+            task.exception()
 
     def request_recovery_now(self, reason: str) -> bool:
-        """Start the detached recovery now, unless one is already under way.
+        """Request full recovery from a session-free notice or a rejected probe.
 
-        A radio "session free" notice calls this from the datagram callback.
-        It is a no-op unless the session is CONNECTED, no recovery is already
-        flagged, and no recovery task is still running — with one exception: a
-        notice that arrives while a live recovery has already re-established
-        the session (``_conn_state`` CONNECTED again while the recorded task
-        is past ``_force_cleanup_civ``, i.e. only in its tail) means the radio
-        dropped the session AGAIN, so the tail gives way to a fresh recovery.
-        Every ignored notice logs exactly one line carrying the reason.
+        Full recovery replaces a pending or running soft recovery. A full
+        recovery already in progress covers duplicate notices until it has
+        re-established the session (MOR-3350).
 
         Returns whether a recovery was started (MOR-4558: the data watchdog
         keeps watching when its own escalation is refused).
         """
-        if self._host._conn_state != RadioConnectionState.CONNECTED:
+        state = self._host._conn_state
+        lifecycle = self._host._session_lifecycle
+        live = self._reconnect_task
+        if live is not None and live.done():
+            live = None
+        soft_pending = lifecycle.soft_recovery_pending or (
+            live is not None and not lifecycle.is_full_recovery_owner(live)
+        )
+        if state is not RadioConnectionState.CONNECTED and not (
+            soft_pending
+            and state
+            in (RadioConnectionState.CONNECTING, RadioConnectionState.RECONNECTING)
+        ):
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "no session to recover (state=%s)",
                 reason,
-                self._host._conn_state.value,
+                state.value,
             )
             return False
-        live = self._reconnect_task
-        if live is not None and not live.done():
-            if (
+        if live is not None:
+            if soft_pending or (
                 live is self._recovery_cleaned_task
-                and self._host._conn_state == RadioConnectionState.CONNECTED
+                and state is RadioConnectionState.CONNECTED
             ):
                 logger.warning(
-                    "civ-data-watchdog: %s during the recovery tail, "
+                    "civ-data-watchdog: %s during recovery, "
                     "restarting the recovery",
                     reason,
                 )
@@ -1871,7 +1897,7 @@ class CivRuntime:
                 reason,
             )
             return False
-        if self._host._civ_recovering:
+        if self._host._civ_recovering and not soft_pending:
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "the data watchdog is already recovering",
@@ -1900,53 +1926,44 @@ class CivRuntime:
         on exhaustion, routes through CLOSING + full release (after which the
         control session is gone and re-arming below correctly no-ops).
 
-        ``preempt`` is a tail-parked recovery run this task replaces: it is
-        cancelled and awaited first, so the new run never starts its work
-        while the old one is still unwinding (the lifecycle coalesces
-        ``soft_reconnect()`` onto a shared task that is only cleared when the
-        cancelled run finishes). The slot already holds the new task — the old
-        run's ``finally`` only clears the slot when it still holds itself.
+        A full handoff waits for superseded lifecycle attempts and any
+        detached predecessor to unwind before touching the old sockets.
 
         Re-arms in ``finally`` after uncancelled recovery (#1217). A released
         control session has no stream to watch.
         """
         owner_stop_epoch = self._host._owner_stop_epoch
-        escalate = full_reconnect_reason is not None or (
-            self._soft_recovery_epoch is not None
-            and self._soft_recovery_epoch == self._host._civ_epoch
-        )
+        lifecycle = self._host._session_lifecycle
+        current = asyncio.current_task()
+        assert current is not None
+        full_reconnect_reason = self._full_reconnect_reason(full_reconnect_reason)
         self._soft_recovery_epoch = None
         cancelled = False
         try:
+            if full_reconnect_reason is not None:
+                if not lifecycle.is_full_recovery_owner(current):
+                    lifecycle.prioritize_full_recovery(current)
+                await lifecycle.drain_superseded_recovery()
             if preempt is not None:
-                # Mark the shared lifecycle run as superseded first, so
-                # callers coalesced onto it (not the predecessor) get a
-                # recoverable ConnectionError rather than a foreign cancel.
-                self._host._session_lifecycle.supersede_recovery()
-                preempt.cancel()
-                await asyncio.gather(preempt, return_exceptions=True)
+                if not preempt.done():
+                    preempt.cancel()
+                    await asyncio.gather(preempt, return_exceptions=True)
                 pending = self._pending_replacement
-                if pending is not None and pending[0] is asyncio.current_task():
+                if pending is not None and pending[0] is current:
                     self._pending_replacement = None
             await self._host._force_cleanup_civ()
-            self._recovery_cleaned_task = asyncio.current_task()
-            if escalate:
-                if full_reconnect_reason is not None:
-                    logger.warning(
-                        "civ-data-watchdog: %s, escalating to full reconnect",
-                        full_reconnect_reason,
-                    )
-                else:
-                    logger.warning(
-                        "civ-data-watchdog: soft reconnect restored no data, "
-                        "escalating to full reconnect"
-                    )
+            self._recovery_cleaned_task = current
+            if full_reconnect_reason is not None:
+                logger.warning(
+                    "civ-data-watchdog: %s, escalating to full reconnect",
+                    full_reconnect_reason,
+                )
                 await self._host._control_phase.release()
                 # remote_id == 0 makes IcomTransport.reconnect fall back to a
                 # full connect() with discovery.
                 self._host._ctrl_transport.remote_id = 0
             await self._host.soft_reconnect()
-            if not escalate:
+            if full_reconnect_reason is None:
                 self._soft_recovery_epoch = self._host._civ_epoch
         except asyncio.CancelledError:
             cancelled = True
@@ -1957,22 +1974,28 @@ class CivRuntime:
                 "transient); watchdog will re-arm if the session survives",
                 exc_info=True,
             )
-            self._hand_off_exhaustion_to_reconnect_loop(exc, owner_stop_epoch)
+            if self._reconnect_task is None or self._reconnect_task is current:
+                self._hand_off_exhaustion_to_reconnect_loop(exc, owner_stop_epoch)
+            if full_reconnect_reason is not None:
+                raise
         except Exception:
             logger.error(
                 "civ-data-watchdog: unexpected error in lifecycle recovery",
                 exc_info=True,
             )
+            if full_reconnect_reason is not None:
+                raise
         finally:
+            lifecycle.finish_full_recovery(current)
             pending = self._pending_replacement
-            if pending is not None and pending[0] is asyncio.current_task():
+            if pending is not None and pending[0] is current:
                 self._pending_replacement = None
-            if self._recovery_cleaned_task is asyncio.current_task():
+            if self._recovery_cleaned_task is current:
                 self._recovery_cleaned_task = None
             if cancelled:
-                if self._reconnect_task is asyncio.current_task():
+                if self._reconnect_task is current:
                     self._reconnect_task = None
-            else:
+            elif self._reconnect_task is None or self._reconnect_task is current:
                 if self._host._conn_state == RadioConnectionState.CONNECTED:
                     # MOR-4558: this recovery is over. A soft reconnect onto a
                     # CI-V session the radio no longer serves (back from a

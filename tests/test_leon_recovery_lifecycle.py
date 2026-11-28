@@ -10,6 +10,7 @@ from rigplane.core.exceptions import ConnectionError
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.session_lifecycle import LifecycleEvent, LifecycleState
+from rigplane.testing.timing import VirtualClock
 
 
 class _Transport:
@@ -43,6 +44,64 @@ def _radio(events: list[str]) -> CoreRadio:
 
 class _AncestorCancellationAttempt(BaseException):
     pass
+
+
+@pytest.mark.timeout(10)
+async def test_full_request_preempts_running_soft_recovery(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    events: list[str] = []
+    radio = _radio(events)
+    runtime = radio._civ_runtime
+    entered = asyncio.Event()
+    unwinding = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def attempt() -> None:
+        if entered.is_set():
+            events.append("reconnect")
+            return
+        radio._conn_state = RadioConnectionState.CONNECTING
+        entered.set()
+        try:
+            await asyncio.Future[None]()
+        finally:
+            unwinding.set()
+            await finish.wait()
+
+    monkeypatch.setattr(radio._session_lifecycle._mech, "soft_reconnect_once", attempt)
+    monkeypatch.setattr(runtime, "start_data_watchdog", lambda: None)
+    soft = asyncio.create_task(radio.soft_reconnect())
+    full: asyncio.Task[None] | None = None
+    try:
+        await entered.wait()
+        assert runtime.request_recovery_now("session free")
+        full = runtime._reconnect_task
+        assert full is not None
+        await unwinding.wait()
+        # Cancelling a soft joiner must leave the full owner alive.
+        joiner = asyncio.create_task(radio.soft_reconnect())
+        await virtual_clock.elapse(0)
+        joiner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await joiner
+        assert not full.done()
+        assert events == []
+        finish.set()
+        await full
+        with pytest.raises(ConnectionError, match="superseded"):
+            await soft
+        assert events == ["civ-close", "token-remove", "control-close", "reconnect"]
+    finally:
+        finish.set()
+        for task in (soft, full):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (soft, full) if task is not None),
+            return_exceptions=True,
+        )
+        await radio._control_phase.release()
 
 
 @pytest.mark.timeout(10)

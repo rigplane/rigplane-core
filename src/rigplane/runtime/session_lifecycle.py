@@ -744,6 +744,9 @@ class CoreRadioSessionLifecycle:
         # Resident connect runner + coalescing.
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
+        # The detached full handoff owns teardown and the subsequent shared
+        # attempt. Hold the reservation across both stages.
+        self._full_recovery_owner: asyncio.Task[None] | None = None
         self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
         # Recovery runs a preempting replacement cancelled on purpose
         # (:meth:`supersede_recovery`); lets every coalesced caller tell that
@@ -1239,7 +1242,7 @@ class CoreRadioSessionLifecycle:
     async def _teardown(self, *, reason: LifecycleErrorReason, shutdown: bool) -> None:
         # Cancel any in-flight resident runner / recovery task first so their
         # own ``finally`` release does not race ours.
-        for task_attr in ("_connect_task", "_recover_task"):
+        for task_attr in ("_connect_task", "_full_recovery_owner", "_recover_task"):
             task = getattr(self, task_attr)
             if task is not None and not task.done():
                 task.cancel()
@@ -1269,12 +1272,51 @@ class CoreRadioSessionLifecycle:
     # ------------------------------------------------------------------
 
     def is_current_recovery_awaited_by(self, task: asyncio.Task[None]) -> bool:
+        """Protect the waiter (or its full replacement) from attempt teardown."""
+        current = asyncio.current_task()
         recovery = self._recover_task
         return (
             recovery is not None
-            and asyncio.current_task() is recovery
-            and self._recovery_waiters.get(task) is recovery
+            and current is recovery
+            and (
+                self._recovery_waiters.get(task) is recovery
+                or (
+                    task is self._full_recovery_owner
+                    and recovery in self._superseded_recoveries
+                )
+            )
         )
+
+    def is_full_recovery_owner(self, task: asyncio.Task[None]) -> bool:
+        return task is self._full_recovery_owner and not task.done()
+
+    @property
+    def soft_recovery_pending(self) -> bool:
+        recovery = self._recover_task
+        full = self._full_recovery_owner
+        return (
+            recovery is not None
+            and not recovery.done()
+            and (full is None or full.done())
+        )
+
+    def prioritize_full_recovery(self, owner: asyncio.Task[None]) -> None:
+        """Reserve recovery for the full handoff before it awaits teardown."""
+        previous = self._full_recovery_owner
+        if previous is not None and previous is not owner and not previous.done():
+            self._superseded_recoveries.add(previous)
+        self._full_recovery_owner = owner
+        self.supersede_recovery()
+
+    async def drain_superseded_recovery(self) -> None:
+        """Wait for the old attempt to stop mutating transports before teardown."""
+        recovery = self._recover_task
+        if recovery is not None and recovery in self._superseded_recoveries:
+            await asyncio.wait((recovery,))
+
+    def finish_full_recovery(self, owner: asyncio.Task[None]) -> None:
+        if self._full_recovery_owner is owner:
+            self._full_recovery_owner = None
 
     def supersede_recovery(self) -> None:
         """Cancel the in-flight recovery run because a replacement takes over.
@@ -1292,16 +1334,25 @@ class CoreRadioSessionLifecycle:
             recovery.cancel()
 
     async def soft_reconnect(self) -> None:
-        # Coalesce concurrent recovery onto the in-flight one.
-        recovery = self._recover_task
-        if recovery is None or recovery.done():
-            recovery = asyncio.ensure_future(self._run_recover())
-            self._recover_task = recovery
         caller = asyncio.current_task()
+        full = self._full_recovery_owner
+        wait: asyncio.Future[None]
+        if full is not None and full is not caller and not full.done():
+            # This caller owns neither the teardown nor the login. Its
+            # cancellation must not propagate into the priority handoff.
+            recovery = full
+            wait = asyncio.shield(full)
+        else:
+            # Coalesce concurrent recovery onto the in-flight one.
+            recovery = self._recover_task
+            if recovery is None or recovery.done():
+                recovery = asyncio.create_task(self._run_recover())
+                self._recover_task = recovery
+            wait = recovery
         if caller is not None:
             self._recovery_waiters[caller] = recovery
         try:
-            await recovery
+            await wait
         except asyncio.CancelledError:
             if (
                 recovery in self._superseded_recoveries

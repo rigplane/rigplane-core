@@ -1071,15 +1071,14 @@ async def test_request_recovery_now_starts_one_full_reconnect(
 
 @pytest.mark.parametrize(
     "blocker",
-    ["not_connected", "connecting", "recovering", "live_task"],
+    ["not_connected", "connecting", "recovering", "live_full_task"],
 )
 async def test_request_recovery_now_is_a_no_op_when_blocked(
     radio: IcomRadio,
     blocker: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Not CONNECTED, already recovering, or a live
-    recovery task: do nothing."""
+    """No session to recover, OpenClose patience, or a pending full repair."""
     _order, released = _arm_notice_recovery(radio)
     if blocker == "not_connected":
         radio._conn_state = RadioConnectionState.DISCONNECTED
@@ -1091,11 +1090,12 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
     else:
         live: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(60))
         radio._civ_runtime._reconnect_task = live
+        radio._session_lifecycle.prioritize_full_recovery(live)
     try:
         with caplog.at_level("INFO"):
             radio._civ_runtime.request_recovery_now("busy=0")
         assert radio._civ_runtime._reconnect_task is (
-            None if blocker != "live_task" else live
+            None if blocker != "live_full_task" else live
         )
         released.assert_not_awaited()
         ignored = [
@@ -1108,10 +1108,11 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
             f"carrying the reason, saw {[r.getMessage() for r in caplog.records]}"
         )
     finally:
-        if blocker == "live_task":
+        if blocker == "live_full_task":
             live.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await live
+            radio._session_lifecycle.finish_full_recovery(live)
 
 
 async def test_request_recovery_now_preempts_a_recovery_tail(
@@ -1400,14 +1401,12 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
             # the first recovery's tail (MOR-2083: the kick runs as its own
             # task, so the registered waiter is the fast-reconnect task,
             # not the polling waiter itself).
-            tail = radio._session_lifecycle._recover_task
-            assert tail is not None
             await await_until(
                 lambda: (
                     radio._session_lifecycle._recovery_waiters.get(
                         radio._civ_runtime._fast_reconnect_task
                     )
-                    is tail
+                    is first
                 ),
                 timeout=10.0,
                 description="the waiter joining the recovery tail",

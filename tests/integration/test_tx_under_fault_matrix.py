@@ -38,6 +38,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -53,6 +54,7 @@ from rigplane.core.tx_observation import OBSERVED_PTT_PATH  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.rigctld.contract import RigctldConfig  # noqa: E402
 from rigplane.rigctld.server import RigctldServer  # noqa: E402
+from rigplane.runtime import managed_tx_authority  # noqa: E402
 from rigplane.runtime._civ_rx import (  # noqa: E402
     _CIV_DATA_WATCHDOG_TIMEOUT,
     _SILENT_OPENCLOSE_DEADLINE,
@@ -68,6 +70,7 @@ from rigplane.runtime.managed_tx_composition import (  # noqa: E402
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore  # noqa: E402
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState, resolve_rf_state  # noqa: E402
+from rigplane.testing.timing import VirtualClock  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -78,9 +81,15 @@ from rigplane.web.web_startup import (  # noqa: E402
     attach_managed_tx_composition,
     prepare_managed_tx_observation_generation,
 )
-from rigplane_testkit.icom import MockIcomRadio  # noqa: E402
+from rigplane_testkit.icom import MockIcomRadio, simulator  # noqa: E402
 
 from _perf_helpers import fast_connect  # noqa: E402
+from test_lan_full_recovery_priority import (  # noqa: E402
+    advance_to,
+    complete_on_clock,
+    concurrent_soft_recovery,
+    hold_control_close,
+)
 from test_web_server import (  # noqa: E402
     _ws_connect,
     _ws_recv_frame,
@@ -679,6 +688,73 @@ async def test_tx_under_fault_matrix(
         with contextlib.suppress(Exception):
             await client.close()
         await _tear_down_stack(stack)
+
+
+@pytest.mark.timeout(30)
+async def test_ws_reboot_hold_notice_before_control_loss_releases_ptt(
+    tmp_path: Path, virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = virtual_clock
+    for module in (simulator, managed_tx_authority):
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=clock))
+    monkeypatch.setattr(
+        "rigplane.runtime._control_phase.ControlPhaseRuntime._STATUS_REJECT_COOLDOWN",
+        _REBOOT_BUSY_FOR_S,
+    )
+    stack = await complete_on_clock(
+        clock,
+        _stand_up_stack(
+            tmp_path, loss="hold", tot_seconds=_LINK_FAULT_TOT_S, unsolicited=False
+        ),
+        budget=_GATE_TIMEOUT_S,
+    )
+    sim, radio = stack.sim, stack.radio
+    client = _WsKeyClient("127.0.0.1", stack.web.port)
+    try:
+        await complete_on_clock(clock, client.connect(), budget=_GATE_TIMEOUT_S)
+        await complete_on_clock(
+            clock, _wait_ptt_observed(stack.web, _GATE_TIMEOUT_S), budget=_GATE_TIMEOUT_S
+        )
+        assert await complete_on_clock(
+            clock, client.key("reboot-key"), budget=_KEY_DEADLINE_S
+        )
+        assert sim.ptt_on
+        login_count = sim.login_count
+        with hold_control_close(monkeypatch, sim) as (notice_seen, close):
+            fault_at = clock.now
+            sim.reboot(
+                at=_REBOOT_AT_S,
+                down_for=_REBOOT_DOWN_FOR_S,
+                busy_for=_REBOOT_BUSY_FOR_S,
+                notice=True,
+                hold_notice_window=True,
+            )
+            await advance_to(clock, notice_seen.is_set, budget=1.0)
+            assert notice_seen.is_set() and radio.control_connected
+            assert sim.ptt_on, "session loss must leave PTT held"
+            async with concurrent_soft_recovery(clock, radio):
+                sim.end_notice_window()
+                close.set()
+                await advance_to(
+                    clock,
+                    lambda: not sim.ptt_on,
+                    budget=_REBOOT_BUDGET_S - (clock.now - fault_at),
+                )
+                assert not sim.ptt_on, f"PTT still held: {sim.ptt_transitions}"
+                await complete_on_clock(
+                    clock, _wait_released(stack.composition), budget=_RELEASE_DEBT_GRACE_S
+                )
+                await clock.elapse(_SETTLE_S)
+                assert not sim.ptt_on
+                assert sim.login_count > login_count
+                assert [on for _, on in sim.ptt_transitions] == [True, False]
+                state = (await stack.composition.authority.snapshot()).state
+                assert state.pending_effect is None
+    finally:
+        try:
+            await complete_on_clock(clock, client.close(), budget=5.0)
+        finally:
+            await complete_on_clock(clock, _tear_down_stack(stack), budget=25.0)
 
 
 # ---------------------------------------------------------------------------
