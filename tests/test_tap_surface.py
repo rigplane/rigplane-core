@@ -24,6 +24,7 @@ from rigplane.audio import AudioPacket
 from rigplane.audio.bus import STAGE_RX_PCM, STAGE_RX_POST_DSP, AudioBus
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
 from rigplane.radio_protocol import AudioCapable, ScopeCapable
+from rigplane.testing.timing import ManualClock
 from rigplane.types import AudioCodec
 from rigplane.web.handlers.audio import AudioBroadcaster, RxPcmTapSource
 
@@ -64,12 +65,20 @@ class TestRxPcmStage:
         assert bus.taps(STAGE_RX_PCM).active is False
         assert bus.last_rx_frame_monotonic is not None
 
-    def test_none_packet_is_not_fed_to_taps(self, bus):
+    @pytest.mark.parametrize("received_frame", [False, True])
+    def test_none_packet_is_not_fed_to_taps(self, bus, received_frame):
+        clock = ManualClock(start=1000.0)
+        bus._monotonic = clock
+        if received_frame:
+            bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=b"abc"))
+        expected_heartbeat = clock() if received_frame else None
+        assert bus.last_rx_frame_monotonic == expected_heartbeat
+        clock.advance(1.0)
         seen: list[bytes] = []
         bus.taps(STAGE_RX_PCM).register("debug", seen.append)
-        bus._on_opus_packet(None)  # EOF/idle marker
+        bus._on_opus_packet(None)  # Jitter-buffer gap marker.
         assert seen == []
-        assert bus.last_rx_frame_monotonic is not None, "heartbeat preserved"
+        assert bus.last_rx_frame_monotonic == expected_heartbeat
 
     def test_reserved_stage_has_no_registry(self, bus):
         with pytest.raises(KeyError):

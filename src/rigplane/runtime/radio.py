@@ -537,7 +537,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Single-flight lock for ``_ensure_audio_transport`` (MOR-3400): the
         # whole rebuild runs under it; no teardown ever takes it.
         self._audio_ensure_lock = asyncio.Lock()
-        self._audio_tx_admission_lock = asyncio.Lock()
         self._raw_ptt_release_epoch = 0
         self._audio_stream: AudioStream | None = None
         self._pcm_transcoder: PcmOpusTranscoder | None = None
