@@ -57,13 +57,15 @@ import struct
 
 import pytest
 
-from rigplane.audio import AudioStream
+from rigplane.audio import AudioStream, build_audio_packet
+from rigplane.audio.bus import AudioBus
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.transport import CONTROL_SIZE, IcomTransport
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._audio_runtime_mixin import AudioRuntimeMixin
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import ControlPhaseRuntime
+from rigplane.testing.timing import await_until
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +659,56 @@ class _DiscardHost(AudioRuntimeMixin):
 
     def _arm_pcm_ingress(self) -> None:
         return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restart", [False, True])
+async def test_rx_rearm_retires_prearm_packets_and_accepts_new_ingress(
+    restart: bool,
+) -> None:
+    host = _DiscardHost()
+    transport = host._audio_transport
+    bus = AudioBus(host)
+    if restart:
+        await host.start_rx(bus._on_opus_packet, jitter_depth=0)
+        await host.stop_rx()
+
+    def packet(data: bytes, seq: int) -> bytes:
+        return build_audio_packet(
+            data,
+            sender_id=transport.remote_id,
+            receiver_id=transport.my_id,
+            send_seq=seq,
+        )
+
+    # Raw packets can remain queued after the old RX reader was cancelled,
+    # or arrive during a rebuilt transport's handshake before the first arm.
+    transport._packet_queue.put_nowait(packet(b"stale", 1))
+    await host.start_rx(bus._on_opus_packet, jitter_depth=0)
+    try:
+        assert transport._packet_queue.empty(), "pre-arm audio survived the RX fence"
+        assert bus.last_rx_frame_monotonic is None
+
+        raw = packet(b"fresh", 2)
+        transport._route_data_packet(raw, 0, 2, transport.remote_id)
+        assert await await_until(lambda: bus.last_rx_frame_monotonic is not None)
+        assert host._audio_stream.get_audio_stats()["rx_packets_delivered"] == 1
+    finally:
+        await host.stop_rx()
+
+
+@pytest.mark.asyncio
+async def test_rejected_duplicate_rx_start_preserves_pending_audio() -> None:
+    host = _DiscardHost()
+    await host.start_rx(lambda _pkt: None, jitter_depth=0)
+    try:
+        queued = _audio_data_packet(1)
+        host._audio_transport._packet_queue.put_nowait(queued)
+        with pytest.raises(RuntimeError):
+            await host.start_rx(lambda _pkt: None, jitter_depth=0)
+        assert host._audio_transport._packet_queue.get_nowait() == queued
+    finally:
+        await host.stop_rx()
 
 
 @pytest.mark.asyncio

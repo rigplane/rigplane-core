@@ -28,8 +28,12 @@ from typing import Any
 
 import pytest
 
-from rigplane.audio import AudioPacket
-from rigplane.audio.session import AudioSessionEvent, RX_LIVENESS_TIMEOUT_S
+from rigplane.audio import AudioPacket, build_audio_packet
+from rigplane.audio.session import (
+    AudioSessionEvent,
+    AudioSessionState,
+    RX_LIVENESS_TIMEOUT_S,
+)
 from rigplane.core.exceptions import ConnectionError as CoreConnectionError
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -947,8 +951,10 @@ async def test_resume_deadline_is_shared_across_repair_and_fresh_frame(
         await run(6.0, 6.0)
 
 
+@pytest.mark.parametrize("healthy_frame_before_death", [False, True])
 async def test_successful_rounds_without_frames_cap_and_report_failed(
     monkeypatch: pytest.MonkeyPatch,
+    healthy_frame_before_death: bool,
 ) -> None:
     """Rounds that re-arm the leg but never see an RX frame still cap out
     (MOR-3401 r3): exactly 3 attempts, one FAILED, then no further
@@ -971,8 +977,11 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         radio._on_audio_recovery = recovery.append
         session = radio.audio_session
 
+        bus = radio.audio_bus
         sub = await session.subscribe_rx("web-audio")
-        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
+        first_frame = await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S)
+        assert first_frame is not None
+        initial_heartbeat = bus.last_rx_frame_monotonic
 
         teardown_calls, restore_teardown = _spy_method(
             radio, "_teardown_audio_transport"
@@ -980,14 +989,34 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         orig_ensure = radio._ensure_audio_transport
         orig_reestablish = session.reestablish
         reestablished: list[int] = []
+        release_reader = asyncio.Event()
+        reader_started = asyncio.Event()
 
         async def _dead_ensure() -> None:
             await orig_ensure()
-            # The new leg is dead on arrival, but the call succeeds: the
-            # radio accepted the handshake yet sends no RX frames. The RX
-            # callback is only (re-)registered by reestablish below, so no
-            # frame can slip through between the rebuild and the kill.
             _kill_client_audio_only(radio)
+            # A setup burst arrived before re-arm, then ingress stopped.
+            transport = radio._audio_transport
+            assert transport is not None
+            _drain(transport._packet_queue)
+            for seq in range(bus._jitter_depth):
+                raw = build_audio_packet(
+                    first_frame.data,
+                    sender_id=transport.remote_id,
+                    receiver_id=transport.my_id,
+                    send_seq=seq,
+                    ident=first_frame.ident,
+                )
+                transport._route_data_packet(raw, 0, seq, transport.remote_id)
+            assert transport._packet_queue.qsize() == bus._jitter_depth
+            receive_packet = transport.receive_packet
+
+            async def delayed_receive(timeout: float = 5.0) -> bytes:
+                await release_reader.wait()
+                reader_started.set()
+                return await receive_packet(timeout)
+
+            monkeypatch.setattr(transport, "receive_packet", delayed_receive)
 
         async def _spy_reestablish() -> None:
             await orig_reestablish()
@@ -1005,6 +1034,15 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
         await asyncio.gather(watchdog, return_exceptions=True)
         monkeypatch.setattr(session, "_watchdog_loop", asyncio.Event().wait)
 
+        if healthy_frame_before_death:
+            # Force healthy delivery across the watchdog-stop yield. A
+            # negative-control baseline taken before it would be stale.
+            assert await await_until(
+                lambda: bus.last_rx_frame_monotonic != initial_heartbeat,
+                timeout=RESUME_BOUND_S,
+                description="healthy RX during watchdog shutdown",
+            )
+
         async def _drive_rx_silent() -> None:
             """One liveness DECISION, driven deterministically (MOR-4214):
             the same ManualClock advance the spent-budget and two_rx_silent
@@ -1021,7 +1059,11 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
 
         try:
             _kill_client_audio_only(radio)
+            # Closing UDP does not stop its consumer. Join the original
+            # reader before taking the stable negative-control heartbeat.
+            await radio.stop_rx()
             _drain(sub)
+            heartbeat_before_death = bus.last_rx_frame_monotonic
 
             # One driven decision per round. Each successful-but-frameless
             # round ends its own task; the next edge continues the SAME
@@ -1030,12 +1072,30 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             # 2, 2 s before round 3, and the third round observes frames
             # for RX_LIVENESS_TIMEOUT_S before reporting FAILED once.
             for round_no in range(1, 4):
+                release_reader.clear()
+                reader_started.clear()
                 await _drive_rx_silent()
                 task = radio._audio_silence_repair_task
                 assert task is not None, (
                     f"round {round_no}: rx_silent scheduled no repair task"
                 )
+                assert await await_until(
+                    lambda: len(reestablished) == round_no, timeout=RESUME_BOUND_S
+                )
+                if round_no < 3:
+                    # Let the baseline settle before the queued reader runs.
+                    await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+                release_reader.set()
+                assert await await_until(
+                    lambda: (
+                        reader_started.is_set()
+                        and radio._audio_transport._packet_queue.empty()
+                    ),
+                    timeout=RESUME_BOUND_S,
+                    description=f"round {round_no} queued RX retired or consumed",
+                )
                 await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+                assert bus.last_rx_frame_monotonic == heartbeat_before_death
                 assert radio._audio_silence_repair_task is None
                 assert radio._audio_silence_repair_attempts == round_no
                 assert len(reestablished) == round_no
@@ -1057,6 +1117,44 @@ async def test_successful_rounds_without_frames_cap_and_report_failed(
             assert len(teardown_calls) == 3
             assert len(reestablished) == 3
             assert radio._audio_silence_repair_attempts == 3
+            assert recovery == [AudioRecoveryState.FAILED]
+
+            # Positive control: new ingress after re-arm still reaches the
+            # unmodified bus callback and opens a fresh repair episode.
+            transport = radio._audio_transport
+            assert transport is not None
+            for seq in range(bus._jitter_depth):
+                raw = build_audio_packet(
+                    first_frame.data,
+                    sender_id=transport.remote_id,
+                    receiver_id=transport.my_id,
+                    send_seq=seq,
+                    ident=first_frame.ident,
+                )
+                transport._route_data_packet(raw, 0, seq, transport.remote_id)
+            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
+            assert bus.last_rx_frame_monotonic != heartbeat_before_death
+            assert session.state is AudioSessionState.RECOVERING
+            # The real watchdog is disabled above. Observe the fresh
+            # heartbeat before advancing to a later silence decision:
+            # RECOVERING handles rx_resumed, not another rx_silent edge.
+            heartbeat = bus.last_rx_frame_monotonic
+            assert heartbeat is not None
+            with monkeypatch.context() as patch:
+                patch.setattr(session, "_monotonic", ManualClock(start=heartbeat))
+                async with session._lock:
+                    session._check_liveness_locked()
+            assert session.state is AudioSessionState.RX_ONLY, (
+                "fresh RX was not observed by a healthy liveness decision"
+            )
+            assert radio._audio_silence_repair_attempts == 0
+            await _drive_rx_silent()
+            task = radio._audio_silence_repair_task
+            assert task is not None, "fresh ingress did not reopen the episode"
+            await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+            assert radio._audio_silence_repair_attempts == 1
+            assert len(teardown_calls) == 4
+            assert len(reestablished) == 4
             assert recovery == [AudioRecoveryState.FAILED]
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]

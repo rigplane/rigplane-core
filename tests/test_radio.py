@@ -318,6 +318,17 @@ class MockTransport:
         except asyncio.TimeoutError:
             raise asyncio.TimeoutError()
 
+    def discard_pending_audio(self) -> None:
+        """Drop packets queued for ``receive_packet``.
+
+        Mirrors ``IcomTransport.discard_pending_audio`` (same semantics:
+        drop queued packets). Inbound test packets live in ``_responses``
+        (fed by :meth:`queue_response`); the audio-start fence calls this
+        to retire pre-arm ingress before scheduling the RX reader.
+        """
+        while not self._responses.empty():
+            self._responses.get_nowait()
+
     def queue_response(self, data: bytes) -> None:
         self._responses.put_nowait(data)
 
