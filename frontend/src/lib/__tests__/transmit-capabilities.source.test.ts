@@ -9,7 +9,8 @@ const testDirectory = dirname(fileURLToPath(import.meta.url));
 const sourceDirectory = resolve(testDirectory, '../..');
 
 const sources = Object.fromEntries(Object.entries(import.meta.glob<string>(
-  '../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true },
+  ['../../**/*.{svelte,ts}', '!../../**/__tests__/**', '!../../**/*.test.*', '!../../**/*.spec.*'],
+  { query: '?raw', import: 'default', eager: true },
 )).map(([path, source]) => [`../../${relative(sourceDirectory, resolve(testDirectory, path))}`, source]));
 const product = Object.entries(sources).filter(([path]) =>
   !/\/__tests__\/|\.(test|spec)\./u.test(path) && !path.endsWith('/transmit-capabilities.ts'));
@@ -377,6 +378,12 @@ function undocumentedKeyboardActions(
 }
 
 describe('transmit capability source ownership', () => {
+  it('loads only production sources for the ownership audit', () => {
+    expect(Object.keys(sources).filter((path) => /\/__tests__\/|\.(test|spec)\./u.test(path)))
+      .toEqual([]);
+    expect(sources['../../components-v2/layout/RadioLayout.svelte']).toBeDefined();
+  });
+
   it('rejects a newly added TX component without any marker or contract import', () => {
     const path = '../../semantic/NewTransmitControl.svelte';
     const source = '<script>let { perform } = $props();</script><button onclick={perform}>TX</button>';
@@ -519,20 +526,29 @@ describe('transmit capability source ownership', () => {
     expect(violations).toEqual([]);
   });
 
-  it('requires a marker or a documented NOT_TX entry for every operation host control', () => {
+  it('keeps every reviewed operation and receive-only host in the audit', () => {
     for (const path of knownHosts) expect(sources[path], path).toBeDefined();
     for (const [path, entry] of Object.entries(NON_OPERATION_HOSTS)) {
       expect(sources[path], path).toBe(readFileSync(
         resolve(testDirectory, path), 'utf8'));
       expect(entry.reason.trim(), path).not.toBe('');
     }
-    const actual = unmarkedControlsBySource(product);
-    const expected = Object.fromEntries(Object.entries(NOT_TX).map(([path, buttons]) => [path,
-      Object.fromEntries(Object.entries(buttons).map(([button, entry]) => {
+    for (const [path, buttons] of Object.entries(NOT_TX)) {
+      expect(sources[path], path).toBeDefined();
+      for (const [button, entry] of Object.entries(buttons)) {
         expect(entry.reason.trim().length, `${path}: ${button}`).toBeGreaterThan(0);
-        return [button, entry.count];
-      })),
-    ]));
-    expect(actual).toEqual(expected);
+      }
+    }
   });
+
+  it.each(product.filter(([path]) => path.endsWith('.svelte')))(
+    '%s requires a marker or a documented NOT_TX entry for every operation host control',
+    (path, source) => {
+      const buttons = NOT_TX[path];
+      const expected = buttons ? { [path]: Object.fromEntries(
+        Object.entries(buttons).map(([button, entry]) => [button, entry.count]),
+      ) } : {};
+      expect(unmarkedControlsBySource([[path, source]])).toEqual(expected);
+    },
+  );
 });

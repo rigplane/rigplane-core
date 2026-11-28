@@ -96,8 +96,10 @@ const finiteAppearance = {
 const originalViewport = { width: window.innerWidth, height: window.innerHeight };
 let component: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
+let layoutMounts = 0;
 
 beforeEach(() => {
+  layoutMounts = 0;
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
   const fixture = fixtureById('topology-2-main-sub')!;
@@ -145,6 +147,7 @@ afterEach(async () => {
 });
 
 async function render(skin: SkinId) {
+  layoutMounts++;
   const manifest = getLayout(skin);
   const plan = manifest && resolveSurfacePlan(manifest, readWorkspace({ version: 1 }).workspace);
   const context = plan ? new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]) : new Map();
@@ -236,10 +239,12 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
       (element) => element.getAttribute(CAPABILITY_ATTRIBUTE)).sort();
     const english = identifiers();
     for (const locale of ['en-US', 'ru-RU', 'ja-JP'] as const) {
-      await unmount(component!);
-      component = undefined;
-      setLocale(locale);
-      await render(skin);
+      if (locale !== 'en-US') {
+        await unmount(component!);
+        component = undefined;
+        setLocale(locale);
+        await render(skin);
+      }
       expect(identifiers(), `${skin}/${locale}/fresh`).toEqual(english);
       for (const theme of getAvailableThemes()) {
         setTheme(theme.id);
@@ -254,6 +259,7 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
         expect(identifiers(), `${skin}/${language}/${locale}`).toEqual(english);
       }
     }
+    expect(layoutMounts).toBe(3);
   }, LOCALE_MATRIX_TIMEOUT_MS);
 });
 

@@ -43,8 +43,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
-from enum import StrEnum
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Final
 
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
@@ -58,7 +59,12 @@ from ..channel_attach import (  # noqa: TID251
     RigctlAttachErrorV1,
     data_channel_spec,
 )
-from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
+from .webrtc_contract import (  # noqa: TID251
+    IceCandidateInit,
+    WebRtcAnswer,
+    WebRtcSessionEnded,
+    WebRtcSessionEndReason,
+)
 from .webrtc import (  # noqa: TID251
     WebRtcDataChannelConnection,
     webrtc_available,
@@ -98,14 +104,6 @@ class WebRtcSessionError(RuntimeError):
     """Raised when a session operation fails (bad SDP, unknown session)."""
 
 
-class _AnswererCloseReason(StrEnum):
-    PEER_FAILED = "peer_failed"
-    PEER_CLOSED = "peer_closed"
-    NEGOTIATION_FAILED = "negotiation_failed"
-    CLOSE_REQUESTED = "close_requested"
-    CLOSE_ALL = "close_all"
-
-
 class _Session:
     """One live peer: its ``RTCPeerConnection`` plus spawned handler tasks.
 
@@ -116,8 +114,21 @@ class _Session:
     retry timer ever fails unretrieved after the close.
     """
 
-    def __init__(self, pc: RTCPeerConnection) -> None:
+    def __init__(
+        self,
+        pc: RTCPeerConnection,
+        *,
+        correlation_id: str | None = None,
+        server: WebServer | None = None,
+        now: Callable[[], float] = time.time,
+    ) -> None:
         self.pc = pc
+        self.correlation_id = correlation_id
+        self.ever_connected = False
+        self._server = server
+        self._now = now
+        self._close_reason: WebRtcSessionEndReason | None = None
+        self._ended_emitted = False
         self.tasks: set[asyncio.Task[None]] = set()
         # The task currently running ``negotiate()`` for this peer, if any:
         # it drives ``setLocalDescription`` (and its ICE gather) and must be
@@ -140,7 +151,11 @@ class _Session:
         # ONE per (kind, carriage); it already queues its frames.
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
 
-    async def close(self) -> None:
+    async def close(
+        self, reason: WebRtcSessionEndReason = WebRtcSessionEndReason.CLOSE_REQUESTED
+    ) -> None:
+        if self._close_reason is None:
+            self._close_reason = reason
         current = asyncio.current_task()
         negotiate = self.negotiate_task
         self.negotiate_task = None
@@ -185,6 +200,23 @@ class _Session:
         # later ``pc.close()`` await (MOR-1431). The shielded teardown still
         # runs to completion; the CancelledError is re-raised afterwards.
         await asyncio.shield(self.pc.close())
+        if (
+            self.correlation_id is not None
+            and self._server is not None
+            and not self._ended_emitted
+        ):
+            self._ended_emitted = True
+            assert self._close_reason is not None
+            self._server.broadcast_event(
+                "webrtc_session_ended",
+                WebRtcSessionEnded(
+                    correlation_id=self.correlation_id,
+                    ended_at=int(self._now()),
+                    reason=self._close_reason.value,
+                    ever_connected=self.ever_connected,
+                    path="unknown",
+                ).to_json(),
+            )
 
 
 class WebRtcSessionManager:
@@ -203,11 +235,13 @@ class WebRtcSessionManager:
         radio_model: str,
         *,
         gather_policy: "IceGatheringPolicy | None" = None,
+        now: Callable[[], float] = time.time,
     ) -> None:
         self._radio = radio
         self._server = server
         self._radio_model = radio_model
         self._gather_policy = gather_policy
+        self._now = now
         self._sessions: dict[str, _Session] = {}
         # Process-wide, installed once: the hooks read each negotiation's
         # policy from a ContextVar, so concurrent negotiations stay separate.
@@ -220,6 +254,8 @@ class WebRtcSessionManager:
         offer_sdp: str,
         offer_type: str,
         ice_servers: list[IceServer] | None = None,
+        *,
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         """Process an SDP offer and return the :class:`WebRtcAnswer` wire body.
 
@@ -264,7 +300,9 @@ class WebRtcSessionManager:
             rtc_servers = []
         pc = RTCPeerConnection(RTCConfiguration(iceServers=rtc_servers))
         session_id = uuid.uuid4().hex
-        session = _Session(pc)
+        session = _Session(
+            pc, correlation_id=correlation_id, server=self._server, now=self._now
+        )
         # Owned by the session from here on: a close racing the gather
         # below cancels this task first (MOR-4671).
         session.negotiate_task = asyncio.current_task()
@@ -275,14 +313,24 @@ class WebRtcSessionManager:
             self._dispatch_channel(session_id, session, channel)
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
-        async def _on_state() -> None:
+        def _on_state() -> asyncio.Task[None] | None:
             state = pc.connectionState
-            if state == "disconnected":
+            if state == "connected":
+                session.ever_connected = True
+            elif state == "disconnected":
                 self._fence_peer(session_id)
-            elif state == "failed":
-                await self._drop(session_id, _AnswererCloseReason.PEER_FAILED)
-            elif state == "closed":
-                await self._drop(session_id, _AnswererCloseReason.PEER_CLOSED)
+            elif state in ("failed", "closed") and session._close_reason is None:
+                reason = (
+                    WebRtcSessionEndReason.PEER_FAILED
+                    if state == "failed"
+                    else WebRtcSessionEndReason.PEER_CLOSED
+                )
+                session._close_reason = reason
+                task = asyncio.create_task(self._drop(session_id, reason))
+                session.tasks.add(task)
+                task.add_done_callback(session.tasks.discard)
+                return task
+            return None
 
         try:
             policy = (
@@ -303,14 +351,14 @@ class WebRtcSessionManager:
             # A CancelledError (a close racing this gather) is not an
             # Exception: it propagates without dropping here — the closer
             # already popped and closed this session (MOR-4671).
-            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
+            await self._drop(session_id, WebRtcSessionEndReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError(f"Failed to process SDP offer: {exc}") from exc
         finally:
             session.negotiate_task = None
 
         local_desc = pc.localDescription
         if local_desc is None:  # pragma: no cover - defensive
-            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
+            await self._drop(session_id, WebRtcSessionEndReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError("Failed to generate SDP answer.")
 
         logger.info("WebRTC session %s negotiated (answer generated)", session_id)
@@ -360,14 +408,16 @@ class WebRtcSessionManager:
         teardown raised is logged and left out of the returned ids.
         """
         sessions = list(self._sessions.items())
-        for session_id, _ in sessions:
-            self._log_close(session_id, _AnswererCloseReason.CLOSE_ALL)
+        for session_id, session in sessions:
+            if session._close_reason is None:
+                session._close_reason = WebRtcSessionEndReason.ALL_SESSIONS_CLOSED
+            self._log_close(session_id, WebRtcSessionEndReason.ALL_SESSIONS_CLOSED)
             self._fence_peer(session_id)
         self._sessions.clear()
         closed: list[str] = []
         for session_id, session in sessions:
             try:
-                await session.close()
+                await session.close(WebRtcSessionEndReason.ALL_SESSIONS_CLOSED)
             except Exception:  # noqa: BLE001 - best-effort shutdown
                 logger.debug("session close failed", exc_info=True)
                 continue
@@ -382,7 +432,7 @@ class WebRtcSessionManager:
         """
         if session_id not in self._sessions:
             raise WebRtcSessionError(f"Unknown session: {session_id}")
-        await self._drop(session_id, _AnswererCloseReason.CLOSE_REQUESTED)
+        await self._drop(session_id, WebRtcSessionEndReason.CLOSE_REQUESTED)
 
     @property
     def active_session_ids(self) -> list[str]:
@@ -390,18 +440,18 @@ class WebRtcSessionManager:
         return list(self._sessions)
 
     @staticmethod
-    def _log_close(session_id: str, reason: _AnswererCloseReason) -> None:
+    def _log_close(session_id: str, reason: WebRtcSessionEndReason) -> None:
         logger.info(
             "WebRTC session %s closing on answerer: %s", session_id, reason.value
         )
 
-    async def _drop(self, session_id: str, reason: _AnswererCloseReason) -> None:
+    async def _drop(self, session_id: str, reason: WebRtcSessionEndReason) -> None:
         if session_id in self._sessions:
             self._log_close(session_id, reason)
         self._fence_peer(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:
-            await session.close()
+            await session.close(reason)
         if not self._sessions:
             # The manager holds the radio/server refs from its creation;
             # reset it once the last peer is gone so the next offer builds

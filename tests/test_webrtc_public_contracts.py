@@ -82,6 +82,9 @@ _PUBLIC = (
     ("WebRtcIceCandidate", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcRequestError", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcTransportStatus", "rigplane.web.transport.webrtc_contract"),
+    ("WebRtcSessionEnded", "rigplane.web.transport.webrtc_contract"),
+    ("WebRtcSessionEndReason", "rigplane.web.transport.webrtc_contract"),
+    ("WebRtcPath", "rigplane.web.transport.webrtc_contract"),
     ("IceCandidateInit", "rigplane.web.transport.webrtc_contract"),
 )
 
@@ -176,6 +179,96 @@ def test_offer_round_trips_with_ice_servers() -> None:
     )
     assert rigplane.WebRtcOffer.from_json(offer.to_json()) == offer
     assert rigplane.WebRtcOffer.from_json({"sdp": "v=0"}).type == "offer"
+
+
+@pytest.mark.parametrize("correlation_id", ["", "Peer_7.a:b-c", "a" * 128])
+def test_offer_preserves_opaque_correlation_id(correlation_id: str) -> None:
+    offer = rigplane.WebRtcOffer.from_json(
+        {"sdp": "v=0", "correlation_id": correlation_id}
+    )
+    assert offer.correlation_id == correlation_id
+    assert offer.to_json()["correlation_id"] == correlation_id
+
+
+@pytest.mark.parametrize("extra", [{}, {"correlation_id": None}])
+def test_uncorrelated_offer_keeps_old_wire_bytes(extra: dict[str, Any]) -> None:
+    offer = rigplane.WebRtcOffer.from_json({"sdp": "v=0", **extra})
+    assert offer.correlation_id is None
+    assert json.dumps(offer.to_json(), separators=(",", ":")).encode() == (
+        b'{"sdp":"v=0","type":"offer","ice_servers":[]}'
+    )
+
+
+@pytest.mark.parametrize(
+    "correlation_id", [1, False, [], {}, "a" * 129, "a b", "a/b", "a\n", "é"]
+)
+def test_offer_rejects_invalid_correlation_id(correlation_id: object) -> None:
+    with pytest.raises(rigplane.WebRtcRequestError) as info:
+        rigplane.WebRtcOffer.from_json({"sdp": "v=0", "correlation_id": correlation_id})
+    assert info.value.code == "sdp_error"
+
+
+def test_session_end_reason_names_are_stable() -> None:
+    assert {reason.value for reason in rigplane.WebRtcSessionEndReason} == {
+        "peer_failed",
+        "peer_closed",
+        "negotiation_failed",
+        "close_requested",
+        "all_sessions_closed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "extra"),
+    [
+        ("direct", {}),
+        ("relay", {}),
+        ("unknown", {}),
+        ("future_value", {"future_field": {"version": 2}}),
+    ],
+)
+def test_session_ended_contract_preserves_future_reason_and_path(
+    path: str, extra: dict[str, object]
+) -> None:
+    wire = {
+        "correlation_id": "Opaque_1:a.b-c",
+        "ended_at": 1795737600,
+        "reason": "future_reason",
+        "ever_connected": False,
+        "path": path,
+    }
+    event = rigplane.WebRtcSessionEnded.from_json({**wire, **extra})
+    assert event.to_json() == wire
+    assert event.reason == "future_reason"
+    assert event.path == path
+    assert type(event.ended_at) is int
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("correlation_id", 3),
+        ("ended_at", 1.5),
+        ("ended_at", True),
+        ("reason", 1),
+        ("ever_connected", 1),
+        ("path", None),
+        ("path", 1),
+        ("path", False),
+        ("path", []),
+        ("path", {}),
+    ],
+)
+def test_session_ended_contract_rejects_wrong_types(field: str, value: object) -> None:
+    wire = {
+        "correlation_id": "peer",
+        "ended_at": 1795737600,
+        "reason": "close_requested",
+        "ever_connected": False,
+        "path": "unknown",
+    }
+    with pytest.raises(ValueError):
+        rigplane.WebRtcSessionEnded.from_json({**wire, field: value})
 
 
 @pytest.mark.parametrize(
@@ -326,6 +419,8 @@ def test_transport_status_round_trips() -> None:
     [
         ({"type": "offer"}, "missing_sdp"),
         ({"sdp": "v=0", "ice_servers": 5}, "invalid_ice_servers"),
+        ({"sdp": "v=0", "correlation_id": "invalid/id"}, "sdp_error"),
+        ({"sdp": "v=0", "correlation_id": "a" * 129}, "sdp_error"),
     ],
 )
 async def test_server_offer_errors_parse_as_request_error(

@@ -193,6 +193,8 @@ import App from '../../../App.svelte';
 import { hasLiveAudioFromState } from '../layout-utils';
 import { isValidServerState, radio } from '$lib/stores/radio.svelte';
 import { resolveSkinId, type SkinId } from '../../../skins/registry';
+import '../../../skins/desktop-v2/DesktopSkin.svelte';
+import '../../../skins/sdr-test/SdrTestSkin.svelte';
 
 // ---------------------------------------------------------------------------
 // hasLiveAudioFromState
@@ -540,6 +542,9 @@ describe('SpectrumPanel hideAutoStepToggle channel (MOR-1486 ruling B)', () => {
 
 describe('App presentation selection', () => {
   type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
 
   it('keeps the actual hosted instruments alive across a Standard to SDR switch', async () => {
     vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');

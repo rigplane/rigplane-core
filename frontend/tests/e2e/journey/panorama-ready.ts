@@ -1,34 +1,48 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
-/**
- * MOR-4214: when a panorama journey may first touch the page.
- *
- * The waterfall is a WebGL2 canvas. On the CI runners and the bench hosts
- * Chromium rasterises it in software (SwiftShader), and the work that makes
- * the page "alive" for Playwright all runs in the GPU process: creating the
- * context, compiling and JIT-ing the waterfall fragment shader, the first
- * draw. While that runs the page produces no animation frames, so
- * `requestAnimationFrame` stalls for seconds (measured 3 to 21 s on a loaded
- * host, with no JavaScript running). Playwright's actionability check
- * ("stable": two consecutive animation frames) cannot pass in that window,
- * and a 10 s click timeout is spent on the page's start-up instead of on the
- * click. Nothing is wrong with the page; the spec simply started interacting
- * before the page had finished starting.
- *
- * The honest readiness event is "the GPU process has drained everything the
- * page queued", which is what `gl.finish()` blocks on. It has no time limit
- * of its own (only the test timeout), so it takes exactly as long as the host
- * needs and the actions after it start from a quiet pipeline.
- */
+interface PanoramaWork { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
+declare global { interface Window { panoramaWork: PanoramaWork } }
+
+export async function installPanoramaWorkProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const work: PanoramaWork = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
+    window.panoramaWork = work;
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = callback => raf(time => {
+      const start = performance.now(); work.raf++;
+      try { callback(time); } finally { work.rafMs += performance.now() - start; }
+    });
+    const gl = WebGL2RenderingContext.prototype;
+    const texture = gl.texImage2D, draw = gl.drawArrays;
+    gl.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+      work.texture++; return Reflect.apply(texture, this, args);
+    } as typeof gl.texImage2D;
+    gl.drawArrays = function (...args) { work.draw++; return Reflect.apply(draw, this, args); };
+    const paint = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (...args) {
+      if (/^\d+\.\d{3}$/.test(args[0])) {
+        if (args[1] === 20) work.labels = [];
+        work.labels.push(args[0]);
+      }
+      work.static++; return Reflect.apply(paint, this, args);
+    };
+  });
+}
 
 /** What the page-side drain needs from `window`; a fake satisfies it in unit tests. */
 export interface GlDrainWindow {
-  __journeyGlContexts?: Array<{ finish(): void }>;
+  document: Pick<Document, 'querySelectorAll'>;
+  __journeyGlContexts?: Array<{ canvas: HTMLCanvasElement; finish(): void }>;
   __journeyGlDraws?: number;
+  __journeyGlDrawnContexts?: WeakSet<object>;
 }
 
 declare global {
-  interface Window { __journeyGlContexts?: WebGL2RenderingContext[]; __journeyGlDraws?: number }
+  interface Window {
+    __journeyGlContexts?: WebGL2RenderingContext[];
+    __journeyGlDraws?: number;
+    __journeyGlDrawnContexts?: WeakSet<object>;
+  }
 }
 
 /**
@@ -39,6 +53,7 @@ export async function trackWebglContexts(page: Page): Promise<void> {
   await page.addInitScript(() => {
     window.__journeyGlContexts = [];
     window.__journeyGlDraws = 0;
+    window.__journeyGlDrawnContexts = new WeakSet();
     const original = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, ...args: unknown[]) {
       const context = (original as (...a: unknown[]) => unknown).apply(this, args);
@@ -53,7 +68,9 @@ export async function trackWebglContexts(page: Page): Promise<void> {
           this: WebGL2RenderingContext, ...args: unknown[]
         ) {
           window.__journeyGlDraws = (window.__journeyGlDraws ?? 0) + 1;
-          return draw.apply(this, args);
+          const result = draw.apply(this, args);
+          window.__journeyGlDrawnContexts!.add(this);
+          return result;
         };
       }
     }
@@ -61,33 +78,88 @@ export async function trackWebglContexts(page: Page): Promise<void> {
 }
 
 /**
- * Runs in the page. Waits (one animation frame at a time, so there is no
- * time budget of its own) until a draw has actually been submitted, then
- * drains the GPU queue, so the first draw's shader JIT has finished before
- * the caller acts. Draining before the first draw would drain nothing: the
- * renderer paints only once its surface is visible and sized, which arrives
- * asynchronously. A final frame and drain covers a second waterfall (dual
- * receiver) that submits its first draw a frame later.
+ * Waits for the mounted waterfalls' own draws and unchanged bounds across
+ * an animation frame, draining their GPU work before returning coordinates.
+ * The unit cases in panorama-ready-drain.test.ts cover late mount, resize
+ * and a draw from an unrelated canvas.
  */
 export async function drainAfterFirstDraw(
   win: GlDrainWindow = window as unknown as GlDrainWindow,
   nextFrame: () => Promise<void> = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-): Promise<void> {
-  while ((win.__journeyGlDraws ?? 0) === 0) await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
-  await nextFrame();
-  for (const context of win.__journeyGlContexts ?? []) context.finish();
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  if (win.__journeyGlDraws === undefined || win.__journeyGlContexts === undefined
+    || win.__journeyGlDrawnContexts === undefined) {
+    throw new Error('Panorama WebGL probe is not installed; navigate with openPanorama(page, url)');
+  }
+  const surfaces = () => Array.from(win.document.querySelectorAll<HTMLCanvasElement>('.waterfall-content canvas'))
+    .map(canvas => ({ canvas, bounds: canvas.getBoundingClientRect(),
+      context: win.__journeyGlContexts!.find(context => context.canvas === canvas) }))
+    .filter(({ bounds }) => bounds.width > 0 && bounds.height > 0);
+  let previous: ReturnType<typeof surfaces> = [];
+  for (;;) {
+    const current = surfaces();
+    if (current.length > 0 && current.every(({ canvas, context }) => canvas.width > 0 && canvas.height > 0
+      && context !== undefined && win.__journeyGlDrawnContexts!.has(context))) {
+      for (const { context } of current) context!.finish();
+      if (current.length === previous.length && current.every(({ canvas, bounds }, index) => {
+        const before = previous[index]!;
+        return canvas === before.canvas && bounds.x === before.bounds.x && bounds.y === before.bounds.y
+          && bounds.width === before.bounds.width && bounds.height === before.bounds.height;
+      })) {
+        const { x, y, width, height } = current[0]!.bounds;
+        return { x, y, width, height };
+      }
+      previous = current;
+    } else {
+      previous = [];
+    }
+    await nextFrame();
+  }
 }
 
-/** Resolves once the page has submitted its first draw and the GPU queue is empty. */
-export async function awaitRenderPipeline(page: Page): Promise<void> {
+/** Returns the first waterfall's stable bounds after its render work drains. */
+export async function awaitRenderPipeline(page: Page): Promise<{ x: number; y: number; width: number; height: number }> {
   // Serialised into the page: the function must stay self-contained.
-  await page.evaluate(drainAfterFirstDraw as () => Promise<void>);
+  return page.evaluate(drainAfterFirstDraw as () => ReturnType<typeof drainAfterFirstDraw>);
 }
 
 /** `page.goto` for panorama journeys: navigate, then wait for the pipeline. */
 export async function openPanorama(page: Page, url: string): Promise<void> {
   await trackWebglContexts(page);
   await page.goto(url);
+  await awaitRenderPipeline(page);
+}
+
+/** Drain render work on both sides of an action without extending its action budget. */
+export async function clickPanorama(page: Page, control: import('@playwright/test').Locator): Promise<void> {
+  await awaitRenderPipeline(page);
+  await expect(control).toBeVisible({ timeout: 10_000 });
+  await expect(control).toBeEnabled({ timeout: 10_000 });
+  await control.click({ timeout: 10_000 });
+  await awaitRenderPipeline(page);
+}
+
+export async function reloadPanorama(page: Page): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.reload({ waitUntil: 'commit', timeout: 10_000 });
+  await page.waitForLoadState('domcontentloaded');
+  await awaitRenderPipeline(page);
+}
+
+/** Measurement duration, not a substitute for a readiness condition. */
+export async function observePanorama(page: Page, durationMs: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(({ start, duration }) => performance.now() - start >= duration,
+    { start: await page.evaluate(() => performance.now()), duration: durationMs },
+    { polling: 100, timeout: 0 });
+  await awaitRenderPipeline(page);
+}
+
+export async function expectPanoramaFrequency(page: Page, freqHz: number): Promise<void> {
+  await awaitRenderPipeline(page);
+  await page.waitForFunction(expected => {
+    const readout = document.querySelector<HTMLElement>('.receiver-instrument [data-vfo-freq]');
+    return readout !== null && Number(readout.innerText.replace(/\D/g, '')) === expected;
+  }, freqHz, { timeout: 10_000 });
   await awaitRenderPipeline(page);
 }

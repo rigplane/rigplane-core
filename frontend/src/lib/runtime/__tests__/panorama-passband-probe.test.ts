@@ -1,6 +1,68 @@
 import { describe, expect, it } from 'vitest';
-import { missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { createContext, runInContext } from 'node:vm';
+import ts from 'typescript';
+import { installSampler, stopSampler, missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 import type { ScopePassbandDiagnostics } from '../adapters/scope-passband-display';
+import { installPanoramaWorkProbe } from '../../../../tests/e2e/journey/panorama-ready';
+
+describe('passband sampler and renderer work', () => {
+  for (const activeRenderer of [false, true]) {
+    it(`quiesces the sampler while ${activeRenderer ? 'still rejecting a continuous' : 'accepting an idle'} renderer`, async () => {
+      const queued = new Map<number, FrameRequestCallback>();
+      let nextId = 0;
+      let observing = false;
+      const context = createContext({
+        performance: { now: () => 0 },
+        requestAnimationFrame: (callback: FrameRequestCallback) => {
+          const id = ++nextId;
+          queued.set(id, callback);
+          return id;
+        },
+        cancelAnimationFrame: (id: number) => queued.delete(id),
+        document: { querySelector: () => null },
+        HTMLElement: class {},
+        MutationObserver: class {
+          observe() { observing = true; }
+          disconnect() { observing = false; }
+        },
+        WebGL2RenderingContext: class { texImage2D() {} drawArrays() {} },
+        CanvasRenderingContext2D: class { fillText() {} },
+      });
+      context.window = context;
+      const execute = (callback: unknown) => runInContext(ts.transpileModule(`(${String(callback)})();`, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText, context);
+      const page = { addInitScript: execute, evaluate: execute };
+      await installPanoramaWorkProbe(page as never);
+      await installSampler(page as never);
+      const advanceFrames = () => {
+        for (let frame = 0; frame < 20; frame++) {
+          const callbacks = [...queued.values()];
+          queued.clear();
+          for (const callback of callbacks) callback(frame * 16.67);
+        }
+      };
+      advanceFrames();
+      expect(context.passbandSamples).toHaveLength(20);
+      expect(context.panoramaWork.raf).toBe(20);
+      expect(observing).toBe(true);
+      if (activeRenderer) runInContext(`
+        function render() { requestAnimationFrame(render); }
+        requestAnimationFrame(render);
+      `, context);
+      await stopSampler(page as never);
+      expect(observing).toBe(false);
+      expect(queued.size).toBe(activeRenderer ? 1 : 0);
+      const start = context.panoramaWork.raf as number;
+      advanceFrames();
+      const idleRaf = (context.panoramaWork.raf as number) - start;
+      expect(idleRaf).toBe(activeRenderer ? 20 : 0);
+      expect(idleRaf <= 4).toBe(!activeRenderer);
+      expect(context.passbandSamples).toHaveLength(20);
+      expect(queued.size).toBe(activeRenderer ? 1 : 0);
+    });
+  }
+});
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {
@@ -11,15 +73,31 @@ describe('passband probe evidence', () => {
   });
   const sample = (t: number, overlay: boolean, kind: 'frame' | 'dom' = 'frame') =>
     ({ t, kind, overlay, gates: null, state: null });
-  const current = (t: number, tupleFrameMode: number, kind: 'frame' | 'dom' = 'frame') => ({
+  const current = (t: number, tupleFrameMode: number, kind: 'frame' | 'dom' = 'frame', proportional = true) => ({
     ...sample(t, true, kind), state: 'current',
     gates: {
       tuneVisible: true, confirmed: true, freqHz: 14_250_000,
-      viewStartHz: 14_200_000, viewEndHz: 14_300_000, inView: true, proportional: true,
+      viewStartHz: 14_200_000, viewEndHz: 14_300_000, inView: true, proportional,
       mode: 'LSB', widthHz: 3000, shiftHz: 0, tuple: true, tupleState: 'current',
       tupleFrameMode, tupleReason: null, tupleStale: false, passbandHz: 3000,
       spanPositive: true, overlay: true,
     } satisfies ScopePassbandDiagnostics,
+  });
+  it('accepts a painted CENTER tuple with either a centered marker or a requested window', () => {
+    for (const proportional of [false, true]) {
+      const painted = current(0, 0, 'frame', proportional);
+      expect(passbandProbeReady([painted], 0)).toBe(true);
+      expect(passbandProbeReady([painted, current(1, 0, 'dom', proportional)], 0)).toBe(true);
+      expect(passbandProbeReady([current(0, 0, 'dom', proportional)], 0)).toBe(false);
+      expect(passbandProbeReady([current(-1, 1), current(0, 0, 'dom', proportional)], 0)).toBe(false);
+      expect(passbandProbeReady([painted, sample(1, false, 'dom')], 0)).toBe(false);
+    }
+  });
+  it('still requires proportional geometry and a painted target tuple in FIX', () => {
+    expect(passbandProbeReady([current(0, 1, 'frame', false)], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), current(1, 1, 'dom', false)], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 0, 'frame', false), current(1, 1, 'dom')], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1)], 1)).toBe(true);
   });
   it('starts FIX continuity only after its current tuple has painted', () => {
     const samples = [current(-50, 0), sample(-30, false), sample(-20, false), sample(-10, false),

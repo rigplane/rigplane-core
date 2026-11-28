@@ -476,11 +476,19 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
 // tests/test_web_usb_pairing_integration.py
 // ::test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client
 // [codec-held-by-another-program]. The same test asserts that an
-// access-denied failure keeps `reason: 'other'`.
+// access-denied failure carries `reason: 'device_access_denied'` (P22).
 const IN_USE_REFUSAL_FRAME = {
   type: 'error',
   message: 'audio_start: RX audio failed to start: device_in_use',
   reason: 'device_in_use',
+};
+
+// P22: the exact wire frame the backend emits when Windows refuses the
+// open with E_ACCESSDENIED (see tests/test_audio_access_denied_p22.py).
+const ACCESS_DENIED_REFUSAL_FRAME = {
+  type: 'error',
+  message: 'audio_start: RX audio failed to start: device_access_denied',
+  reason: 'device_access_denied',
 };
 
 describe('RX refusal reason routing (MOR-3823)', () => {
@@ -638,6 +646,24 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     );
   });
 
+  // P22: Windows refused the open with E_ACCESSDENIED — another program
+  // holds the endpoint or the microphone privacy toggle blocks it.
+  const ACCESS_DENIED_TOAST_TEXT =
+    "Another program is using the radio's audio device, or Windows privacy settings block access to it. Close the other program or allow microphone access, then reconnect.";
+
+  it('device_access_denied gets the access-denied toast once and latches the refusal', async () => {
+    const { audioManager, audio, notify, socket } = await rig('localhost');
+    const frame = ACCESS_DENIED_REFUSAL_FRAME;
+    serverText(socket, frame);
+    serverText(socket, frame);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      'error', ACCESS_DENIED_TOAST_TEXT, 'rxAudioAccessDenied',
+    );
+    expect(audioManager.rxEnabled).toBe(false);
+    expect(audio.getAudioState().rxError).toBe(true);
+  });
+
   it('a holder name never changes the toast of another reason', async () => {
     const { notify, socket } = await rig('localhost');
     serverText(socket, { ...RX_REFUSAL_FRAME, reason: 'other', holder: 'wsjtx.exe' });
@@ -753,6 +779,24 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
     const socket = FakeWebSocket.instances[0];
     socket.open();
     serverText(socket, IN_USE_REFUSAL_FRAME);
+    flushSync();
+
+    expect(renderedErrorToasts()).toEqual([text]);
+  });
+
+  it.each([
+    ['en-US', 'Another program is using the radio\'s audio device, or Windows privacy settings block access to it. Close the other program or allow microphone access, then reconnect.'],
+    ['ru-RU', 'Другая программа использует звуковое устройство радио, или параметры конфиденциальности Windows блокируют доступ к нему. Закройте другую программу или разрешите доступ к микрофону, затем переподключитесь.'],
+    ['ja-JP', '別のプログラムが無線機の音声デバイスを使用しているか、Windowsのプライバシー設定がアクセスをブロックしています。他のプログラムを閉じるか、マイクへのアクセスを許可してから、再接続してください。'],
+  ])('renders the access-denied sentence in %s through the real runtime path', (locale, text) => {
+    setLocale(locale as 'en-US' | 'ru-RU' | 'ja-JP');
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    runtimeBoundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, ACCESS_DENIED_REFUSAL_FRAME);
     flushSync();
 
     expect(renderedErrorToasts()).toEqual([text]);
