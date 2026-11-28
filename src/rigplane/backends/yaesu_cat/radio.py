@@ -2334,14 +2334,23 @@ class YaesuCatRadio:
 
         It uses the same token interpretation as :meth:`read_ptt` and carries
         the profile's attribution. Transport outcomes return a ``failure``
-        tag; connection preconditions still raise.
+        tag; connection preconditions still raise. A refused or unanswered
+        read also carries the wire command it failed on (MOR-4481), so the
+        startup gate warning can name it; a malformed reply carries none,
+        keeping the read-error shape the conformance suite pins.
         """
         try:
             token = await self.read_ptt_token()
-        except (CatCommandRejected, CatParseError):
+        except CatCommandRejected as exc:
+            return TxStateReading(
+                value=None, failure="read-error", command=exc.command
+            )
+        except CatParseError:
             return TxStateReading(value=None, failure="read-error")
-        except CatTimeoutError:
-            return TxStateReading(value=None, failure="timeout")
+        except CatTimeoutError as exc:
+            return TxStateReading(
+                value=None, failure="timeout", command=exc.command
+            )
         except CatTransportError:
             return TxStateReading(value=None, failure="transport")
         return TxStateReading(

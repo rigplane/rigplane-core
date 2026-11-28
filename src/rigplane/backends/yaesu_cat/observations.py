@@ -23,6 +23,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     startup_critical_path,
 )
+from rigplane.core.startup_read_notes import StartupReadNote, record_direct_read_outcome
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -62,6 +63,23 @@ _T = TypeVar("_T")
 _CRITICAL_READ_TIMEOUT_ATTEMPTS = 3
 
 __all__ = ["YAESU_PTT_PATH", "YaesuObservationAdapter"]
+
+
+def _direct_note_command(exc: BaseException) -> str:
+    """Verbatim wire command a direct read failed on (MOR-4481).
+
+    Transport errors stamp it (``CatCommandRejected.command``,
+    ``CatTimeoutError.command``); parse errors carry their template.
+    Anything else names nothing — the gate falls back to the next source.
+    """
+
+    command = getattr(exc, "command", "")
+    if isinstance(command, str) and command:
+        return command
+    template = getattr(exc, "template", "")
+    if isinstance(template, str) and template:
+        return template
+    return ""
 
 _MAIN_FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 _MAIN_MODE = FieldPath.active("main", "freq_mode", "mode")
@@ -505,10 +523,25 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                # Same rule as ``_safe_read`` minus the record: PTT left
-                # the startup-critical set (MOR-4456), so a refused or
-                # malformed read is skipped with no defect — the gate
-                # serves it unknown after the deadline. The cycle is kept.
+                # MOR-4481: PTT left the startup-critical set (MOR-4456), so
+                # a refused or malformed read is skipped with no startup
+                # defect — but the outcome is filed for the gate warning,
+                # which must name the real wire command and the cause. The
+                # cycle is kept.
+                record_direct_read_outcome(
+                    self.radio,
+                    StartupReadNote(
+                        label="ptt",
+                        path=_PTT,
+                        command=_direct_note_command(exc),
+                        outcome=(
+                            "refused"
+                            if isinstance(exc, CatCommandRejected)
+                            else "malformed"
+                        ),
+                    ),
+                    now=self.clock(),
+                )
                 self._log_field_skip(
                     "ptt",
                     "Skipping field %s — declared read refused or malformed: %s",
@@ -528,9 +561,26 @@ class YaesuObservationAdapter:
                     # not take the optional unavailability route either —
                     # PTT stays in the startup set while the gate serves it
                     # unknown after the deadline. Only transport failures
-                    # still raise below.
+                    # still raise below. MOR-4481: the outcome is still
+                    # filed, so the gate warning can name the wire command
+                    # and the cause (a contained timeout stashes evidence
+                    # only and records nothing).
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
+                    record_direct_read_outcome(
+                        self.radio,
+                        StartupReadNote(
+                            label="ptt",
+                            path=_PTT,
+                            command=getattr(reading, "command", "") or "",
+                            outcome=(
+                                "timeout"
+                                if reading.failure == "timeout"
+                                else "refused"
+                            ),
+                        ),
+                        now=self.clock(),
+                    )
                 else:
                     self._note_critical_read_answers((_PTT,))
                     timestamp = self.clock()
@@ -1988,6 +2038,21 @@ class YaesuObservationAdapter:
             if count_timeout:
                 self._count_critical_read_timeouts(label, exc, paths)
             if contain_timeout:
+                if not count_timeout:
+                    # MOR-4481: a demoted lane's contained timeout stashes
+                    # its wire evidence for the gate warning and records
+                    # nothing — the MOR-4456 containment is unchanged.
+                    for path in paths:
+                        record_direct_read_outcome(
+                            self.radio,
+                            StartupReadNote(
+                                label=label,
+                                path=path,
+                                command=_direct_note_command(exc),
+                                outcome="timeout",
+                            ),
+                            now=self.clock(),
+                        )
                 return False, None
             raise
         except (
@@ -2016,6 +2081,19 @@ class YaesuObservationAdapter:
                 if count_timeout:
                     self._count_critical_read_timeouts(label, retry_exc, paths)
                 if contain_timeout:
+                    if not count_timeout:
+                        # MOR-4481: same demoted-lane stash as above.
+                        for path in paths:
+                            record_direct_read_outcome(
+                                self.radio,
+                                StartupReadNote(
+                                    label=label,
+                                    path=path,
+                                    command=_direct_note_command(retry_exc),
+                                    outcome="timeout",
+                                ),
+                                now=self.clock(),
+                            )
                     return False, None
                 raise
             except CatCommandRejected as retry_exc:
@@ -2141,9 +2219,12 @@ class YaesuObservationAdapter:
         exc: Exception,
         paths: tuple[FieldPath, ...],
     ) -> bool:
-        """Hand wire evidence to the scheduler for declared-read failures."""
-        # MOR-4456: these lanes keep serving unknown after the startup deadline.
-        paths = tuple(path for path in paths if path.name not in ("ptt", "split"))
+        """Hand wire evidence to the scheduler for declared-read failures.
+
+        MOR-4481: demoted lanes (PTT/split) file here too — the routing
+        below records no startup defect for non-critical paths, and the
+        filed command is what the gate warning names.
+        """
         scheduler = getattr(self.radio, "_acquisition_scheduler", None)
         if not paths or not isinstance(scheduler, AcquisitionScheduler):
             return False

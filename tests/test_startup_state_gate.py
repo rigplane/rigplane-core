@@ -1191,8 +1191,10 @@ async def test_rigctld_unanswered_ptt_opens_after_the_non_critical_deadline(
     ]
     # The poller's own demotion WARNING lives on the backend logger and is
     # pinned by the demotion test below; this one is the gate deadline.
+    # MOR-4481: the stashed timeout note names the real command too.
     assert warnings, "the deadline WARNING must name the unanswered path"
     assert "after 10s" in warnings[0]
+    assert "command 't'" in warnings[0]
 
 
 @pytest.mark.asyncio
@@ -1447,14 +1449,14 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
 async def test_rigctld_refused_ptt_opens_after_the_non_critical_deadline(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """MOR-4456: the refused-`t` wedge is closed — PTT is non-critical.
+    """MOR-4481: a refused `t` is recorded, named, and never silent.
 
     The fake refuses `t` with ``RPRT 1`` while answering everything else.
-    A refusal is an answer, not a failure tally, so PTT simply stays
-    outstanding; the gate opens at the non-critical deadline with the
-    existing WARNING naming ``global.tx_state.ptt``. The refused cycles
-    keep running on the still-open connection, and no defect, refusal
-    tally or timeout tally accrues.
+    MOR-4456 closed the wedge (no defect, no reconnect, the gate still
+    opens); MOR-4481 records the refusal on the scheduler — PTT leaves the
+    outstanding set as unavailable — and the gate releases with a WARNING
+    naming ``global.tx_state.ptt`` with the real command (``t``) and the
+    cause. The refused cycles keep running on the still-open connection.
     """
     from rigplane.backends.rigctld_client.observations import (
         _FREQ as _RIG_FREQ,
@@ -1484,16 +1486,17 @@ async def test_rigctld_refused_ptt_opens_after_the_non_critical_deadline(
             # ends the provider epoch and clears the store.
             assert binds == ["bind"]
             assert scheduler.startup_defect is None
-            assert scheduler.consecutive_refusals(PTT) == 0
+            # MOR-4481: the refusal is recorded — the cause the gate names.
+            assert scheduler.consecutive_refusals(PTT) >= 1
             assert scheduler.consecutive_request_timeouts(PTT) == 0
             observed = _observed_paths(server, scheduler)
-            assert PTT in scheduler.unobserved_startup_paths(observed)
+            assert PTT not in scheduler.unobserved_startup_paths(observed)
+            assert PTT in scheduler.refused_paths()
             assert _RIG_FREQ in observed
             assert _RIG_MODE in observed
-            # Not vacuous: the refused `t` was asked repeatedly on one
-            # connection — the wedge (waiting forever on a tally-less
-            # refusal) is what this row closes.
-            assert fake.refused_requests >= 3
+            # Not vacuous: the refused `t` was really asked on one
+            # connection — a refusal never retires the link.
+            assert fake.refused_requests >= 1
             assert fake.connections == 1
             await server.stop()
     finally:
@@ -1504,10 +1507,16 @@ async def test_rigctld_refused_ptt_opens_after_the_non_critical_deadline(
         record.getMessage()
         for record in caplog.records
         if record.levelno == logging.WARNING
+        and record.name == "rigplane.web.web_startup"
         and "global.tx_state.ptt" in record.getMessage()
     ]
-    assert warnings, "the deadline WARNING must name the unanswered path"
-    assert "after 10s" in warnings[0]
+    # The poller's own demotion WARNING lives on the backend logger; this
+    # one is the gate release. The refused read leaves the outstanding set
+    # at once, so the gate can release before the deadline — but never
+    # silently: the warning names the real command and the cause.
+    assert warnings, "the release WARNING must name the refused path"
+    assert "command 't'" in warnings[0]
+    assert "refused" in warnings[0]
 
 
 async def _bind_managed_tx_and_start(
@@ -1587,10 +1596,13 @@ async def test_managed_startup_survives_an_unanswered_ptt_probe(
     finally:
         await fake.stop()
 
+    # MOR-4481: the silent `t` now stashes its wire evidence, so the
+    # deadline warning also names the command — the pinned substrings stay.
     assert any(
         r.levelno == logging.WARNING
         and "global.tx_state.ptt" in r.getMessage()
         and "after 10s" in r.getMessage()
+        and "command 't'" in r.getMessage()
         for r in caplog.records
     ), "the deadline WARNING must name the unanswered path"
 
@@ -1601,8 +1613,9 @@ async def test_managed_startup_survives_a_refused_ptt_probe(
 ) -> None:
     """A REFUSED `t` (RPRT error) at managed startup keeps the connection open:
     the probe refusal is not a timeout, so there is no reconnect (one
-    connection), the listener binds, freq/mode are served, PTT stays
-    unobserved and the deadline WARNING names it."""
+    connection), the listener binds, freq/mode are served. MOR-4481: the
+    refusal is recorded as unavailable, and the gate release WARNING names
+    it with the real command and the cause — never silently."""
     from rigplane.backends.rigctld_client.observations import (
         _FREQ as _RIG_FREQ,
         _MODE as _RIG_MODE,
@@ -1621,8 +1634,10 @@ async def test_managed_startup_survives_a_refused_ptt_probe(
             assert scheduler.startup_defect is None
             assert fake.refused_requests >= 1  # really asked, really refused
             assert fake.connections == 1  # a refusal never retires the link
+            assert scheduler.consecutive_refusals(PTT) >= 1
             observed = _observed_paths(server, scheduler)
-            assert PTT in scheduler.unobserved_startup_paths(observed)
+            assert PTT not in scheduler.unobserved_startup_paths(observed)
+            assert PTT in scheduler.refused_paths()
             assert _RIG_FREQ in observed
             assert _RIG_MODE in observed
             await server.stop()
@@ -1639,10 +1654,12 @@ async def test_managed_startup_survives_a_refused_ptt_probe(
 
     assert any(
         r.levelno == logging.WARNING
+        and r.name == "rigplane.web.web_startup"
         and "global.tx_state.ptt" in r.getMessage()
-        and "after 10s" in r.getMessage()
+        and "command 't'" in r.getMessage()
+        and "refused" in r.getMessage()
         for r in caplog.records
-    ), "the deadline WARNING must name the unanswered path"
+    ), "the release WARNING must name the refused path with command and cause"
 
 
 @pytest.mark.asyncio

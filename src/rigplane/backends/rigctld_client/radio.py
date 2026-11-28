@@ -24,6 +24,7 @@ from ...core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from ...core.startup_read_notes import StartupReadNote, record_direct_read_outcome
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
 from ...runtime._poller_types import (
@@ -1073,15 +1074,40 @@ class RigctldClientRadio:
                 is_current=is_current,
                 urgent=urgent,
             )
-        except RigctldCommandError:
+        except RigctldCommandError as exc:
             # An ``RPRT`` refusal: an answer, not silence — polling keeps
             # asking every cycle, but the unkey verification skips the
             # read while refused. Narrow: a malformed ``t`` (plain
             # ``CommandError`` from the decode) or a stale read leaves
-            # the refusal fact untouched.
+            # the refusal fact untouched. MOR-4481: the refusal is also
+            # filed for the startup gate, which must name the real wire
+            # command and the cause instead of releasing silently.
             self._ptt_read_refused = True
+            record_direct_read_outcome(
+                self,
+                StartupReadNote(
+                    label="ptt",
+                    path=FieldPath.global_("tx_state", "ptt"),
+                    command=exc.command,
+                    outcome="refused",
+                ),
+                now=time.monotonic(),
+            )
             raise
         except (asyncio.TimeoutError, RadioTimeoutError):
+            # MOR-4481: a silent ``t`` keeps its MOR-4456 containment (the
+            # demotion below, no scheduler record) — only the wire evidence
+            # is stashed for the gate warning.
+            record_direct_read_outcome(
+                self,
+                StartupReadNote(
+                    label="ptt",
+                    path=FieldPath.global_("tx_state", "ptt"),
+                    command="t",
+                    outcome="timeout",
+                ),
+                now=time.monotonic(),
+            )
             self._demote_ptt_read_after_timeout()
             raise
         self._ptt_read_refused = False

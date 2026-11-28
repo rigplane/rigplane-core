@@ -466,6 +466,180 @@ def _startup_path_command(server: WebServer, path: FieldPath) -> str:
     return " ".join(parts)
 
 
+def _startup_direct_note_command(server: WebServer, path: FieldPath) -> str:
+    """Wire command a backend filed for *path*, or ``""`` (MOR-4481).
+
+    The single writer is
+    :func:`core.startup_read_notes.record_direct_read_outcome`, which
+    stashes the backend-known wire form (``TX;``, ``ST;``, ``t``) per path
+    on the radio. Malformed and test-double outcomes may carry none.
+    """
+
+    notes = getattr(server._radio, "_startup_read_notes", None)
+    if not isinstance(notes, dict):
+        return ""
+    note = notes.get(path)
+    command = getattr(note, "command", "")
+    return command if isinstance(command, str) and command else ""
+
+
+def _startup_refusal_command(scheduler: AcquisitionScheduler, path: FieldPath) -> str:
+    """Wire command the scheduler's refusal record kept for *path*.
+
+    Read off the public diagnostics projection — the refusal mark carries
+    the backend's :class:`DeclaredCommandDefect` verbatim. Schedulers that
+    predate the projection (gate test doubles) simply name nothing.
+    """
+
+    diagnostics = getattr(scheduler, "diagnostics", None)
+    if not callable(diagnostics):
+        return ""
+    refusals = diagnostics().get("readRefusals", {})
+    if not isinstance(refusals, dict):
+        return ""
+    entry = refusals.get(str(path), {})
+    if not isinstance(entry, dict):
+        return ""
+    command = entry.get("command", "")
+    return command if isinstance(command, str) and command else ""
+
+
+def _startup_wire_command(
+    server: WebServer, scheduler: AcquisitionScheduler, path: FieldPath
+) -> str:
+    """Wire command the lapsed-path warning names for *path* (MOR-4481).
+
+    Backend-first: the filed direct-read note, then the scheduler's refusal
+    record, then the CI-V resolver. Yaesu CAT and rigctld paths resolve
+    through the first two; CI-V paths through the last.
+    """
+
+    return (
+        _startup_direct_note_command(server, path)
+        or _startup_refusal_command(scheduler, path)
+        or _startup_path_command(server, path)
+    )
+
+
+def _startup_path_cause(
+    server: WebServer, scheduler: AcquisitionScheduler, path: FieldPath
+) -> str:
+    """Short cause the lapsed-path warning names for *path* (MOR-4481).
+
+    Read off the scheduler's existing counters: consecutive refusals, then
+    answer-window timeouts, then a recorded-but-uncounted unavailability
+    (a lane timeout whose containment keeps no scheduler mark, or a
+    non-critical unanswered window). A path none of those ever touched was
+    never answered.
+    """
+
+    refused = scheduler.consecutive_refusals(path)
+    if refused:
+        return f"refused {refused}x"
+    timeouts = scheduler.consecutive_request_timeouts(path)
+    if timeouts:
+        return f"timed out {timeouts}x"
+    unanswered = getattr(scheduler, "unanswered_paths", None)
+    if callable(unanswered) and path in unanswered():
+        return "timed out"
+    notes = getattr(server._radio, "_startup_read_notes", None)
+    if isinstance(notes, dict):
+        note = notes.get(path)
+        if note is not None and getattr(note, "outcome", "") == "timeout":
+            return "timed out"
+    return "never answered"
+
+
+def _describe_lapsed_path(
+    server: WebServer, scheduler: AcquisitionScheduler, path: FieldPath
+) -> str:
+    """Render one lapsed path with its wire command and cause (MOR-4481)."""
+
+    command = _startup_wire_command(server, scheduler, path)
+    cause = _startup_path_cause(server, scheduler, path)
+    if command:
+        return f"{path} (command {command!r}, {cause})"
+    return f"{path} ({cause})"
+
+
+def _unwarned_unavailable_paths(
+    server: WebServer,
+    scheduler: AcquisitionScheduler,
+    *,
+    warned: set[FieldPath],
+) -> tuple[FieldPath, ...]:
+    """Refused/unanswered startup paths still unobserved (MOR-4481).
+
+    A refused (or unanswered-window) non-critical path leaves
+    :meth:`unobserved_startup_paths` at once, so the gate's outstanding set
+    never names it — without this the gate can release with no warning
+    naming it. Same membership rule as the predicate (startup-required,
+    not ``tx_only``, availability not contradicted, still unobserved, not
+    safety-critical — those abort instead of lapsing).
+    """
+
+    refused = getattr(scheduler, "refused_paths", None)
+    unanswered = getattr(scheduler, "unanswered_paths", None)
+    marked: set[FieldPath] = set()
+    if callable(refused):
+        marked |= set(refused())
+    if callable(unanswered):
+        marked |= set(unanswered())
+    if not marked:
+        return ()
+    profile = getattr(scheduler, "_profile", None)
+    if profile is None:
+        return ()
+    observed = frozenset(_observed_paths(server, scheduler))
+    availability = resolve_available_when(
+        profile, server.command_state_store.snapshot()
+    )
+    if scope_fixed_edge_slot(profile, server.command_state_store.snapshot()) is None:
+        availability[FieldPath.scope_control("display", "fixed_edge")] = False
+    return tuple(
+        sorted(
+            (
+                path
+                for path in marked
+                if path not in observed
+                and path not in warned
+                and not startup_critical_path(path)
+                and profile.capability_for(path).startup_required
+                and not profile.policy_for(path).tx_only
+                and availability.get(path, True) is not False
+            ),
+            key=str,
+        )
+    )
+
+
+def _warn_lapsed_paths(
+    server: WebServer,
+    scheduler: AcquisitionScheduler,
+    paths: tuple[FieldPath, ...],
+    *,
+    elapsed: float | None,
+) -> None:
+    """Log one gate warning naming every path with command and cause."""
+
+    if elapsed is None:
+        logger.warning(
+            "initial state acquisition: no answer for %s; serving without them",
+            ", ".join(
+                _describe_lapsed_path(server, scheduler, path) for path in paths
+            ),
+        )
+    else:
+        logger.warning(
+            "initial state acquisition: no answer for %s after %.0fs; "
+            "serving without them",
+            ", ".join(
+                _describe_lapsed_path(server, scheduler, path) for path in paths
+            ),
+            elapsed,
+        )
+
+
 def _record_critical_startup_defect(
     server: WebServer,
     scheduler: AcquisitionScheduler,
@@ -621,13 +795,19 @@ async def _await_initial_state_acquisition(
                 for path in outstanding
                 if path not in expired and not startup_critical_path(path)
             )
+            # MOR-4481: refused/unanswered paths left the outstanding set
+            # at once, so the deadline warning names them too — otherwise
+            # a refused read releases the gate with no warning naming it.
+            lapsed += _unwarned_unavailable_paths(
+                server, scheduler, warned=expired
+            )
             if lapsed:
                 expired.update(lapsed)
-                logger.warning(
-                    "initial state acquisition: no answer for %s after %.0fs; "
-                    "serving without them",
-                    ", ".join(str(path) for path in lapsed),
-                    _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS,
+                _warn_lapsed_paths(
+                    server,
+                    scheduler,
+                    lapsed,
+                    elapsed=_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS,
                 )
         blocking = tuple(path for path in outstanding if path not in expired)
         if not blocking:
@@ -696,6 +876,14 @@ async def _await_initial_state_acquisition(
                 )
             else:
                 logger.info("initial state acquisition still waiting on %s", paths)
+    # MOR-4481: a refused read can empty the blocking set before the
+    # deadline — the gate still releases, but never silently: any
+    # refused/unanswered path the deadline warning did not already name is
+    # named here.
+    leftover = _unwarned_unavailable_paths(server, scheduler, warned=expired)
+    if leftover:
+        expired.update(leftover)
+        _warn_lapsed_paths(server, scheduler, leftover, elapsed=None)
     logger.info("initial state acquisition complete")
 
 

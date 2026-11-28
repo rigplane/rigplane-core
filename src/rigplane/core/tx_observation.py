@@ -94,6 +94,9 @@ class TxStateReading:
     source: str | None = None
     verified_readback: bool = False
     failure: str | None = None
+    #: The wire command the read failed on (MOR-4481), verbatim — set only
+    #: for refused and unanswered reads, whose transport errors stamp it.
+    command: str = ""
 
 
 SWR_METER_PATH = FieldPath.global_("meters", "swr")

@@ -2730,7 +2730,8 @@ async def test_split_timeout_is_contained_and_uncounted() -> None:
     Three TX-control cycles with a silent ``ST;`` complete normally — the
     fields after split (clarifier, tuner) still reach the store — while
     no timeout tally accrues and no defect is recorded: split left the
-    critical set, so the counting switched off with it.
+    critical set, so the counting switched off with it. MOR-4481: the
+    wire evidence is still stashed for the gate warning to name.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2752,6 +2753,9 @@ async def test_split_timeout_is_contained_and_uncounted() -> None:
         assert radio._critical_read_timeouts == {}
     assert radio.read_split.await_count == 3
     assert scheduler.startup_defect is None
+    note = radio._startup_read_notes[_SPLIT]
+    assert note.command == "ST;"
+    assert note.outcome == "timeout"
 
 
 @pytest.mark.asyncio
@@ -2761,6 +2765,8 @@ async def test_split_refusal_records_no_defect_and_stays_in_cycle() -> None:
     The refusal is re-issued once (MOR-2584) without touching the timeout
     tally; the cycle completes, the fields after split still publish, and
     — split left the critical set — no startup defect is recorded.
+    MOR-4481: the refusal IS recorded as unavailable with its wire
+    command, for the gate warning to name.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2781,6 +2787,11 @@ async def test_split_refusal_records_no_defect_and_stays_in_cycle() -> None:
     assert _RIT_ON in paths, "the reads after split must still reach the store"
     assert radio._critical_read_timeouts == {}
     assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) >= 1
+    assert _SPLIT in scheduler.refused_paths()
+    note = radio._startup_read_notes[_SPLIT]
+    assert note.command == "ST;"
+    assert note.outcome == "refused"
 
 
 @pytest.mark.asyncio
@@ -3457,9 +3468,10 @@ async def test_noncritical_defective_read_records_no_defect(
 
     Same shape as ``test_defective_read_names_every_declared_path_it_feeds``
     with the MOR-4456 outcome inverted: the read skips only its own field
-    (nothing invented leaks into the store), the scheduler records no
-    startup defect, and the path stays outstanding — the gate (not the
-    lane) releases it at the non-critical deadline with its WARNING.
+    (nothing invented leaks into the store) and the scheduler records no
+    startup defect. MOR-4481: the outcome IS filed — the path is marked
+    refused/malformed (so it leaves the outstanding set) for the gate
+    warning to name with the real wire command and the cause.
     """
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
@@ -3475,7 +3487,10 @@ async def test_noncritical_defective_read_records_no_defect(
     assert scheduler.startup_defect is None
     emitted = {str(item.path) for item in observations}
     assert emitted.isdisjoint(expected)
-    assert scheduler.unobserved_startup_paths(()) == before
+    assert {str(path) for path in scheduler.refused_paths()} == set(expected)
+    assert scheduler.unobserved_startup_paths(()) == tuple(
+        path for path in before if str(path) not in set(expected)
+    )
 
 
 @pytest.mark.asyncio
