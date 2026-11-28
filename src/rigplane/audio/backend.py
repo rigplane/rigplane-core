@@ -21,6 +21,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import (
     Any,
+    Awaitable,
     Callable,
     Literal,
     NamedTuple,
@@ -810,6 +811,48 @@ def device_scan_generation() -> int:
     PortAudio re-selects when this changed.
     """
     return _open_streams.restarts
+
+
+# A stream holder's share of the re-scan idle window (MOR-4521): releasing
+# every PortAudio stream, then restoring them. Callbacks are streams-only —
+# they must not touch session demand or subscription state (the re-arm route
+# that drives them can run under the session lock; demand changes there
+# would deadlock). Registration is process-wide because the open-stream
+# count it relieves (``_open_streams``) is process-wide too. The single
+# consumer is ``UsbAudioDriver``'s declined-refresh path: a refresh that is
+# declined while streams are open asks every volunteer to quiesce, re-scans,
+# retries the start, and restores — best-effort each step, the original
+# failure surfacing whenever any step cannot help.
+_RescanQuiesceCallback = Callable[[], Awaitable[None]]
+
+_rescan_quiesce: list[tuple[Any, _RescanQuiesceCallback, _RescanQuiesceCallback]] = []
+
+
+def register_rescan_quiesce(
+    token: Any,
+    quiesce: _RescanQuiesceCallback,
+    restore: _RescanQuiesceCallback,
+) -> None:
+    """Volunteer a streams-only teardown/restore pair for a blocked re-scan.
+
+    *token* identifies the holder for :func:`unregister_rescan_quiesce`
+    (the holder itself is the usual token). Re-registering the same token
+    replaces its pair, so a repeated start never stacks duplicates.
+    """
+    unregister_rescan_quiesce(token)
+    _rescan_quiesce.append((token, quiesce, restore))
+
+
+def unregister_rescan_quiesce(token: Any) -> None:
+    """Drop a holder's re-scan pair, if present. Never raises."""
+    _rescan_quiesce[:] = [entry for entry in _rescan_quiesce if entry[0] is not token]
+
+
+def rescan_quiesce_callbacks() -> list[
+    tuple[Any, _RescanQuiesceCallback, _RescanQuiesceCallback]
+]:
+    """A snapshot of the current volunteer pairs (single consumer: USB driver)."""
+    return list(_rescan_quiesce)
 
 
 class _WindowsMtaLease:
@@ -2923,6 +2966,9 @@ __all__ = [
     "PortAudioBackend",
     "device_scan_generation",
     "portaudio_native_access",
+    "register_rescan_quiesce",
+    "rescan_quiesce_callbacks",
+    "unregister_rescan_quiesce",
     "RxStreamHealth",
     "RxStream",
     "TxPlayoutPolicy",

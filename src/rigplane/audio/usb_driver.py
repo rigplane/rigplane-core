@@ -54,6 +54,7 @@ from .backend import (
     _ACCESS_DENIED_CODES,
     _platform_uid_from_device_name,
     portaudio_native_access,
+    rescan_quiesce_callbacks,
 )
 
 logger = logging.getLogger(__name__)
@@ -2311,6 +2312,14 @@ class UsbAudioDriver:
         either opens the returned device or raises the busy error again when
         the holder is genuine. A stop that arrives while the re-scan runs
         ends the start: teardown must not be followed by a reopen.
+
+        A declined re-scan (streams still open elsewhere in the process —
+        the audio bridge keeps its playback stream up through a radio
+        outage) asks volunteered holders to quiesce their streams first
+        (MOR-4521, via ``backend.rescan_quiesce_callbacks``): quiesce,
+        re-scan, retry, restore. The original failure is raised unchanged
+        when nobody volunteered, when the re-scan stays declined, or when
+        the stop epoch moved.
         """
         epoch = self._stop_epoch
         try:
@@ -2336,6 +2345,10 @@ class UsbAudioDriver:
             except Exception:
                 logger.warning("usb-audio: device refresh failed", exc_info=True)
                 raise first from None
+            if not refreshed and self._stop_epoch == epoch:
+                refreshed = await self._rescan_with_quiesced_streams(
+                    backend, direction=direction
+                )
             if not refreshed or self._stop_epoch != epoch:
                 raise first
             logger.info(
@@ -2348,6 +2361,58 @@ class UsbAudioDriver:
             await start()
         finally:
             _retry_epoch.reset(token)
+
+    async def _rescan_with_quiesced_streams(
+        self, backend: DeviceRefreshingBackend, *, direction: str
+    ) -> bool:
+        """Re-scan with volunteered streams released (MOR-4521).
+
+        The plain re-scan above is declined while any PortAudio stream is
+        open in the process — the audio bridge's playback legitimately
+        survives a radio outage. Every holder that volunteered via
+        ``backend.register_rescan_quiesce`` (streams-only: no session
+        demand or subscription changes, so this stays safe under the
+        session lock held by the re-arm route) releases its streams, the
+        re-scan runs in the idle window, and the holders restore
+        afterwards — each step best-effort, failures logged. Returns
+        whether the re-scan ran.
+        """
+        callbacks = rescan_quiesce_callbacks()
+        if not callbacks:
+            return False
+        logger.info(
+            "usb-audio: device refresh declined with streams open; "
+            "quiescing %d stream holder(s) for the re-scan",
+            len(callbacks),
+        )
+        for _token, quiesce, _restore in callbacks:
+            try:
+                await quiesce()
+            except Exception:
+                logger.warning(
+                    "usb-audio: rescan quiesce failed; continuing", exc_info=True
+                )
+        try:
+            try:
+                ran = await bounded_portaudio_pool.run_bounded(
+                    backend.refresh_devices,
+                    what="device refresh (streams quiesced)",
+                    direction=direction,
+                    timeout=self._capture_open_timeout,
+                )
+                return bool(ran)
+            except Exception:
+                logger.warning("usb-audio: device refresh failed", exc_info=True)
+                return False
+        finally:
+            for _token, _quiesce, restore in callbacks:
+                try:
+                    await restore()
+                except Exception:
+                    logger.warning(
+                        "usb-audio: rescan restore failed; continuing",
+                        exc_info=True,
+                    )
 
     async def start_rx(
         self,

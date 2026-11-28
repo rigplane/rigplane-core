@@ -55,9 +55,11 @@ from .backend import (
     DuplexStream,
     PortAudioBackend,
     device_scan_generation,
+    register_rescan_quiesce,
     RxStream,
     RxStreamHealth,
     TxStream,
+    unregister_rescan_quiesce,
 )
 from .loop_handoff import CoalescedLoopHandoff
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
@@ -428,6 +430,10 @@ class AudioBridge:
         self._session: AudioSession | None = None
         self._rx_sub: RxSubscription | None = None
         self._tx_lease: TxLease | None = None
+        # Set while this bridge's device streams are released for a
+        # radio-side re-scan (MOR-4521): the restore reopens them, unless
+        # the bridge stopped meanwhile.
+        self._quiesced_for_rescan = False
         self._samples_per_frame = sample_rate * frame_ms // 1000
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
 
@@ -751,6 +757,26 @@ class AudioBridge:
             # radio (MOR-4338): device indices chosen above may have moved.
             dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
 
+        # A fresh TX queue per setup: frames captured by a previous
+        # generation are never replayed into the new one. The re-scan
+        # restore below keeps the live queue instead (nothing was lost —
+        # only the device streams were released).
+        self._tx_queue = asyncio.Queue(maxsize=64)
+        await self._open_device_streams(session, dev, dev_id, tx_dev_id)
+
+    async def _open_device_streams(
+        self,
+        session: AudioSession,
+        dev: AudioDeviceInfo,
+        dev_id: AudioDeviceId,
+        tx_dev_id: AudioDeviceId,
+    ) -> None:
+        """Arm the TX leg, open the device streams, start the loops.
+
+        Shared by :meth:`_setup_streams` (after declaring demands) and the
+        re-scan restore (demands survive the quiesce, so nothing here
+        subscribes, acquires, or releases — streams and loops only).
+        """
         # The radio may reject TX (serial backend with no USB-audio TX
         # path): degrade to RX-only and use a plain output stream, never a
         # duplex one (MOR-242). Only when TX is armed AND the capture leg
@@ -837,7 +863,6 @@ class AudioBridge:
 
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
-            self._tx_queue = asyncio.Queue(maxsize=64)
             if use_duplex:
                 # The single duplex stream serves BOTH playback (write) and
                 # capture (start callback). Starting it arms both directions.
@@ -877,6 +902,22 @@ class AudioBridge:
         legacy ``*_audio_tx_pcm`` TX stop (no session lease) belongs in
         :meth:`stop` only.
         """
+        await self._cancel_loops()
+
+        # Release the RX demand with the TX lease still held: the session
+        # sequences stop_tx → RX drop (MOR-574); the lease release after
+        # that is a no-op state-wise.
+        if self._rx_sub is not None:
+            await self._rx_sub.release()
+            self._rx_sub = None
+        if self._tx_lease is not None:
+            await self._tx_lease.release()
+            self._tx_lease = None
+
+        await self._stop_device_streams()
+
+    async def _cancel_loops(self) -> None:
+        """Cancel the RX/TX loops, leaving demands and streams in place."""
         if self._rx_task and not self._rx_task.done():
             self._rx_task.cancel()
             try:
@@ -895,16 +936,13 @@ class AudioBridge:
                 pass
         self._tx_task = None
 
-        # Release the RX demand with the TX lease still held: the session
-        # sequences stop_tx → RX drop (MOR-574); the lease release after
-        # that is a no-op state-wise.
-        if self._rx_sub is not None:
-            await self._rx_sub.release()
-            self._rx_sub = None
-        if self._tx_lease is not None:
-            await self._tx_lease.release()
-            self._tx_lease = None
+    async def _stop_device_streams(self) -> None:
+        """Stop the device streams, leaving demands and subscriptions in place.
 
+        Streams-only twin of the demand half of :meth:`_teardown_streams`:
+        makes no session demand or subscription change, so it stays safe
+        under the session lock held by the radio re-arm route (MOR-4521).
+        """
         # A real ``stream.stop()`` is a synchronous Pa_StopStream +
         # Pa_CloseStream pair — run every stop on the shared bounded pool
         # (MOR-2892), never on the loop. A stuck stop fails this leg's
@@ -945,6 +983,49 @@ class AudioBridge:
             except Exception:
                 logger.debug("%s: duplex stream stop error", self._label, exc_info=True)
             self._duplex_stream = None
+
+    async def _quiesce_for_rescan(self) -> None:
+        """Release the device streams for a radio-side re-scan (MOR-4521).
+
+        Streams-only: demands and the subscription survive, so the radio
+        re-arm route that drives this (through the USB driver's
+        declined-refresh path, under the session lock) never deadlocks.
+        Only a RUNNING bridge quiesces — reconnect setup/teardown owns any
+        other state, and a stopped bridge has nothing to release.
+        """
+        if not self._running or self._bridge_state is not BridgeState.RUNNING:
+            return
+        self._quiesced_for_rescan = True
+        await self._cancel_loops()
+        await self._stop_device_streams()
+
+    async def _restore_after_rescan(self) -> None:
+        """Reopen the device streams after a radio-side re-scan (MOR-4521).
+
+        Re-resolves the cable devices (the re-scan may have renumbered
+        them) and reopens exactly what the quiesce released. Demands were
+        never dropped, so nothing re-subscribes. A restore that cannot
+        reopen hands the bridge to the reconnect loop — the loops are gone
+        and must not stay missing.
+        """
+        if not self._quiesced_for_rescan:
+            return
+        self._quiesced_for_rescan = False
+        if not self._running or self._bridge_state is not BridgeState.RUNNING:
+            return
+        session = self._session
+        if session is None:  # pragma: no cover — quiesce implies setup ran
+            return
+        try:
+            dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
+            await self._open_device_streams(session, dev, dev_id, tx_dev_id)
+        except Exception as exc:
+            logger.warning(
+                "%s: restore after re-scan failed; reconnecting",
+                self._label,
+                exc_info=True,
+            )
+            self._on_stream_error(exc)
 
     # ------------------------------------------------------------------
     # Reconnect
@@ -1096,6 +1177,13 @@ class AudioBridge:
 
         self._running = True
         self._set_state(BridgeState.RUNNING, "started")
+        # Volunteer the streams-only teardown/restore pair for a blocked
+        # radio-side re-scan (MOR-4521): the USB driver's declined-refresh
+        # path quiesces this bridge so PortAudio can restart, then
+        # restores. Re-registering replaces the pair, never stacks it.
+        register_rescan_quiesce(
+            self, self._quiesce_for_rescan, self._restore_after_rescan
+        )
 
         direction = "RX+TX" if self._tx_enabled else "RX only"
         logger.info(
@@ -1112,6 +1200,7 @@ class AudioBridge:
         if self._bridge_state == BridgeState.IDLE:
             return
 
+        unregister_rescan_quiesce(self)
         self._running = False
         # Immediately leave RUNNING to prevent _on_stream_error from
         # scheduling new reconnect tasks while we tear down.
