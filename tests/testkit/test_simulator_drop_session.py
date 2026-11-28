@@ -12,13 +12,20 @@ per MOR-3315.
 Time runs on the shared virtual clock: the simulator's ``drop_session`` /
 ``reboot`` delays are loop timers, so the tests advance them with
 ``clock.elapse()``; real UDP delivery is awaited with ``await_until``.
+Silence is proven at the simulator, not the socket: a test-local tap on
+the simulator's inbound/outbound funnels first awaits the request being
+processed, then asserts the funnel emitted nothing across the elapsed
+window — a client-queue snapshot alone cannot tell "nothing sent" from
+"still in the kernel".
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import struct
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -65,35 +72,92 @@ async def _login_and_claim(client: _UdpClient, server: MockIcomRadio) -> None:
     await client.recv()
 
 
+@contextlib.contextmanager
+def _watch_traffic(server: MockIcomRadio, clock: VirtualClock):
+    """Test-local tap on the simulator's inbound and outbound funnels.
+
+    ``received`` counts inbound datagrams the simulator fully dispatched;
+    ``sent`` records ``(emitted_at, packet, addr, label)`` for every
+    datagram the simulator handed to its outbound funnel — the single
+    funnel every radio-to-client datagram goes through — with
+    ``emitted_at`` read off the shared virtual clock. Lets a silence check
+    first await the simulator actually processing the request (the whole
+    handler chain, including any erroneous reply, runs synchronously
+    inside receipt) and then assert nothing came back.
+    """
+    watch = SimpleNamespace(received=0, sent=[])
+    orig_receive = server._receive
+    orig_send = server._send
+
+    def counting_receive(data, addr, label, proto):
+        orig_receive(data, addr, label, proto)
+        watch.received += 1
+
+    def recording_send(proto, pkt, addr, label):
+        watch.sent.append((clock(), bytes(pkt), addr, label))
+        return orig_send(proto, pkt, addr, label)
+
+    server._receive = counting_receive
+    server._send = recording_send
+    try:
+        yield watch
+    finally:
+        server._receive = orig_receive
+        server._send = orig_send
+
+
 async def _recv_delivered(client: _UdpClient, description: str) -> bytes:
     """Receive a datagram the simulator sent while the clock was elapsing.
 
     The send happened when ``clock.elapse()`` fired the simulator's loop
     timer; the delivery itself is real socket I/O, so wait for it with
-    ``await_until`` (a real deadline, no wall sleep) instead of ``recv``,
-    whose ``wait_for`` bound follows the frozen virtual clock.
+    ``await_until`` (a real 2 s bound — the pre-conversion ``recv``
+    deadline, no wall sleep) instead of ``recv``, whose ``wait_for`` bound
+    follows the frozen virtual clock.
     """
     await await_until(
-        lambda: not client.queue.empty(), timeout=10.0, description=description
+        lambda: not client.queue.empty(), timeout=2.0, description=description
     )
     return client.queue.get_nowait()
 
 
-async def _expect_silence(
-    client: _UdpClient, clock: VirtualClock, duration: float
+async def _send_and_expect_silence(
+    client: _UdpClient,
+    clock: VirtualClock,
+    server: MockIcomRadio,
+    request: bytes,
+    port: int,
+    duration: float,
+    *,
+    description: str,
 ) -> None:
-    """Assert nothing arrives within ``duration`` virtual seconds.
+    """Send ``request`` and assert the simulator answers with nothing.
 
-    Advancing the clock fires every simulator timer inside the window, so a
-    stray notice, reply or retransmit would land in the queue and fail the
-    check below. ``expect_silence`` cannot be used here: its ``wait_for``
-    bound follows the frozen virtual clock and would never fire.
+    First awaits the simulator actually processing the request — any
+    erroneous reply is already in the tap by then, since the handler
+    chain runs synchronously inside receipt — then advances the clock
+    through ``duration`` so any timer the window covers would fire, and
+    finally asserts the outbound funnel stayed quiet and nothing reached
+    the client.
     """
-    await clock.elapse(duration)
-    assert client.queue.empty(), (
-        f"expected silence over {duration} virtual seconds, "
-        f"got {client.queue.qsize()} datagram(s)"
-    )
+    with _watch_traffic(server, clock) as traffic:
+        received_before = traffic.received
+        client.send(request, port)
+        await await_until(
+            lambda: traffic.received > received_before,
+            timeout=2.0,
+            description=description,
+        )
+        await clock.elapse(duration)
+        assert traffic.sent == [], (
+            f"expected the simulator to stay quiet for {duration} virtual "
+            f"seconds after {description}, but its outbound funnel emitted "
+            f"{len(traffic.sent)} datagram(s)"
+        )
+        assert client.queue.empty(), (
+            f"expected silence over {duration} virtual seconds after "
+            f"{description}, got {client.queue.qsize()} datagram(s)"
+        )
 
 
 def _conninfo_declaring(civ_local_port: int) -> bytes:
@@ -172,19 +236,36 @@ async def test_drop_session_sends_one_notice_classified_session_free(
     assert server.session_held
 
     start = virtual_clock()
-    server.drop_session(at=0.2)
-    await virtual_clock.elapse(0.2)
-    assert client.queue.empty()  # the drop itself sends nothing
-    await virtual_clock.elapse(0.1)
-    notice = await _recv_delivered(client, "the drop notice")
-    # The drop fires at +0.2 s and the notice follows ~0.1 s later.
-    assert virtual_clock() - start == pytest.approx(0.3)
+    with _watch_traffic(server, virtual_clock) as traffic:
+        server.drop_session(at=0.2)
+        await virtual_clock.elapse(0.2)  # the drop fires
+        # The release is the positive simulator-side event; the funnel
+        # proves the drop itself sent nothing.
+        await await_until(
+            lambda: not server.session_held,
+            timeout=2.0,
+            description="the drop releasing the session",
+        )
+        assert traffic.sent == []
+        assert client.queue.empty()
 
-    assert len(notice) == 0x90
-    assert notice[0x15] == 0x00  # radio-originated request type
-    assert struct.unpack_from("<I", notice, 0x60)[0] == 0  # busy=0 → free
-    # Exactly one notice.
-    await _expect_silence(client, virtual_clock, 0.4)
+        await virtual_clock.elapse(0.3)  # through the notice, due ~0.1 s later
+        # The emission timestamp — not the clock advance that released
+        # it — pins the recorded delay against the pre-conversion window:
+        # a notice scheduled at drop +0.01 s must fail the 0.25 s floor.
+        assert len(traffic.sent) == 1
+        emitted_at, emitted, _, _ = traffic.sent[0]
+        assert start + 0.25 <= emitted_at <= start + 0.4
+        notice = await _recv_delivered(client, "the drop notice")
+        assert notice == emitted
+
+        assert len(notice) == 0x90
+        assert notice[0x15] == 0x00  # radio-originated request type
+        assert struct.unpack_from("<I", notice, 0x60)[0] == 0  # busy=0 → free
+        # Exactly one notice: nothing more goes out.
+        await virtual_clock.elapse(0.4)
+        assert len(traffic.sent) == 1
+        assert client.queue.empty()
 
     _assert_notice_reaches_production_callback(notice)
     assert not server.session_held
@@ -228,8 +309,15 @@ async def test_civ_data_from_dropped_client_gets_no_answer(
     server.drop_session(at=0.2, notice=False)
     await virtual_clock.elapse(0.5)  # past the drop
 
-    client.send(_freq_get(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.4)
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _freq_get(),
+        server.civ_port,
+        0.4,
+        description="the fenced CI-V DATA reaching the simulator",
+    )
 
 
 async def test_stale_openclose_does_not_reopen_stream_and_counters(
@@ -250,11 +338,25 @@ async def test_stale_openclose_does_not_reopen_stream_and_counters(
     await virtual_clock.elapse(0.5)  # past the drop
 
     # The stale client's OpenClose(open) gets no stream and does not reopen.
-    client.send(_openclose(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _openclose(),
+        server.civ_port,
+        0.3,
+        description="the fenced stale OpenClose reaching the simulator",
+    )
     assert server.openclose_open_count == 2  # fenced opens are still counted
-    client.send(_freq_get(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _freq_get(),
+        server.civ_port,
+        0.3,
+        description="the fenced CI-V DATA reaching the simulator",
+    )
 
     # A fresh login authorises the next OpenClose(open), which reopens the stream.
     client.send(_login(), server.control_port)
@@ -308,10 +410,24 @@ async def test_fence_permission_is_per_client_not_shared(server, client, virtual
 
         # A never re-logs: its OpenClose(open) still gets nothing — B's
         # accepted login did not open the gate for the shared IP.
-        client.send(_openclose(), server.civ_port)
-        await _expect_silence(client, virtual_clock, 0.3)
-        client.send(_freq_get(), server.civ_port)
-        await _expect_silence(client, virtual_clock, 0.3)
+        await _send_and_expect_silence(
+            client,
+            virtual_clock,
+            server,
+            _openclose(),
+            server.civ_port,
+            0.3,
+            description="client A's fenced OpenClose reaching the simulator",
+        )
+        await _send_and_expect_silence(
+            client,
+            virtual_clock,
+            server,
+            _freq_get(),
+            server.civ_port,
+            0.3,
+            description="client A's fenced CI-V DATA reaching the simulator",
+        )
         # A baseline, B's accepted open, A's fenced open.
         assert server.openclose_open_count == 3
     finally:
@@ -375,10 +491,24 @@ async def test_reboot_fences_stale_openclose_until_fresh_login(
     await virtual_clock.elapse(0.2)  # the reboot fires; the radio is back
 
     # The stale client is fenced: OpenClose(open) alone does not reopen.
-    client.send(_openclose(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
-    client.send(_freq_get(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _openclose(),
+        server.civ_port,
+        0.3,
+        description="the fenced stale OpenClose reaching the simulator",
+    )
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _freq_get(),
+        server.civ_port,
+        0.3,
+        description="the fenced CI-V DATA reaching the simulator",
+    )
 
     # A fresh login + OpenClose(open) lifts the fence.
     client.send(_login(), server.control_port)
@@ -439,10 +569,24 @@ async def test_busy_rejected_conninfo_does_not_steal_fence_permission(
         # B is still served; A is still fenced.
         client_b.send(b_request, server.civ_port)
         assert _is_freq_reply(await _recv_reply(client_b, b_request))
-        client.send(_openclose(), server.civ_port)
-        await _expect_silence(client, virtual_clock, 0.3)
-        client.send(request, server.civ_port)
-        await _expect_silence(client, virtual_clock, 0.3)
+        await _send_and_expect_silence(
+            client,
+            virtual_clock,
+            server,
+            _openclose(),
+            server.civ_port,
+            0.3,
+            description="client A's fenced OpenClose reaching the simulator",
+        )
+        await _send_and_expect_silence(
+            client,
+            virtual_clock,
+            server,
+            request,
+            server.civ_port,
+            0.3,
+            description="client A's fenced CI-V DATA reaching the simulator",
+        )
     finally:
         client_b.close()
 
@@ -458,11 +602,25 @@ async def test_open_before_conninfo_stays_fenced(server, client, virtual_clock):
     # Fresh login, conninfo not yet sent: the open is fenced, and so is data.
     client.send(_login(), server.control_port)
     await client.recv()
-    client.send(_openclose(), server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
     request = _freq_get()
-    client.send(request, server.civ_port)
-    await _expect_silence(client, virtual_clock, 0.3)
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        _openclose(),
+        server.civ_port,
+        0.3,
+        description="the pre-conninfo OpenClose reaching the simulator",
+    )
+    await _send_and_expect_silence(
+        client,
+        virtual_clock,
+        server,
+        request,
+        server.civ_port,
+        0.3,
+        description="the pre-conninfo CI-V DATA reaching the simulator",
+    )
 
     # The conninfo arrives and is accepted: the next open is served.
     client.send(_conninfo(), server.control_port)
@@ -493,16 +651,30 @@ async def test_foreign_conninfo_does_not_move_permission(server, client, virtual
         client.send(_conninfo(), server.control_port)
         status = await client.recv()
         assert struct.unpack_from(">H", status, 0x42)[0] == server.civ_port
-        client.send(_openclose(), server.civ_port)
-        await _expect_silence(client, virtual_clock, 0.3)
+        await _send_and_expect_silence(
+            client,
+            virtual_clock,
+            server,
+            _openclose(),
+            server.civ_port,
+            0.3,
+            description="client A's fenced OpenClose reaching the simulator",
+        )
 
         # B's own conninfo is now busy-rejected (A holds the session); it
         # moves nothing either, so B's open is fenced too.
         client_b.send(_conninfo(), server.control_port)
         busy = await client_b.recv()
         assert struct.unpack_from("<I", busy, 0x30)[0] == _ERR_PREV_SESSION_ACTIVE
-        client_b.send(_openclose(), server.civ_port)
-        await _expect_silence(client_b, virtual_clock, 0.3)
+        await _send_and_expect_silence(
+            client_b,
+            virtual_clock,
+            server,
+            _openclose(),
+            server.civ_port,
+            0.3,
+            description="client B's fenced OpenClose reaching the simulator",
+        )
 
         # A logs in afresh; its accepted conninfo records the permission and
         # its open is served again.
