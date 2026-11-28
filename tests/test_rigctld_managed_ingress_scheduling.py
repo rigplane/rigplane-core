@@ -896,10 +896,11 @@ async def _drain_split_entry(rig, entry):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("managed_split", ["IC-7300", "IC-9700"], indirect=True)
 @pytest.mark.parametrize("db,index", [(12, 1), (20, 2)])
 async def test_managed_preamp_same_socket_reads_pending_native_index(
-    managed_split, monkeypatch, db, index
+    managed_split, virtual_clock: VirtualClock, monkeypatch, db, index
 ):
     rig = managed_split
     setter = AsyncMock(spec=rig.radio.set_preamp)
@@ -918,9 +919,23 @@ async def test_managed_preamp_same_socket_reads_pending_native_index(
         )
     )
 
-    reply = await _exchange(
-        rig.writer, rig.reader, f"L PREAMP {db}\nl PREAMP\n".encode(), lines=2
+    # The managed_split fixture freezes the loop clock, which also freezes the
+    # 2 s wait_for inside _exchange: a missing PREAMP answer would hang past
+    # CI instead of failing. Bound the socket read in real time and join it.
+    exchange = asyncio.create_task(
+        _exchange(
+            rig.writer, rig.reader, f"L PREAMP {db}\nl PREAMP\n".encode(), lines=2
+        )
     )
+    try:
+        await await_until(
+            exchange.done, timeout=10.0, description="the preamp exchange reply"
+        )
+        reply = exchange.result()
+    finally:
+        if not exchange.done():
+            exchange.cancel()
+        await asyncio.gather(exchange, return_exceptions=True)
 
     assert reply == f"RPRT 0\n{db}\n".encode()
     setter.assert_awaited_once_with(index)
