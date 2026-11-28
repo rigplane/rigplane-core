@@ -4243,11 +4243,19 @@ async def _served_silent_server_with_reopened_port(
     # The gate reads ``web_startup``'s own ``time.monotonic`` and
     # ``asyncio.sleep`` and nothing else, so the shared virtual clock drives
     # its gaps and deadlines while every other caller keeps real time. The
-    # clock is anchored at the real now: the reopened-link fixture below
-    # still needs a fresh-enough liveness tick against the backend's
-    # real-time ``radio_ready`` window.
-    clock = VirtualClock(start=time.monotonic())
+    # reopened-link fixture below needs a fresh-enough liveness tick
+    # against the backend's ``radio_ready`` freshness window, so the same
+    # clock also drives ``rigplane.runtime.radio``'s own ``time`` reads —
+    # one shared clock for the gate and its freshness consumer, at a fixed
+    # virtual epoch (no raw clock read). Only monotonic reads take the view
+    # there; the backend keeps its real sleeps.
+    from rigplane.runtime import radio as radio_module
+
+    clock = VirtualClock(start=1_000.0)
     clock.scope_to(monkeypatch, web_startup)
+    clock.scope_to(monkeypatch, radio_module)
+    # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+    monkeypatch.setattr(radio_module, "asyncio", asyncio)
     gate_task = asyncio.create_task(
         _await_initial_state_acquisition(server, sweep=True)
     )
@@ -5374,10 +5382,11 @@ async def test_retired_identity_exception_preserves_replacement_hold(
     retired = asyncio.create_task(getattr(radio, initial_action)())
     try:
         # The retired read reaches its fault on its own task: wait for that
-        # real event, not a wall window.
+        # real event, not a wall window. The bound stays the original one
+        # second; it only guards a stuck run.
         await await_until(
             lambda: entered.is_set(),
-            timeout=10.0,
+            timeout=1.0,
             description="the retired read to reach its fault",
         )
         await radio.disconnect()
@@ -5758,6 +5767,7 @@ def _identity_held_gate_radio() -> tuple[object, object]:
 @pytest.mark.asyncio
 async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The bench regression: a silent port must serve, not exit.
 
@@ -5816,24 +5826,20 @@ async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers
             assert identity is not None
             assert identity.status is RadioIdentityStatus.UNVERIFIED
 
-            # Let any late failure land before judging the log: wait until
-            # no new audio/scope ERROR record appears across consecutive
-            # polls instead of a fixed wall window.
-            _audio_errors = {"seen": -1, "stable": 0}
+            # The old 0.2 s settle, on the shared virtual clock: the
+            # post-connect timers (watchdog, identity rereads) advance the
+            # clock instead of the wall, so 0.2 virtual seconds gives the
+            # connect storm the same scheduling opportunity with no wall
+            # wait. The seconds-scale bound only guards a stuck run.
+            from rigplane.backends import _icom_serial_base as serial_base
 
-            def _audio_scope_quiet() -> bool:
-                count = len(_audio_scope_error_records(caplog))
-                if count == _audio_errors["seen"]:
-                    _audio_errors["stable"] += 1
-                else:
-                    _audio_errors["seen"] = count
-                    _audio_errors["stable"] = 0
-                return _audio_errors["stable"] >= 3
-
+            clock = VirtualClock(start=1_000.0)
+            clock.scope_to(monkeypatch, serial_base)
+            settled_at = clock()
             await await_until(
-                _audio_scope_quiet,
-                timeout=10.0,
-                description="late audio/scope failures to land",
+                lambda: clock() - settled_at >= 0.2,
+                timeout=5.0,
+                description="the post-connect storm to run its settle window",
             )
             assert _audio_scope_error_records(caplog) == []
 
@@ -5932,9 +5938,32 @@ def _deferred_bridge_runner(server: WebServer) -> asyncio.Task[Any] | None:
     return None
 
 
+def _virtualize_deferred_timers(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
+    """Drive the deferred auto-start's poll/retry timers with one shared clock.
+
+    The CLI-armed runner polls ``radio_audio_ready`` on the server module's
+    own ``asyncio.sleep``, and the serial backend paces the connect
+    handshake with its watchdog and identity-reread timers on its own
+    module's ``asyncio.sleep``. Pointing one shared virtual clock at both
+    modules turns every one of those waits into a clock jump plus one loop
+    turn — the passes still happen, in order, with no wall wait.
+    Real-event waits (connect, bridge start, runner done) stay real, and
+    the clock starts at a fixed virtual epoch (no raw clock read).
+    """
+
+    from rigplane.backends import _icom_serial_base as serial_base
+    from rigplane.web import server as server_module
+
+    clock = VirtualClock(start=1_000.0)
+    clock.scope_to(monkeypatch, server_module)
+    clock.scope_to(monkeypatch, serial_base)
+    return clock
+
+
 @pytest.mark.asyncio
 async def test_audio_auto_start_defers_then_starts_exactly_once(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MOR-3078: the deferred auto-start runs once the radio answers.
 
@@ -5947,6 +5976,7 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
     """
 
     link, radio = _identity_held_gate_radio()
+    _virtualize_deferred_timers(monkeypatch)
     bridge_start = AsyncMock()
     with (
         patch.object(WebServer, "start_audio_bridge", bridge_start),
@@ -5991,6 +6021,7 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
 @pytest.mark.asyncio
 async def test_deferred_auto_bridge_never_starts_after_stop_begins(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MOR-3078: a deferral that never sees the radio answer dies with the server.
 
@@ -6001,6 +6032,7 @@ async def test_deferred_auto_bridge_never_starts_after_stop_begins(
     """
 
     link, radio = _identity_held_gate_radio()
+    _virtualize_deferred_timers(monkeypatch)
     bridge_start = AsyncMock()
     with (
         patch.object(WebServer, "start_audio_bridge", bridge_start),
@@ -6079,7 +6111,6 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
     )
     from rigplane.audio.usb_driver import UsbAudioDriver
     from rigplane.backends.icom7610 import Icom7610SerialRadio
-    from rigplane.web import server as server_module
     from test_audio_bridge import _bridge_backend
 
     device = str(tmp_path / "cu.usbserial-1420")
@@ -6120,8 +6151,10 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
     radio._serial_civ_timeout_evidence_crossed_threshold = lambda: False
 
     monkeypatch.setattr(bridge_module, "PortAudioBackend", lambda: bridge_backend)
-    monkeypatch.setattr(server_module, "_BRIDGE_DEFER_POLL_S", 0.01)
     monkeypatch.setattr("rigplane.cli._detect_loopback_hint", lambda: None)
+    # After the radio exists, so construction still binds real time: only
+    # the serve-time poll/retry timers take the clock.
+    _virtualize_deferred_timers(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
         async with _served_through_cli(radio, bridge="auto") as server:
@@ -6133,11 +6166,11 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
                 description="the deferred bridge runner to arm",
             )
             assert runner is not None
-            # The missing-port retry loop stays live across several retry
-            # cycles while the port is missing (the deferred runner polls
-            # alongside it), but no bridge may exist and no audio stream
-            # may open.
-            assert await await_until(lambda: link.connect_calls >= 4, timeout=5.0)
+            # The missing-port retry loop stays live across retry cycles
+            # while the port is missing (its waits run on the virtual
+            # clock, so the passes cost no wall time), but no bridge may
+            # exist and no audio stream may open.
+            assert await await_until(lambda: link.connect_calls >= 2, timeout=5.0)
             assert server._audio_bridge is None  # noqa: SLF001
             assert bridge_backend.rx_streams == []
             assert bridge_backend.tx_streams == []
