@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.testing.timing import VirtualClock, await_until
+
 from rigplane.commands import parse_civ_frame, build_civ_frame
 from rigplane.core.command_service import (
     CommandExecutionResult,
@@ -34,7 +36,7 @@ ACK = parse_civ_frame(bytes.fromhex("FE FE E0 94 FB FD"))
 READBACK = parse_civ_frame(bytes.fromhex("FE FE E0 94 25 01 00 40 07 14 00 FD"))
 
 
-def setup(active="A", *, age=0, generation=None, model="IC-7300"):
+def setup(active="A", *, age=0, generation=None, model="IC-7300", clock=time.monotonic):
     store = StateStore()
     store.begin_provider_generation()
     profile = resolve_radio_profile(model=model)
@@ -52,7 +54,7 @@ def setup(active="A", *, age=0, generation=None, model="IC-7300"):
         radio
     )
     queue = CommandQueue()
-    poller = RadioPoller(radio, queue, state_store=store)
+    poller = RadioPoller(radio, queue, state_store=store, clock=clock)
     if active is not None:
         store.apply(
             Observation(
@@ -61,7 +63,7 @@ def setup(active="A", *, age=0, generation=None, model="IC-7300"):
                 source=SourceMetadata(
                     source="command_response", provider="vfo_binding"
                 ),
-                timestamp_monotonic=time.monotonic() - age,
+                timestamp_monotonic=clock() - age,
                 max_age=5,
                 provider_generation=store.provider_generation
                 if generation is None
@@ -87,8 +89,11 @@ def command(store, slot="B", expected="A", **changes):
     "active,slot,selector", [("A", "A", 0), ("A", "B", 1), ("B", "A", 1), ("B", "B", 0)]
 )
 @pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
-async def test_direct_wire_and_no_selection(active, slot, selector, model):
-    poller, radio, store, _ = setup(active, model=model)
+@pytest.mark.timeout(30)
+async def test_direct_wire_and_no_selection(
+    virtual_clock: VirtualClock, active, slot, selector, model
+):
+    poller, radio, store, _ = setup(active, model=model, clock=virtual_clock)
     addr = radio.profile.civ_addr
     writer = radio.write_relative_vfo_frequency
     radio.write_relative_vfo_frequency = AsyncMock(
@@ -130,10 +135,13 @@ async def test_direct_wire_and_no_selection(active, slot, selector, model):
     "active,age,generation",
     [(None, 0, None), ("B", 0, None), ("A", 8, None), ("A", 0, 0)],
 )
+@pytest.mark.timeout(30)
 async def test_unknown_stale_or_mismatched_identity_never_writes(
-    active, age, generation
+    virtual_clock: VirtualClock, active, age, generation
 ):
-    poller, radio, store, _ = setup(active, age=age, generation=generation)
+    poller, radio, store, _ = setup(
+        active, age=age, generation=generation, clock=virtual_clock
+    )
     with pytest.raises(CommandError):
         await poller._execute(command(store))
     radio.send_civ.assert_not_called()
@@ -155,7 +163,7 @@ async def test_unknown_stale_or_mismatched_identity_never_writes(
     ],
 )
 def test_strict_command_fields(changes):
-    _, _, store, _ = setup()
+    _, _, store, _ = setup(clock=VirtualClock(start=1_000.0))
     with pytest.raises(ValueError):
         command(store, **changes)
 
@@ -164,16 +172,20 @@ def test_strict_command_fields(changes):
     "changes",
     [dict(freq=29_999), dict(freq=100_000_000), dict(provider_generation=999)],
 )
-async def test_bounds_and_provider_mismatch_never_write(changes):
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_bounds_and_provider_mismatch_never_write(
+    virtual_clock: VirtualClock, changes
+):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     with pytest.raises(CommandError):
         await poller._execute(command(store, **changes))
     radio.send_civ.assert_not_called()
 
 
 @pytest.mark.parametrize("model", ["IC-7610", "FTX-1"])
-async def test_unsupported_profile_has_no_route(model):
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_unsupported_profile_has_no_route(virtual_clock: VirtualClock, model):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     radio.profile = resolve_radio_profile(model=model)
     poller._profile = radio.profile
     assert "vfo_freq_direct" not in projected_vfo_capability_tags(radio, None)
@@ -182,10 +194,11 @@ async def test_unsupported_profile_has_no_route(model):
     radio.send_civ.assert_not_called()
 
 
-async def test_missing_profile_write_command_has_no_route():
+@pytest.mark.timeout(30)
+async def test_missing_profile_write_command_has_no_route(virtual_clock: VirtualClock):
     from rigplane.commands.command_map import CommandMap
 
-    poller, radio, store, _ = setup(model="IC-705")
+    poller, radio, store, _ = setup(model="IC-705", clock=virtual_clock)
     cmd_map = radio.profile.command_map
     radio.profile = dataclasses.replace(
         radio.profile,
@@ -200,8 +213,9 @@ async def test_missing_profile_write_command_has_no_route():
     radio.send_civ.assert_not_called()
 
 
-async def test_nak_is_failure_without_readback():
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_nak_is_failure_without_readback(virtual_clock: VirtualClock):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     radio.send_civ.side_effect = [parse_civ_frame(bytes.fromhex("FE FE E0 94 FA FD"))]
     with pytest.raises(CommandError):
         await poller._execute(command(store))
@@ -213,7 +227,7 @@ async def test_nak_is_failure_without_readback():
     [("A", "A", "active"), ("B", "A", "unselected"), ("A", "B", "unselected")],
 )
 def test_pending_intent_targets_exact_relative_slot(slot, expected, path):
-    _, _, store, _ = setup()
+    _, _, store, _ = setup(clock=VirtualClock(start=1_000.0))
     intent = command_intent_from_request(
         "set_vfo_freq",
         dataclasses.asdict(command(store, slot, expected)),
@@ -227,13 +241,16 @@ def test_pending_intent_targets_exact_relative_slot(slot, expected, path):
     assert intent.params["freq_hz"] == FREQ
 
 
-async def test_handler_waits_and_pins_connection_generation():
-    poller, radio, store, queue = setup()
+@pytest.mark.timeout(30)
+async def test_handler_waits_and_pins_connection_generation(
+    virtual_clock: VirtualClock,
+):
+    poller, radio, store, queue = setup(clock=virtual_clock)
     handler = ControlHandler.__new__(ControlHandler)
     handler._radio = radio
     handler._read_only = False
     handler._command_service = None
-    handler._clock = time.monotonic
+    handler._clock = virtual_clock
     handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
     intent = command_intent_from_request(
         "set_vfo_freq", dataclasses.asdict(command(store)), source="websocket"
@@ -249,8 +266,9 @@ async def test_handler_waits_and_pins_connection_generation():
     assert (await task).details["slot"] == "B"
 
 
-async def test_queued_reconnect_rejects_before_wire():
-    poller, radio, store, queue = setup()
+@pytest.mark.timeout(30)
+async def test_queued_reconnect_rejects_before_wire(virtual_clock: VirtualClock):
+    poller, radio, store, queue = setup(clock=virtual_clock)
     entry = queue.put_ordered(
         command(store),
         provider_generation=store.provider_generation,
@@ -262,14 +280,17 @@ async def test_queued_reconnect_rejects_before_wire():
     radio.send_civ.assert_not_called()
 
 
-async def test_internal_selection_waits_for_direct_write_and_readback():
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_internal_selection_waits_for_direct_write_and_readback(
+    virtual_clock: VirtualClock,
+):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     store.apply(
         Observation(
             path=FieldPath.global_("tx_state", "ptt"),
             value=False,
             source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             provider_generation=store.provider_generation,
         )
     )
@@ -296,7 +317,10 @@ async def test_internal_selection_waits_for_direct_write_and_readback():
     poller._select_and_bind_vfo_slot.assert_awaited_once()
 
 
-async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
+@pytest.mark.timeout(30)
+async def test_ack_keeps_inactive_pending_until_matching_inactive_observation(
+    virtual_clock: VirtualClock,
+):
     store = StateStore()
     store.begin_provider_generation()
     service = CommandService(
@@ -307,6 +331,7 @@ async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
             )
         ),
         state_store=store,
+        clock=virtual_clock,
     )
     intent = command_intent_from_request(
         "set_vfo_freq",
@@ -328,7 +353,7 @@ async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
                     session_id="test",
                 ),
                 correlation_id=intent.id,
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=virtual_clock(),
                 provider_generation=store.provider_generation,
             )
         )
@@ -338,8 +363,11 @@ async def test_ack_keeps_inactive_pending_until_matching_inactive_observation():
 
 @pytest.mark.parametrize("phase", ["ack", "readback"])
 @pytest.mark.parametrize("change", ["provider", "binding"])
-async def test_generation_change_during_transaction_does_not_confirm(phase, change):
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_generation_change_during_transaction_does_not_confirm(
+    virtual_clock: VirtualClock, phase, change
+):
+    poller, radio, store, _ = setup(clock=virtual_clock)
 
     async def send(*args, **kwargs):
         index = radio.send_civ.await_count
@@ -359,8 +387,11 @@ async def test_generation_change_during_transaction_does_not_confirm(phase, chan
     assert not any(field.path.name == "freq_hz" for field in store.snapshot().fields)
 
 
-async def test_mismatched_readback_selector_cannot_confirm_other_slot():
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_mismatched_readback_selector_cannot_confirm_other_slot(
+    virtual_clock: VirtualClock,
+):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     radio.send_civ.side_effect = [
         ACK,
         parse_civ_frame(bytes.fromhex("FE FE E0 94 25 00 00 40 07 14 00 FD")),
@@ -369,8 +400,9 @@ async def test_mismatched_readback_selector_cannot_confirm_other_slot():
         await poller._execute(command(store))
 
 
-async def test_ack_alone_does_not_change_frequency_truth():
-    poller, radio, store, _ = setup()
+@pytest.mark.timeout(30)
+async def test_ack_alone_does_not_change_frequency_truth(virtual_clock: VirtualClock):
+    poller, radio, store, _ = setup(clock=virtual_clock)
     reading, release = asyncio.Event(), asyncio.Event()
 
     async def send(*args, **kwargs):
@@ -388,8 +420,9 @@ async def test_ack_alone_does_not_change_frequency_truth():
     await task
 
 
-async def test_cancelled_queued_request_cannot_write():
-    poller, radio, store, queue = setup()
+@pytest.mark.timeout(30)
+async def test_cancelled_queued_request_cannot_write(virtual_clock: VirtualClock):
+    poller, radio, store, queue = setup(clock=virtual_clock)
     future = asyncio.get_running_loop().create_future()
     entry = queue.put_ordered(command(store), future=future)
     future.cancel()
@@ -401,11 +434,12 @@ async def test_cancelled_queued_request_cannot_write():
     "active,slot", [("A", "A"), ("A", "B"), ("B", "A"), ("B", "B")]
 )
 @pytest.mark.parametrize("outcome", ["success", "disconnect", "cancel", "rebind"])
+@pytest.mark.timeout(30)
 async def test_real_service_handler_queue_poller_completes_correlated_readback(
-    active, slot, outcome
+    virtual_clock: VirtualClock, active, slot, outcome
 ):
-    poller, radio, store, queue = setup(active)
-    now = time.monotonic()
+    poller, radio, store, queue = setup(active, clock=virtual_clock)
+    now = virtual_clock()
     store.apply_relative_vfo_observations(
         tuple(
             Observation(
@@ -454,7 +488,7 @@ async def test_real_service_handler_queue_poller_completes_correlated_readback(
                         source=SourceMetadata(
                             source="command_response", provider="vfo_binding"
                         ),
-                        timestamp_monotonic=time.monotonic(),
+                        timestamp_monotonic=virtual_clock(),
                         provider_generation=store.provider_generation,
                     )
                 )
@@ -465,11 +499,12 @@ async def test_real_service_handler_queue_poller_completes_correlated_readback(
         queue.put_ordered = put_with_rebind
     handler = ControlHandler.__new__(ControlHandler)
     handler._radio, handler._read_only = radio, False
-    handler._clock = time.monotonic
+    handler._clock = virtual_clock
     handler._server = SimpleNamespace(command_queue=queue, command_state_store=store)
     service = CommandService(
         executor=SimpleNamespace(execute=handler._execute_intent),
         state_store=store,
+        clock=virtual_clock,
     )
     handler._command_service = service
     intent = command_intent_from_request(
@@ -479,7 +514,9 @@ async def test_real_service_handler_queue_poller_completes_correlated_readback(
         session_id="integrated",
     )
     task = asyncio.create_task(service.execute(intent))
-    await queue.wait(timeout=1)
+    await await_until(
+        lambda: queue.has_commands, description="queued set_vfo_freq entry arrives"
+    )
     entry = queue.take_entry()
     assert entry is not None, task.exception() if task.done() else "no queue entry"
     dispatch = asyncio.create_task(poller._execute_queued_entry(entry))
