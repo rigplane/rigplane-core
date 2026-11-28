@@ -80,7 +80,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
-from rigplane.testing.timing import ManualClock, await_until
+from rigplane.testing.timing import ManualClock, VirtualClock, await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from rigplane_testkit.fixture_rows import CatPairRow, read_cat_rows
 from rigplane_testkit.leaked_radio_guard import fake_connected
@@ -671,7 +671,13 @@ async def test_civ_startup_binds_only_after_the_predicate_is_satisfied() -> None
         patch("rigplane.web.web_startup.RadioPoller", return_value=fake_poller),
     ):
         start = asyncio.create_task(server.start())
-        await asyncio.sleep(0.05)
+        # The gate primes on its own task: wait for that real event, not a
+        # wall window, before asserting the listener is still unbound.
+        await await_until(
+            lambda: scheduler.prime_limits,
+            timeout=10.0,
+            description="the startup sweep to prime",
+        )
         assert binds == [], "listener bound before the predicate was satisfied"
         assert scheduler.prime_limits, "startup sweep never primed"
 
@@ -738,8 +744,10 @@ async def test_web_ui_banner_prints_only_after_the_server_reports_started(
 
         async def serve_forever(self, *, on_started: object = None) -> None:
             # The real WebServer only returns from start() after the bind;
-            # resolve late so anything printed earlier lands here.
-            await asyncio.sleep(0.05)
+            # resolve late so anything printed earlier lands here. One loop
+            # yield keeps the ordering without waiting on the wall clock:
+            # nothing can print "Web UI:" before on_started() runs.
+            await asyncio.sleep(0)
             before_start.append(capsys.readouterr().out)
             assert callable(on_started)
             on_started()
@@ -4219,7 +4227,9 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     await radio.disconnect()
 
 
-async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRadio]:
+async def _served_silent_server_with_reopened_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[WebServer, IcomRadio, VirtualClock]:
     """The round-3 stand shape: the gate served silently, then the watchdog
     reopened the present-but-silent port — the live state (and
     ``radio_ready``) say connected/ready again while the radio has still
@@ -4230,10 +4240,47 @@ async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRad
     server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
     radio = _silent_link_radio(server, scheduler)
 
-    clock = _GateClock(stop_at=6.0)
-    clock.on_tick = _re_read_without_answer(scheduler, FREQ)
-    with _fake_gate_clock(clock):
-        await _await_initial_state_acquisition(server, sweep=True)
+    # The gate reads ``web_startup``'s own ``time.monotonic`` and
+    # ``asyncio.sleep`` and nothing else, so the shared virtual clock drives
+    # its gaps and deadlines while every other caller keeps real time. The
+    # clock is anchored at the real now: the reopened-link fixture below
+    # still needs a fresh-enough liveness tick against the backend's
+    # real-time ``radio_ready`` window.
+    clock = VirtualClock(start=time.monotonic())
+    clock.scope_to(monkeypatch, web_startup)
+    gate_task = asyncio.create_task(
+        _await_initial_state_acquisition(server, sweep=True)
+    )
+    try:
+        # What the per-tick hook did before: each gate pass frees the timed
+        # out request back to "not observed, not pending", and failures about
+        # a virtual second apart trip the three-attempt silent release. The
+        # clock records every gap sleep, so the next pass is a real event to
+        # wait for — no wall window, no per-file clock class.
+        seen = 0
+        for _ in range(400):
+            if gate_task.done():
+                break
+            await await_until(
+                lambda: gate_task.done() or len(clock.sleeps) > seen,
+                timeout=10.0,
+                description="the gate's next sweep pass",
+            )
+            seen = len(clock.sleeps)
+            if gate_task.done():
+                break
+            _re_read_without_answer(scheduler, FREQ)(clock())
+        await await_until(
+            lambda: gate_task.done(),
+            timeout=30.0,
+            description="the startup gate to release",
+        )
+        await gate_task
+    finally:
+        if not gate_task.done():
+            gate_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await gate_task
 
     # The raced instant after the reopen: the transport is back, the CI-V
     # stream counts as healthy, and a fresh-enough liveness tick makes the
@@ -4243,12 +4290,14 @@ async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRad
     radio._civ_transport = object()
     radio._civ_stream_ready = True
     radio._civ_recovering = False
-    radio._last_civ_data_received = time.monotonic()
-    return server, radio
+    radio._last_civ_data_received = clock()
+    return server, radio, clock
 
 
 @pytest.mark.asyncio
-async def test_served_silent_link_publishes_not_answering_after_reconnect() -> None:
+async def test_served_silent_link_publishes_not_answering_after_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MOR-2841 (round 3): the reopened silent port must not read as healthy.
 
     After the gate served in the radio-not-answering state AND the link has
@@ -4258,7 +4307,7 @@ async def test_served_silent_link_publishes_not_answering_after_reconnect() -> N
     the live link state, owns the verdict.
     """
 
-    server, radio = await _served_silent_server_with_reopened_port()
+    server, radio, _clock = await _served_silent_server_with_reopened_port(monkeypatch)
 
     assert radio.radio_ready is True  # not vacuous: live evidence says ready
 
@@ -4269,7 +4318,9 @@ async def test_served_silent_link_publishes_not_answering_after_reconnect() -> N
 
 
 @pytest.mark.asyncio
-async def test_first_radio_observation_clears_the_not_answering_verdict() -> None:
+async def test_first_radio_observation_clears_the_not_answering_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MOR-2841 (round 3): the verdict clears at the radio's first answer.
 
     The served-silent mark is durable, but the health builder re-reads the
@@ -4278,9 +4329,9 @@ async def test_first_radio_observation_clears_the_not_answering_verdict() -> Non
     session is reported normally again.
     """
 
-    server, radio = await _served_silent_server_with_reopened_port()
+    server, radio, clock = await _served_silent_server_with_reopened_port(monkeypatch)
     server.command_state_store.apply(
-        _observation(FieldPath.global_("tx_state", "ptt"), False, at=time.monotonic())
+        _observation(FieldPath.global_("tx_state", "ptt"), False, at=clock())
     )
 
     assert server._served_with_silent_link is True  # the mark itself stays
@@ -5322,7 +5373,13 @@ async def test_retired_identity_exception_preserves_replacement_hold(
     radio._read_serial_identity_payload = read
     retired = asyncio.create_task(getattr(radio, initial_action)())
     try:
-        await asyncio.wait_for(entered.wait(), 1)
+        # The retired read reaches its fault on its own task: wait for that
+        # real event, not a wall window.
+        await await_until(
+            lambda: entered.is_set(),
+            timeout=10.0,
+            description="the retired read to reach its fault",
+        )
         await radio.disconnect()
         await radio.connect()
         replacement = radio.connection_identity
@@ -5363,7 +5420,9 @@ async def test_traced_link_witness_is_transparent() -> None:
     await link.send(query)
     assert link.identity_queries == 1
     assert link._responses.qsize() == 1  # the answer is queued, unread
-    reply = await link.receive(timeout=0.2)
+    # The answer is already queued, so the receive returns at once; the
+    # default bound stands in for no wall parameter at all.
+    reply = await link.receive()
     assert reply is not None and b"\x19\x00\x98" in reply
     assert link._responses.qsize() == 0
 
@@ -5374,7 +5433,14 @@ async def test_traced_link_witness_is_transparent() -> None:
     assert f"{id(asyncio.current_task()):x}" in trace
 
     rx = asyncio.create_task(link.receive(timeout=5.0), name="diag-cancel-probe")
-    await asyncio.sleep(0.01)
+    # Cancel only once the probe is provably parked in the receive: its
+    # stack then names the frame, so no wall window decides the interleave.
+    # The 5 s bound never fires — the cancel below always lands first.
+    await await_until(
+        lambda: any(frame.f_code.co_name == "receive" for frame in rx.get_stack()),
+        timeout=10.0,
+        description="the diagnostic probe to park in receive",
+    )
     rx.cancel()
     with pytest.raises(asyncio.CancelledError):
         await rx
@@ -5750,8 +5816,25 @@ async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers
             assert identity is not None
             assert identity.status is RadioIdentityStatus.UNVERIFIED
 
-            # Let any late failure land before judging the log.
-            await asyncio.sleep(0.2)
+            # Let any late failure land before judging the log: wait until
+            # no new audio/scope ERROR record appears across consecutive
+            # polls instead of a fixed wall window.
+            _audio_errors = {"seen": -1, "stable": 0}
+
+            def _audio_scope_quiet() -> bool:
+                count = len(_audio_scope_error_records(caplog))
+                if count == _audio_errors["seen"]:
+                    _audio_errors["stable"] += 1
+                else:
+                    _audio_errors["seen"] = count
+                    _audio_errors["stable"] = 0
+                return _audio_errors["stable"] >= 3
+
+            await await_until(
+                _audio_scope_quiet,
+                timeout=10.0,
+                description="late audio/scope failures to land",
+            )
             assert _audio_scope_error_records(caplog) == []
 
 
@@ -5832,6 +5915,23 @@ def test_identity_hold_predicate_requires_a_disconnected_radio() -> None:
     assert serial_identity_hold(mock_radio) is None
 
 
+def _deferred_bridge_runner(server: WebServer) -> asyncio.Task[Any] | None:
+    """The CLI-armed deferred auto-start task, while it is still tracked.
+
+    ``WebServer._spawn`` tracks background tasks until they finish; the
+    deferred runner is one-shot, so once it is gone from the tracked set it
+    has finished its single attempt and no trigger can fire from it again.
+    """
+
+    for task in list(server._bg_tasks):
+        coro = task.get_coro()
+        if coro is not None and coro.__qualname__.endswith(
+            "_run_deferred_audio_bridge_start"
+        ):
+            return task
+    return None
+
+
 @pytest.mark.asyncio
 async def test_audio_auto_start_defers_then_starts_exactly_once(
     caplog: pytest.LogCaptureFixture,
@@ -5854,6 +5954,13 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
     ):
         async with _served_through_cli(radio, bridge="auto") as server:
             assert server is not None
+            # The CLI armed the deferred runner while the connect was held.
+            runner = await await_until(
+                lambda: _deferred_bridge_runner(server),
+                timeout=10.0,
+                description="the deferred bridge runner to arm",
+            )
+            assert runner is not None
             assert bridge_start.await_count == 0  # deferred, not attempted
             assert any(
                 record.name == "rigplane.cli"
@@ -5864,13 +5971,20 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
             link.policy_answer = True
             assert await await_until(lambda: radio.connected, timeout=5.0)
             assert await await_until(lambda: bridge_start.await_count == 1, timeout=5.0)
-            await asyncio.sleep(0.5)  # a duplicate trigger would land here
+            # The single runner finished its one attempt: a later duplicate
+            # trigger has no runner left to fire it.
+            await await_until(
+                lambda: runner.done(),
+                timeout=10.0,
+                description="the deferred bridge runner to finish",
+            )
+            await runner
             assert bridge_start.await_count == 1
             assert bridge_start.await_args is not None
             assert bridge_start.await_args.kwargs.get("device_name") is None
 
-    # The server is down: no start may fire after stop begins.
-    await asyncio.sleep(0.2)
+    # The server is down, and shutdown cancels every background task: no
+    # start may fire after stop begins.
     assert bridge_start.await_count == 1
 
 
@@ -5892,10 +6006,20 @@ async def test_deferred_auto_bridge_never_starts_after_stop_begins(
         patch.object(WebServer, "start_audio_bridge", bridge_start),
         caplog.at_level(logging.WARNING),
     ):
-        async with _served_through_cli(radio, bridge="auto"):
+        async with _served_through_cli(radio, bridge="auto") as server:
+            assert server is not None
+            runner = await await_until(
+                lambda: _deferred_bridge_runner(server),
+                timeout=10.0,
+                description="the deferred bridge runner to arm",
+            )
+            assert runner is not None
             assert bridge_start.await_count == 0
             # The radio never answers; the block exits straight to shutdown.
-        await asyncio.sleep(0.3)
+        # Shutdown cancels every background task and joins them, so the
+        # runner is done and never started a bridge: nothing may fire once
+        # the server is down.
+        assert runner.done()
         assert bridge_start.await_count == 0
 
 
@@ -6002,11 +6126,18 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
     with caplog.at_level(logging.WARNING):
         async with _served_through_cli(radio, bridge="auto") as server:
             assert server is not None
-            # Several deferred-runner poll cycles pass while the port is
-            # missing: the missing-port retry loop stays live, but no
-            # bridge may exist and no audio stream may open.
-            assert await await_until(lambda: link.connect_calls >= 2, timeout=5.0)
-            await asyncio.sleep(0.1)
+            # The CLI armed the deferred runner while the port was missing.
+            runner = await await_until(
+                lambda: _deferred_bridge_runner(server),
+                timeout=10.0,
+                description="the deferred bridge runner to arm",
+            )
+            assert runner is not None
+            # The missing-port retry loop stays live across several retry
+            # cycles while the port is missing (the deferred runner polls
+            # alongside it), but no bridge may exist and no audio stream
+            # may open.
+            assert await await_until(lambda: link.connect_calls >= 4, timeout=5.0)
             assert server._audio_bridge is None  # noqa: SLF001
             assert bridge_backend.rx_streams == []
             assert bridge_backend.tx_streams == []
@@ -6032,7 +6163,14 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
                 ),
                 timeout=5.0,
             )
-            await asyncio.sleep(0.5)  # a duplicate start would land here
+            # The single runner finished its one real start: a duplicate
+            # start would have opened a second set of streams.
+            await await_until(
+                lambda: runner.done(),
+                timeout=10.0,
+                description="the deferred bridge runner to finish",
+            )
+            await runner
             bridge = server._audio_bridge  # noqa: SLF001
             assert bridge is not None and bridge.running
             assert len(bridge_backend.tx_streams) == 1
