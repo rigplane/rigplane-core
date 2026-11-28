@@ -21,6 +21,7 @@ import pytest
 from rigplane.audio_bus import AudioBus
 from rigplane.core.exceptions import AudioFormatError
 from rigplane.radio_protocol import AudioCapable
+from rigplane.testing.timing import await_until
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster
 from rigplane.web.protocol import (
@@ -85,12 +86,30 @@ def _make_ws() -> MagicMock:
     return ws
 
 
-async def _inject(bus: AudioBus, payloads: list[bytes]) -> None:
+async def _inject(
+    bus: AudioBus,
+    payloads: list[bytes],
+    *,
+    queue: asyncio.Queue[bytes] | None = None,
+    expect_frames: int | None = None,
+) -> None:
+    """Deliver radio packets, then wait for the relay loop to process them.
+
+    When ``expect_frames`` is given, waits (via :func:`await_until`, no
+    wall-clock sleep) until the client queue holds that many frames — a
+    real relay-loop event. Callers expecting zero frames wait on their
+    own condition (e.g. the reframing accumulator holding the partial).
+    """
     for payload in payloads:
         pkt = MagicMock()
         pkt.data = payload
         bus._on_opus_packet(pkt)
-    await asyncio.sleep(0.1)
+    if queue is not None and expect_frames is not None:
+        await await_until(
+            lambda: queue.qsize() >= expect_frames,
+            timeout=5.0,
+            description=f"{expect_frames} egress frame(s) on the client queue",
+        )
 
 
 def _drain(queue: asyncio.Queue[bytes]) -> list[tuple[int, int, bytes]]:
@@ -117,7 +136,7 @@ class TestOpusEgressReframing:
             queue = await broadcaster.subscribe(
                 ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_OPUS
             )
-            await _inject(bus, packets)
+            await _inject(bus, packets, queue=queue, expect_frames=2)
             frames = _drain(queue)
             assert [c for c, _, _ in frames] == [AUDIO_CODEC_OPUS] * 2, (
                 "Opus egress fell back to PCM16 — non-aligned radio packets "
@@ -130,7 +149,9 @@ class TestOpusEgressReframing:
             assert created[0].chunks == [stream[:3840], stream[3840:7680]]
             # Remainder (2560 B) is retained: one more packet completes
             # the third frame.
-            await _inject(bus, [bytes([0x99]) * PACKET_BYTES])
+            await _inject(
+                bus, [bytes([0x99]) * PACKET_BYTES], queue=queue, expect_frames=1
+            )
             stream += bytes([0x99]) * PACKET_BYTES
             assert _drain(queue) == [(AUDIO_CODEC_OPUS, 20, b"opus-frame")]
             assert created[0].chunks[2] == stream[7680:11520]
@@ -142,7 +163,7 @@ class TestOpusEgressReframing:
             ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_PCM16
         )
         packet = b"\x01\x02" * (PACKET_BYTES // 2)
-        await _inject(bus, [packet] * 3)
+        await _inject(bus, [packet] * 3, queue=queue, expect_frames=3)
         frames = _drain(queue)
         assert [(c, p) for c, _, p in frames] == [(AUDIO_CODEC_PCM16, packet)] * 3
         assert broadcaster._client_opus_transcoders == {}
@@ -164,11 +185,20 @@ class TestOpusEgressReframing:
             state.codec = AUDIO_CODEC_OPUS
             state.last_switch = 1000.0  # inside dwell — controller holds
             await _inject(bus, [b"\xaa" * PACKET_BYTES])  # partial: buffered
+            # No frame is emitted, so wait for the real relay-loop event:
+            # the partial packet landing in the reframing accumulator.
+            await await_until(
+                lambda: broadcaster._client_opus_pcm_buffers != {},
+                timeout=5.0,
+                description="partial packet in the Opus reframing accumulator",
+            )
             assert _drain(queue) == []
             broadcaster._adaptive_switch(client_id, state, AUDIO_CODEC_PCM16, 1000.0)
             assert broadcaster._client_opus_pcm_buffers == {}
             broadcaster._adaptive_switch(client_id, state, AUDIO_CODEC_OPUS, 1000.0)
-            await _inject(bus, [b"\xbb" * PACKET_BYTES] * 3)
+            await _inject(
+                bus, [b"\xbb" * PACKET_BYTES] * 3, queue=queue, expect_frames=1
+            )
         frames = _drain(queue)
         assert [c for c, _, _ in frames] == [AUDIO_CODEC_OPUS]
         assert created[-1].chunks == [b"\xbb" * FRAME_BYTES]
@@ -181,6 +211,11 @@ class TestOpusEgressReframing:
                 ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_OPUS
             )
             await _inject(bus, [b"\xaa" * PACKET_BYTES])
+            await await_until(
+                lambda: broadcaster._client_opus_pcm_buffers != {},
+                timeout=5.0,
+                description="partial packet in the Opus reframing accumulator",
+            )
             assert broadcaster._client_opus_pcm_buffers != {}
             await broadcaster.unsubscribe(queue)
         assert broadcaster._client_opus_pcm_buffers == {}
@@ -196,10 +231,15 @@ class TestOpusEgressReframing:
                 ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_OPUS
             )
             await _inject(bus, [b"\xaa" * PACKET_BYTES])  # stereo partial
+            await await_until(
+                lambda: broadcaster._client_opus_pcm_buffers != {},
+                timeout=5.0,
+                description="partial packet in the Opus reframing accumulator",
+            )
             radio.audio_codec = AudioCodec.PCM_1CH_16BIT
             broadcaster.invalidate_codec_state()
             mono_20ms = b"\xbb" * (48000 * 20 // 1000 * 2)  # 1920 B
-            await _inject(bus, [mono_20ms])
+            await _inject(bus, [mono_20ms], queue=queue, expect_frames=1)
         frames = _drain(queue)
         assert [c for c, _, _ in frames] == [AUDIO_CODEC_OPUS]
         assert created[-1].chunks == [mono_20ms]
@@ -211,7 +251,7 @@ class TestOpusEgressReframing:
             ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_OPUS
         )
         opus_packet = b"\x42" * 120
-        await _inject(bus, [opus_packet] * 2)
+        await _inject(bus, [opus_packet] * 2, queue=queue, expect_frames=2)
         frames = _drain(queue)
         assert [(c, p) for c, _, p in frames] == [(AUDIO_CODEC_OPUS, opus_packet)] * 2
         assert broadcaster._client_opus_transcoders == {}
@@ -237,7 +277,7 @@ async def test_real_opus_frames_decode_back_to_20ms() -> None:
     queue = await broadcaster.subscribe(
         ws=_make_ws(), preferred_rx_codec=AUDIO_CODEC_OPUS
     )
-    await _inject(bus, [b"\x00" * PACKET_BYTES] * 6)
+    await _inject(bus, [b"\x00" * PACKET_BYTES] * 6, queue=queue, expect_frames=2)
     frames = _drain(queue)
     assert [c for c, _, _ in frames] == [AUDIO_CODEC_OPUS] * 2
     decoder = create_pcm_opus_transcoder(sample_rate=48000, channels=2, frame_ms=20)
