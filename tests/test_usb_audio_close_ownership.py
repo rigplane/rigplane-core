@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from rigplane.audio import backend, usb_driver
+from rigplane.testing.timing import VirtualClock, await_until
 
 from _mor3777_pool_observer import PoolPhaseObserver, current_for, set_current
 
@@ -56,9 +57,11 @@ def fake_ownership_driver(monkeypatch: pytest.MonkeyPatch):
 
 
 async def _drain(pool: usb_driver._BoundedPortAudioPool) -> None:
-    async with asyncio.timeout(5):
-        while pool.inflight:
-            await asyncio.sleep(0.01)
+    await await_until(
+        lambda: not pool.inflight,
+        timeout=5.0,
+        description="bounded pool to settle",
+    )
     observer = current_for(pool)
     if observer is not None:
         observer.mark_pool_state("after_drain")
@@ -69,7 +72,11 @@ async def _drain(pool: usb_driver._BoundedPortAudioPool) -> None:
 @pytest.mark.parametrize("late_failure", [False, True])
 @pytest.mark.timeout(10)
 async def test_pending_open_blocks_same_endpoint_until_settled_and_closed(
-    fake_ownership_driver, kind: str, cancel: bool, late_failure: bool
+    fake_ownership_driver,
+    virtual_clock: VirtualClock,
+    kind: str,
+    cancel: bool,
+    late_failure: bool,
 ) -> None:
     pool, fake, make = fake_ownership_driver
     owner, replacement, unrelated = make(), make(), make(2)
@@ -85,21 +92,26 @@ async def test_pending_open_blocks_same_endpoint_until_settled_and_closed(
     setattr(fake, hook, blocked_open)
     attempt = asyncio.create_task(_start(owner, kind))
     try:
-        async with asyncio.timeout(2):
-            while not entered.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            entered.is_set,
+            timeout=2.0,
+            description="worker to block in open",
+        )
         if cancel:
             attempt.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await attempt
         else:
+            await virtual_clock.elapse(0.2)
             with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
                 await attempt
         streams = getattr(fake, f"{kind}_streams")
         old = streams[0]
         setattr(fake, hook, None)
+        replacement_open = asyncio.create_task(_start(replacement, kind))
+        await virtual_clock.elapse(0.2)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await _start(replacement, kind)
+            await replacement_open
         assert all(stream.started_count == 0 for stream in streams)
         assert old.stopped_count == 0
         await _start(unrelated, kind)
@@ -121,7 +133,7 @@ async def test_pending_open_blocks_same_endpoint_until_settled_and_closed(
 @pytest.mark.parametrize("cancel", [False, True])
 @pytest.mark.timeout(10)
 async def test_retired_rx_callback_cannot_update_health_or_replacement(
-    fake_ownership_driver, cancel: bool
+    fake_ownership_driver, virtual_clock: VirtualClock, cancel: bool
 ) -> None:
     pool, fake, make = fake_ownership_driver
     driver = make()
@@ -141,9 +153,11 @@ async def test_retired_rx_callback_cannot_update_health_or_replacement(
     second: list[bytes] = []
     attempt = asyncio.create_task(driver.start_rx(first.append))
     try:
-        async with asyncio.timeout(2):
-            while not entered.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            entered.is_set,
+            timeout=2.0,
+            description="worker to block in open",
+        )
         old = fake.rx_streams[0]
         old.block_stop = blocked_close
         if cancel:
@@ -151,21 +165,25 @@ async def test_retired_rx_callback_cannot_update_health_or_replacement(
             with pytest.raises(asyncio.CancelledError):
                 await attempt
         else:
+            await virtual_clock.elapse(0.2)
             with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
                 await attempt
         fake.block_rx_open = None
         retry = asyncio.create_task(driver.start_rx(second.append))
-        await asyncio.sleep(0.01)
+        await virtual_clock.elapse(0)
         release.set()
-        async with asyncio.timeout(2):
-            while not closing.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            closing.is_set,
+            timeout=2.0,
+            description="late close to block",
+        )
         assert old._callback is not None
         stale = old._callback
         for _ in range(500):
             stale(bytes(1920))
         assert first == second == []
         assert not driver.rx_silent
+        await virtual_clock.elapse(0.2)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
             await retry
         closed.set()
@@ -200,20 +218,33 @@ async def test_retired_rx_callback_cannot_update_health_or_replacement(
 )
 @pytest.mark.timeout(10)
 async def test_pending_endpoint_overlap_preserves_full_duplex_directions(
-    fake_ownership_driver, kind: str, replacement_kind: str, conflicts: bool
+    fake_ownership_driver,
+    virtual_clock: VirtualClock,
+    kind: str,
+    replacement_kind: str,
+    conflicts: bool,
 ) -> None:
     pool, fake, make = fake_ownership_driver
     owner, replacement = make(), make()
     release = threading.Event()
     setattr(fake, f"block_{kind}_open", lambda: release.wait(5))
     try:
+        owner_open = asyncio.create_task(_start(owner, kind))
+        await await_until(
+            lambda: getattr(fake, f"{kind}_streams"),
+            timeout=2.0,
+            description="worker to block in open",
+        )
+        await virtual_clock.elapse(0.2)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await _start(owner, kind)
+            await owner_open
         old = getattr(fake, f"{kind}_streams")[0]
         setattr(fake, f"block_{kind}_open", None)
         if conflicts:
+            conflict_open = asyncio.create_task(_start(replacement, replacement_kind))
+            await virtual_clock.elapse(0.2)
             with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-                await _start(replacement, replacement_kind)
+                await conflict_open
         else:
             await _start(replacement, replacement_kind)
             await getattr(replacement, f"stop_{replacement_kind}")()
@@ -230,7 +261,9 @@ async def test_pending_endpoint_overlap_preserves_full_duplex_directions(
 
 @pytest.mark.timeout(10)
 async def test_inflight_retired_rx_callback_cannot_reach_new_subscriber_or_health(
-    fake_ownership_driver, monkeypatch: pytest.MonkeyPatch
+    fake_ownership_driver,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pool, fake, make = fake_ownership_driver
     driver = make()
@@ -264,19 +297,26 @@ async def test_inflight_retired_rx_callback_cannot_reach_new_subscriber_or_healt
     worker = threading.Thread(target=native_frame)
     worker.start()
     try:
-        assert submitted.wait(2)
+        await await_until(
+            submitted.is_set,
+            timeout=2.0,
+            description="native frame to reach the watchdog",
+        )
         await driver.stop_rx()
         await driver.start_rx(second.append)
         release.set()
-        await asyncio.to_thread(worker.join, 2)
-        assert not worker.is_alive()
+        await await_until(
+            lambda: not worker.is_alive(),
+            timeout=2.0,
+            description="native frame worker to exit",
+        )
         assert first == []
         assert (second, driver.rx_silent) == ([], False)
         fake.rx_streams[-1].inject_frame(b"\x01\x00" * 960)
         assert len(second) == 1
     finally:
         release.set()
-        await asyncio.to_thread(worker.join, 2)
+        await asyncio.to_thread(worker.join)
         await driver.stop_rx()
         await _drain(pool)
 
@@ -284,6 +324,7 @@ async def test_inflight_retired_rx_callback_cannot_reach_new_subscriber_or_healt
 @pytest.mark.timeout(10)
 async def test_pending_start_is_not_stopped_concurrently_and_refused_close_is_owned(
     fake_ownership_driver,
+    virtual_clock: VirtualClock,
 ) -> None:
     pool, fake, make = fake_ownership_driver
     driver, replacement = make(), make()
@@ -302,13 +343,24 @@ async def test_pending_start_is_not_stopped_concurrently_and_refused_close_is_ow
 
     fake.block_rx_open = blocked_open
     try:
+        pending_open = asyncio.create_task(driver.start_rx(lambda _frame: None))
+        await await_until(
+            entered.is_set,
+            timeout=2.0,
+            description="worker to block in open",
+        )
+        await virtual_clock.elapse(0.2)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await driver.start_rx(lambda _frame: None)
+            await pending_open
         old = fake.rx_streams[0]
         assert entered.is_set()
         old.block_stop = refuse_close
+        pending_stop = asyncio.create_task(
+            pool.stop_stream_bounded(old, direction="rx", timeout=0.1)
+        )
+        await virtual_clock.elapse(0.2)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await pool.stop_stream_bounded(old, direction="rx", timeout=0.1)
+            await pending_stop
         assert closes == 0
         release.set()
         await _drain(pool)
@@ -491,7 +543,9 @@ async def test_dead_duplex_cleanup_precedes_plain_rx_replacement(native_driver) 
 
 
 @pytest.mark.timeout(10)
-async def test_timed_out_close_is_joined_without_concurrent_second_stop() -> None:
+async def test_timed_out_close_is_joined_without_concurrent_second_stop(
+    virtual_clock: VirtualClock,
+) -> None:
     pool = usb_driver._BoundedPortAudioPool()
     entered = threading.Event()
     gate = threading.Event()
@@ -506,13 +560,22 @@ async def test_timed_out_close_is_joined_without_concurrent_second_stop() -> Non
 
     stream = Stream()
     try:
+        pending_stop = asyncio.create_task(
+            pool.stop_stream_bounded(stream, direction="rx", timeout=0.05)
+        )
+        await await_until(
+            entered.is_set,
+            timeout=2.0,
+            description="worker to block in stop",
+        )
+        await virtual_clock.elapse(0.1)
         with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await pool.stop_stream_bounded(stream, direction="rx", timeout=0.05)
+            await pending_stop
         assert entered.is_set()
         retry = asyncio.create_task(
             pool.stop_stream_bounded(stream, direction="rx", timeout=1.0)
         )
-        await asyncio.sleep(0.05)
+        await virtual_clock.elapse(0)
         assert calls == 1
         gate.set()
         await retry
@@ -524,6 +587,7 @@ async def test_timed_out_close_is_joined_without_concurrent_second_stop() -> Non
 @pytest.mark.parametrize("late_open_fails", [False, True])
 @pytest.mark.timeout(10)
 async def test_failed_late_cleanup_retained_until_next_explicit_open(
+    virtual_clock: VirtualClock,
     late_open_fails: bool,
 ) -> None:
     pool = usb_driver._BoundedPortAudioPool()
@@ -550,15 +614,25 @@ async def test_failed_late_cleanup_retained_until_next_explicit_open(
 
     abandoned, replacement = Abandoned(), Replacement()
     try:
-        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
-            await pool.open_stream_bounded(
+        pending_open = asyncio.create_task(
+            pool.open_stream_bounded(
                 abandoned, abandoned.start(), direction="rx", timeout=0.05
             )
+        )
+        await await_until(
+            lambda: pool.inflight == 1,
+            timeout=2.0,
+            description="worker to block in open",
+        )
+        await virtual_clock.elapse(0.1)
+        with pytest.raises(usb_driver.AudioCaptureOpenTimeoutError):
+            await pending_open
         gate.set()
-        for _ in range(100):
-            if cleanup_attempted.is_set() and pool.inflight == 0:
-                break
-            await asyncio.sleep(0.01)
+        await await_until(
+            lambda: cleanup_attempted.is_set() and pool.inflight == 0,
+            timeout=5.0,
+            description="late cleanup to run",
+        )
         assert events == ["close"]
         await pool.open_stream_bounded(
             replacement, replacement.start(), direction="rx", timeout=1.0
