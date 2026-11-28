@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- When Core refuses an RX start because no PortAudio device name matches a Windows endpoint (`endpoint_names` / `usb_topology_names`), the failure now offers the full capture/render device list across every host API with `unmatched` set, so the connection center can show the "Choose audio device…" button instead of a dead end. (MOR-4156)
+
 ### Added
 
 - New TX setting **Microphone processing**: Raw (default, as before) sends the microphone without the browser's echo cancellation, noise suppression and automatic gain control; Browser processing turns all three on for a noisy room or a weak microphone. It is in the TX levels dialog on the phone and the standard sidebars, and under TX AUDIO in the desktop Settings dialog; the choice is kept per browser (and per desktop app) and applies from the next transmission. New strings `core.txMic.processing.*` in en-US, ru-RU and ja-JP. (MOR-4596)

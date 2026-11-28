@@ -162,6 +162,7 @@ def audio_candidate_record(candidate: AudioCandidate) -> AudioDeviceCandidateRec
         "hostApi": candidate.hostapi,
         "portAudioIndex": candidate.portaudio_index,
         "nearRadio": candidate.near_radio,
+        "unmatched": candidate.unmatched,
     }
 
 

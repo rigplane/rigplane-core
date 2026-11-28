@@ -1232,15 +1232,19 @@ add this field to `failure`:
     "direction": "capture",
     "hostApi": "MME",
     "portAudioIndex": 1,
-    "nearRadio": true
+    "nearRadio": true,
+    "unmatched": false
   }]
 }
 ```
 
 `direction` is `capture` (RX) or `render` (TX). Candidates cover both directions
 because pairing decides RX and TX together
-(`src/rigplane/audio/_usb_pairing.py: pair`). `candidates` is omitted when
-the failure has no pairing candidates. This is an additive field; the schema
+(`src/rigplane/audio/_usb_pairing.py: pair`). `unmatched` is true when the
+device matched no endpoint name: then the offer is the full capture/render
+fallback across every host API (the `endpoint_names` refusal class), not a
+recognized device, so the UI should say so. `candidates` is omitted when
+the failure has no pairing candidates. These are additive fields; the schema
 version remains 1 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
 Pass a candidate's `stableId` through the existing `rx_device` / `tx_device`
 configuration or `--rx-device` / `--tx-device` flags. Its form is

@@ -129,6 +129,7 @@ async def test_generated_picker_candidates_reach_audio_start_api(monkeypatch, re
             assert candidate["stableId"] == "MME|name:" + candidate["displayName"]
             assert candidate["hostApi"] == "MME"
             assert candidate["nearRadio"] is False
+            assert candidate["unmatched"] is True
         assert radio.audio_session.rx_demand == 0
         assert not (backend.rx_streams or backend.tx_streams or backend.duplex_streams)
     finally:
@@ -269,6 +270,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                     else "MME",
                     "portAudioIndex": index,
                     "nearRadio": True,
+                    "unmatched": False,
                 } in candidates
             assert all(
                 set(candidate)
@@ -279,6 +281,7 @@ async def test_w1_owner_browser_audio_start_replays_windows_usb_pairing(
                     "hostApi",
                     "portAudioIndex",
                     "nearRadio",
+                    "unmatched",
                 }
                 for candidate in candidates
             )

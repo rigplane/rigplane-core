@@ -420,6 +420,44 @@ def test_s5_no_endpoint_matched_names_returns_name_candidates():
     ]
 
 
+def test_s5_no_name_match_offers_every_capture_render_device_unmatched():
+    """MOR-4156: an endpoint_names refusal with no name-matched candidate
+    offers the full capture/render device list across every host API, typed
+    unmatched so the UI can say the radio was not recognized by name.
+    """
+    snapshot = _snapshot()
+    apis = snapshot.portaudio.hostapis + (HostApiRecord(1, "Windows WASAPI", 2, 9, 13),)
+    devices = (
+        _record(1, "Unmatched capture", inputs=2),
+        _record(5, "Unmatched render", outputs=2),
+        _record(9, "Unmatched capture", inputs=2, hostapi=1),
+        _record(13, "Unmatched render", outputs=2, hostapi=1),
+    )
+    result = _assert_refused(
+        replace(
+            snapshot,
+            portaudio=replace(snapshot.portaudio, hostapis=apis, devices=devices),
+        ),
+        "endpoint_names",
+    )
+    assert result.wire_reason == "usb_topology_names"
+    assert [(c.portaudio_index, c.direction) for c in result.candidates] == [
+        (1, "capture"),
+        (5, "render"),
+        (9, "capture"),
+        (13, "render"),
+    ]
+    assert all(c.unmatched for c in result.candidates)
+    assert all(not c.near_radio for c in result.candidates)
+
+
+def test_s5_name_matched_candidates_are_not_unmatched():
+    """MOR-4156: the unmatched marker stays off for name-matched candidates."""
+    result = _assert_refused(_snapshot(), "serial_not_found", "COM9")
+    assert result.candidates
+    assert all(not c.unmatched for c in result.candidates)
+
+
 def test_ambiguous_refusal_includes_unmatched_input_and_output():
     snapshot = _snapshot()
     devices = snapshot.portaudio.devices + (

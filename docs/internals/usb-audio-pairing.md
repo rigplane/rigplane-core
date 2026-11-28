@@ -71,12 +71,17 @@ whose VID:PID differs. The graph test
 pins this accepted behavior; the rule does not prove an internal radio boundary.
 
 Every refusal includes `src/rigplane/audio/_usb_pairing.py: AudioCandidate`
-entries for the first host API with endpoint-matched records. Each record and
-direction has an index, display name, host API, stable ID, and `near_radio`
-flag. A unique endpoint gives `<host API>|<endpoint OS ID>`; otherwise the ID is
+entries. Each record and direction has an index, display name, host API,
+stable ID, a `near_radio` flag, and an `unmatched` flag. A unique endpoint
+gives `<host API>|<endpoint OS ID>`; otherwise the ID is
 `<host API>|name:<listed name>`. Nearby USB owners sort first, then PortAudio
-index. Unmatched mapper entries are omitted. Candidates support explicit device
-selection; they do not change the refusal into a successful pairing.
+index. When some host API matched endpoint names, the offer is that first
+matched API's records. When no host API matched a name (the `endpoint_names`
+refusal class, e.g. localized or renamed Windows endpoints), the offer is the
+full capture/render device list across every host API with `unmatched` set,
+so the chooser can say the radio was not recognized by name. Candidates
+support explicit device selection; they do not change the refusal into a
+successful pairing.
 
 Ambiguity refusals map to `usb_ambiguous`, name failures to `usb_topology_names`,
 and the remaining reasons to `usb_topology_unavailable`. Capture replay tests
