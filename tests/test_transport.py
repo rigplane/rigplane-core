@@ -18,6 +18,7 @@ from rigplane.transport import (
 )
 from rigplane.core.transport import _UdpProtocol
 from rigplane.core.exceptions import CommandError, DiscoveryTimeout, TimeoutError
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import HEADER_SIZE, PacketType
 
 
@@ -1062,7 +1063,9 @@ class TestDisconnect:
         assert t.state == ConnectionState.DISCONNECTED
 
     @pytest.mark.asyncio
-    async def test_disconnect_cancels_tasks(self, transport: IcomTransport) -> None:
+    async def test_disconnect_cancels_tasks(
+        self, transport: IcomTransport, virtual_clock: VirtualClock
+    ) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
         transport.state = ConnectionState.CONNECTED
@@ -1163,7 +1166,9 @@ class TestDisconnect:
         await asyncio.sleep(0)
         disconnect = asyncio.create_task(transport.disconnect())
         try:
-            await asyncio.wait_for(retiring.wait(), 1)
+            await await_until(
+                retiring.is_set, timeout=5.0, description="the owned task retiring"
+            )
             disconnect.cancel("owner stop")
             await asyncio.sleep(0)
             disconnect.cancel("owner stop repeated")
@@ -1187,14 +1192,19 @@ class TestDisconnect:
             await asyncio.gather(task, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_disconnect_does_not_await_its_current_owned_task(self) -> None:
+    async def test_disconnect_does_not_await_its_current_owned_task(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         transport = IcomTransport()
 
         async def owned() -> None:
             transport._ping_task = asyncio.current_task()
             await transport.disconnect()
 
-        await asyncio.wait_for(asyncio.create_task(owned()), 1)
+        task = asyncio.create_task(owned())
+        await virtual_clock.elapse(1.0)
+        assert task.done()
+        await task
 
 
 # ---------------------------------------------------------------------------
@@ -1204,12 +1214,14 @@ class TestDisconnect:
 
 class TestPingLoop:
     @pytest.mark.asyncio
-    async def test_ping_loop_sends_pings(self, transport: IcomTransport) -> None:
+    async def test_ping_loop_sends_pings(
+        self, transport: IcomTransport, virtual_clock: VirtualClock
+    ) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
         transport.state = ConnectionState.CONNECTED
         transport.start_ping_loop()
-        await asyncio.sleep(0.6)  # enough for 1 ping
+        await virtual_clock.elapse(0.6)  # enough for 1 ping
         transport.state = ConnectionState.DISCONNECTED
         transport._ping_task.cancel()
         try:
@@ -1226,7 +1238,9 @@ class TestPingLoop:
 
 class TestRetransmitLoop:
     @pytest.mark.asyncio
-    async def test_retransmit_loop_cleans_old(self, transport: IcomTransport) -> None:
+    async def test_retransmit_loop_cleans_old(
+        self, transport: IcomTransport, virtual_clock: VirtualClock
+    ) -> None:
         sent = []
         transport._raw_send = lambda data: sent.append(data)
         transport.state = ConnectionState.CONNECTED
@@ -1234,7 +1248,7 @@ class TestRetransmitLoop:
             3  # already at retry 3, next loop will bump to 4 and delete
         )
         transport.start_retransmit_loop()
-        await asyncio.sleep(0.5)  # allow retransmit loop time to process
+        await virtual_clock.elapse(0.5)  # allow retransmit loop time to process
         transport.state = ConnectionState.DISCONNECTED
         transport._retransmit_task.cancel()
         try:
@@ -1410,7 +1424,9 @@ async def test_receive_cancel_racing_a_delivered_packet_ends_cancelled() -> None
     )
 
 
-async def test_receive_during_cancellation_cleanup_returns_the_packet() -> None:
+async def test_receive_during_cancellation_cleanup_returns_the_packet(
+    virtual_clock: VirtualClock,
+) -> None:
     """A receiver that caught CancelledError and awaits an already queued
     packet during cleanup must get that packet, not a fresh CancelledError
     (MOR-3575). The old ``Task.cancelling()`` guard broke exactly this:
