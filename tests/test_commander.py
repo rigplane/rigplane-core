@@ -632,6 +632,9 @@ async def test_dedupe_returns_existing_future(
             lambda: t1.done() and t2.done(),
             description="deduped sends share the dispatched result",
         )
+        # Propagate any exception/cancellation from either send; done() alone
+        # would pass while swallowing a broken shared-future path.
+        await asyncio.gather(t1, t2)
     finally:
         await c.stop()
 
