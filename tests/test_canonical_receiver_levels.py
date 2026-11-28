@@ -24,6 +24,7 @@ from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.runtime._poller_types import SetAfLevel, SetRfGain, SetSquelch
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.runtime.radio import CoreRadio
+from rigplane.testing.timing import await_until
 from rigplane.web import radio_poller as icom_poller
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
@@ -35,6 +36,11 @@ LEVELS = (
     ("set_rf_gain", "rf_gain", "RG"),
     ("set_squelch", "squelch", "SQ"),
 )
+
+# Stuck-run bound for waits on same-loop coroutine rendezvous (admission,
+# held-write entry, drain/request settlement). The wait returns as soon as
+# the event fires; the timeout only fails a stuck run, never paces it.
+_EVENT_TIMEOUT = 5.0
 
 
 def _path(monkeypatch, backend="yaesu", config="ftx1"):
@@ -130,11 +136,8 @@ def _write_call(path, prefix, receiver):
 
 
 async def _admit(path, name, level, receiver=0, command_id="level"):
-    return await asyncio.wait_for(
-        path.handler._enqueue_command(
-            name, {"level": level, "receiver": receiver}, command_id=command_id
-        ),
-        timeout=1.0,
+    return await path.handler._enqueue_command(
+        name, {"level": level, "receiver": receiver}, command_id=command_id
     )
 
 
@@ -291,17 +294,34 @@ async def test_batch_waits_for_backend_and_executes_once(path, fail_write):
     )
     drain = None
     try:
-        await path.server.command_queue.wait(timeout=1.0)
-        assert path.server.command_queue.has_commands
+        await await_until(
+            lambda: path.server.command_queue.has_commands,
+            timeout=_EVENT_TIMEOUT,
+            description="batch step reached the command queue",
+        )
         drain = asyncio.create_task(path.drain())
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        await await_until(
+            lambda: entered.is_set(),
+            timeout=_EVENT_TIMEOUT,
+            description="held backend write started",
+        )
         assert not request.done()
         assert path.server.command_state_store.snapshot().fields == before
         [entry] = path.entries
         assert entry.future is not None and not entry.future.done()
         release.set()
-        await asyncio.wait_for(drain, timeout=1.0)
-        writer = await asyncio.wait_for(request, timeout=1.0)
+        assert await await_until(
+            lambda: drain.done(),
+            timeout=_EVENT_TIMEOUT,
+            description="batch drain finished the held write",
+        )
+        await drain
+        assert await await_until(
+            lambda: request.done(),
+            timeout=_EVENT_TIMEOUT,
+            description="batch HTTP request answered",
+        )
+        writer = await request
         [result] = writer.response_body["results"]
         assert result["ok"] is not fail_write
         await path.drain()
@@ -384,21 +404,26 @@ async def test_canonical_readback_waits_for_successful_write(
     witness = asyncio.create_task(entered.wait())
     before = path.server.command_state_store.snapshot().fields
     try:
-        done, _ = await asyncio.wait(
-            (execution, witness), timeout=1.0, return_when=asyncio.FIRST_COMPLETED
+        await await_until(
+            lambda: witness.done() or execution.done(),
+            timeout=_EVENT_TIMEOUT,
+            description="held backend write started",
         )
-        if execution in done:
-            await execution
-        assert witness in done and not execution.done()
+        assert witness.done() and not execution.done()
         assert (
             scheduler.pending_requests()[0].priority is AcquisitionPriority.BACKGROUND
         )
         release.set()
+        assert await await_until(
+            lambda: execution.done(),
+            timeout=_EVENT_TIMEOUT,
+            description="readback execution settled after release",
+        )
         if fail_write:
             with pytest.raises(RuntimeError, match="inert write failed"):
-                await asyncio.wait_for(execution, timeout=1.0)
+                await execution
         else:
-            await asyncio.wait_for(execution, timeout=1.0)
+            await execution
         [pending] = scheduler.pending_requests()
         assert pending.paths == (target,)
         assert pending.priority is (
@@ -453,13 +478,24 @@ async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
             b'{"type":"cmd","id":"level","name":"set_af_level","params":{"level":73}}'
         )
         await incoming.put((WS_OP_TEXT, level))
-        await path.server.command_queue.wait(timeout=1.0)
-        assert path.server.command_queue.has_commands
+        await await_until(
+            lambda: path.server.command_queue.has_commands,
+            timeout=_EVENT_TIMEOUT,
+            description="level command reached the command queue",
+        )
         drain = asyncio.create_task(path.drain())
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        await await_until(
+            lambda: entered.is_set(),
+            timeout=_EVENT_TIMEOUT,
+            description="held level write started",
+        )
         off = b'{"type":"cmd","id":"off","name":"ptt_off","params":{}}'
         await incoming.put((WS_OP_TEXT, off))
-        await asyncio.wait_for(off_ack.wait(), timeout=1.0)
+        await await_until(
+            lambda: off_ack.is_set(),
+            timeout=_EVENT_TIMEOUT,
+            description="ptt_off acknowledged while the level write is held",
+        )
         assert path.server.command_queue.drain_entries() == []
         authority.submit_ptt.assert_awaited_once_with(False, "levels-session")
         assert ws.recv.await_count >= 2 and not drain.done()
