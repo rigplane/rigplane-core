@@ -83,6 +83,11 @@ _PTT_ON_TO_SINK_BOUND_S = 1.5
 # Virtual seconds a first frame that has not arrived by the end of the stream
 # is still waited for; far above the bound, so a late arrival is measured.
 _FIRST_FRAME_GRACE_S = 2.0
+# Quantum for exact virtual-time comparisons: whole microseconds. Both stamps
+# come from the same clock under one quantum, so the difference is exact —
+# float error (~1e-14 s here) is seven orders of magnitude below 1 us, while
+# a frame one pacing step early is 20 000 us short. No epsilon is widened.
+_US_PER_S = 1_000_000
 
 
 async def _send_pcm_virtual(
@@ -437,10 +442,14 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
     arrival stamp still comes out of the clock's advance arithmetic (the
     elapse steps accumulate 20 ms paces, then move to the timer deadline as
     ``prev + (deadline - prev)``), so it can read a hair below ``delay_s``
-    (observed: 0.3 - 2e-14) and the assertion below tolerates exactly one
-    loop-clock resolution. Timers the stack scheduled before the install sit
-    ~44.9k s in this clock's future and do not fire during the ~0.3 s
-    window; nothing in the window waits on one.
+    (observed: 0.3 - 2e-14). The assertion below therefore compares whole
+    microseconds — both stamps from the same clock under one quantum —
+    instead of floats with an epsilon: every true value here is a whole
+    number of microseconds (0.3 s, 20 ms paces), float error is ~1e-14 s,
+    and a frame one pacing step early is 20 000 us short, so the quantized
+    comparison is exact and still rejects an early frame. Timers the stack
+    scheduled before the install sit ~44.9k s in this clock's future and do
+    not fire during the ~0.3 s window; nothing in the window waits on one.
     """
     delay_s = _WS_TO_SINK_BOUND_S + 0.05
     real_push_tx = AudioStream.push_tx
@@ -474,19 +483,21 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
             sent_first, arrived_first = await _send_pcm_virtual(
                 mic, prefix, rate, clock, arena.sim
             )
-            # The installed virtual loop's own resolution (uninstall()
-            # restores the host's). Read it here, while the clock owns it.
-            resolution_s = float(loop._clock_resolution)  # type: ignore[attr-defined]
         finally:
             clock.uninstall(loop)
         assert delayed, "the delay hook never saw a forwarded frame"
-        # Float timestamps: the 20 ms pacing steps accumulate rounding, so an
-        # arrival exactly delay_s out can read a hair below it (observed:
-        # delay_s - 2e-14 against a 0.3 s delay). The tolerance is the loop
-        # clock's own resolution — the smallest representable virtual-time
-        # quantum — not an arbitrary epsilon: a frame a full pacing step
-        # (20 ms) early still fails this bound.
-        assert arrived_first - sent_first >= delay_s - resolution_s
+        # Exact integer comparison, no epsilon: both stamps read the same
+        # virtual clock under one microsecond quantum, so float pacing error
+        # (~1e-14 s, observed delay_s - 2e-14 against a 0.3 s delay) cannot
+        # flip the verdict, while a frame a full pacing step (20 ms) early
+        # is 20 000 us short and still fails.
+        sent_us = int(round(sent_first * _US_PER_S))
+        arrived_us = int(round(arrived_first * _US_PER_S))
+        delay_us = int(round(delay_s * _US_PER_S))
+        assert arrived_us - sent_us >= delay_us, (
+            f"first TX frame arrived {arrived_us - sent_us} us after the send, "
+            f"injected delay {delay_us} us"
+        )
         with pytest.raises(AssertionError, match="virtual"):
             _assert_forwarding_latency(sent_first, arrived_first)
         await _cancel_session_watchdog(arena)
