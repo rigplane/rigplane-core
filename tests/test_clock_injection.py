@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from rigplane.audio import AudioPacket
 from rigplane.audio_bus import AudioBus
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
@@ -179,8 +180,9 @@ async def test_audio_bus_heartbeat_uses_injected_clock() -> None:
     )
     bus = AudioBus(radio, monotonic=clock)
     assert bus.last_rx_frame_monotonic is None
-    bus._on_opus_packet(None)  # noqa: SLF001
+    # Only a real RX frame stamps the heartbeat; a gap (None) does not.
+    bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=b"a"))  # noqa: SLF001
     assert bus.last_rx_frame_monotonic == 4000.0
     clock.advance(5.0)
-    bus._on_opus_packet(None)  # noqa: SLF001
+    bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=2, data=b"b"))  # noqa: SLF001
     assert bus.last_rx_frame_monotonic == 4005.0
