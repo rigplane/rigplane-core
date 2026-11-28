@@ -14,7 +14,7 @@ import time
 import pytest
 
 from rigplane.tci.server import TciServer
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
@@ -87,15 +87,18 @@ def tci_allow(headers: dict[str, str]) -> UpgradeDecline | None:
     return None
 
 
-def make_server(handler: FakeHandler, port: int = 0, **kwargs: object) -> TciServer:
-    import time
-
+def make_server(
+    handler: FakeHandler,
+    port: int = 0,
+    clock: object = time.monotonic,
+    **kwargs: object,
+) -> TciServer:
     return TciServer(
         lambda: handler,  # type: ignore[return-value]
         host="127.0.0.1",
         port=port,
         allow=tci_allow,  # type: ignore[arg-type]
-        clock=time.monotonic,
+        clock=clock,  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -343,7 +346,10 @@ async def test_broadcast_reaches_both_sessions(tcp_available: None) -> None:
     assert handler.disconnect_calls == 2
 
 
-async def test_binary_both_ways_raw(tcp_available: None) -> None:
+@pytest.mark.timeout(30)
+async def test_binary_both_ways_raw(
+    tcp_available: None, virtual_clock: VirtualClock
+) -> None:
     from rigplane.tci.frames import (
         SampleType,
         StreamHeader,
@@ -352,7 +358,7 @@ async def test_binary_both_ways_raw(tcp_available: None) -> None:
     )
 
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     try:
         first = await RawClient.connect(server.bound_port)
@@ -374,9 +380,11 @@ async def test_binary_both_ways_raw(tcp_available: None) -> None:
             )
         )
         await first.send_binary(header + payload)
-        async with asyncio.timeout(5.0):
-            while not handler.binaries:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: bool(handler.binaries),
+            timeout=5.0,
+            description="the binary frame delivery",
+        )
         assert handler.binaries == [header + payload]
         server.broadcast_binary(header + payload)
         opcode, received = await second.next_frame()
@@ -412,7 +420,10 @@ async def test_broadcast_then_reply_keep_fifo_order(tcp_available: None) -> None
     assert handler.disconnect_calls == 1
 
 
-async def test_partial_headers_closed_on_stop(tcp_available: None) -> None:
+@pytest.mark.timeout(30)
+async def test_partial_headers_closed_on_stop(
+    tcp_available: None, virtual_clock: VirtualClock
+) -> None:
     """A connection parked mid-upgrade is owned by shutdown.
 
     The client sends a partial HTTP head and never completes it:
@@ -420,13 +431,17 @@ async def test_partial_headers_closed_on_stop(tcp_available: None) -> None:
     never promote a session, and never touch the handler.
     """
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
     try:
         writer.write(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")
         await writer.drain()
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: len(server._setup_tasks) > 0,
+            timeout=5.0,
+            description="the pending upgrade accept",
+        )
         await server.stop()
         async with asyncio.timeout(5.0):
             data = await reader.read()
@@ -438,8 +453,10 @@ async def test_partial_headers_closed_on_stop(tcp_available: None) -> None:
         await server.stop()
 
 
+@pytest.mark.timeout(30)
 async def test_blocked_on_connect_no_promotion_after_stop(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A gated ``on_connect`` cannot create a session after shutdown.
 
@@ -458,13 +475,14 @@ async def test_blocked_on_connect_no_promotion_after_stop(
         return await real_on_connect()
 
     handler.on_connect = _gated_on_connect  # type: ignore[method-assign]
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     client: RawClient | None = None
     try:
         client = await RawClient.connect(server.bound_port)
-        async with asyncio.timeout(5.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=5.0, description="the gated on_connect entry"
+        )
         await server.stop()
         gate.set()
         async with asyncio.timeout(5.0):
@@ -480,8 +498,10 @@ async def test_blocked_on_connect_no_promotion_after_stop(
         await server.stop()
 
 
+@pytest.mark.timeout(30)
 async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A repeat-cancel ``on_connect`` still releases the socket on ``stop()``.
 
@@ -512,16 +532,18 @@ async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
         return await real_on_connect()
 
     handler.on_connect = _repeat_cancel_on_connect  # type: ignore[method-assign]
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     client: RawClient | None = None
     try:
         client = await RawClient.connect(server.bound_port)
-        async with asyncio.timeout(5.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=5.0, description="the gated on_connect entry"
+        )
         stop_task = asyncio.create_task(server.stop())
-        async with asyncio.timeout(5.0):
-            await cleaning.wait()
+        await await_until(
+            cleaning.is_set, timeout=5.0, description="the teardown cleanup entry"
+        )
         async with asyncio.timeout(10.0):
             await stop_task
         assert not cleaned.is_set()
@@ -530,9 +552,9 @@ async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
         assert data == b"", "pending setup transport still open after stop()"
         assert server.sessions == ()
         gate.set()
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            cleaned.is_set, timeout=5.0, description="the retained setup cleanup"
+        )
         assert handler.disconnect_calls == 1
         assert server.sessions == ()
     finally:
@@ -542,29 +564,35 @@ async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
         await server.stop()
 
 
+@pytest.mark.timeout(30)
 async def test_watchdog_expires_silent_session_automatically(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """Inbound silence past the deadline aborts the session on its own.
 
     The test never calls ``check_deadline()``, ``finish()`` or
     ``stop()`` before asserting: the client only observes the dropped
     transport, and the handler records exactly one disconnect. The
-    short deadline (a constructor constant, real clock) keeps the run
-    fast; the elapsed time proves the firing came from the watchdog.
+    short deadline (a constructor constant on the virtual clock) keeps
+    the run fast; the elapsed time proves the firing came from the
+    watchdog.
     """
     handler = FakeHandler()
-    server = make_server(handler, deadline=0.3)
+    server = make_server(handler, clock=virtual_clock, deadline=0.3)
     await server.start()
-    started = time.monotonic()
+    started = virtual_clock()
     stopped = False
     try:
         client = await RawClient.connect(server.bound_port)
         await client.read_until_ready()
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
-        assert time.monotonic() - started < 5.0
+        await virtual_clock.elapse(0.31)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=5.0,
+            description="the watchdog disconnect",
+        )
+        assert virtual_clock() - started < 5.0
         await _read_until_closed(client)
         assert handler.disconnect_calls == 1
         await server.stop()
@@ -574,8 +602,10 @@ async def test_watchdog_expires_silent_session_automatically(
             await server.stop()
 
 
+@pytest.mark.timeout(30)
 async def test_watchdog_fires_despite_concurrent_pings(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """Ping writes in flight do not renew the watchdog deadline.
 
@@ -586,15 +616,18 @@ async def test_watchdog_fires_despite_concurrent_pings(
     drain; this covers the automatic path with heartbeat output busy.
     """
     handler = FakeHandler()
-    server = make_server(handler, deadline=0.4, ping_interval=0.05)
+    server = make_server(handler, clock=virtual_clock, deadline=0.4, ping_interval=0.05)
     await server.start()
     stopped = False
     try:
         client = await RawClient.connect(server.bound_port)
         await client.read_until_ready()
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        await virtual_clock.elapse(0.41)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=5.0,
+            description="the watchdog disconnect",
+        )
         await _read_until_closed(client)
         assert handler.disconnect_calls == 1
         await server.stop()
@@ -604,9 +637,12 @@ async def test_watchdog_fires_despite_concurrent_pings(
             await server.stop()
 
 
-async def test_reset_releases_session(tcp_available: None) -> None:
+@pytest.mark.timeout(30)
+async def test_reset_releases_session(
+    tcp_available: None, virtual_clock: VirtualClock
+) -> None:
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
@@ -622,9 +658,11 @@ async def test_reset_releases_session(tcp_available: None) -> None:
         assert head.startswith(b"HTTP/1.1 101 ")
         writer.transport.abort()
         await writer.wait_closed()
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=5.0,
+            description="the reset disconnect",
+        )
     finally:
         await server.stop()
     assert handler.disconnect_calls == 1
@@ -642,12 +680,17 @@ async def test_server_stop_releases_open_session(tcp_available: None) -> None:
     await client.writer.wait_closed()
 
 
-async def test_cancellation_during_accept(tcp_available: None) -> None:
+@pytest.mark.timeout(30)
+async def test_cancellation_during_accept(
+    tcp_available: None, virtual_clock: VirtualClock
+) -> None:
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     serve_task = asyncio.create_task(server.serve_forever())
-    await asyncio.sleep(0.1)
+    # A pure scheduler yield: the serve task only needs to start, and on the
+    # virtual loop a wall-clock sleep would wait for an elapse that never comes.
+    await asyncio.sleep(0)
     client = await RawClient.connect(server.bound_port)
     await client.read_until_ready()
     serve_task.cancel()
@@ -845,8 +888,10 @@ async def test_session_stays_registered_until_on_disconnect_returns(
     assert server.sessions == ()
 
 
+@pytest.mark.timeout(30)
 async def test_cancelled_join_still_closes_transport(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """Cancelling ``finish()`` mid-join still closes the transport.
 
@@ -858,7 +903,7 @@ async def test_cancelled_join_still_closes_transport(
     harmless.
     """
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, clock=virtual_clock)
     await server.start()
     try:
         client = await RawClient.connect(server.bound_port)
@@ -870,6 +915,7 @@ async def test_cancelled_join_still_closes_transport(
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
+                # A virtual 0.3 s timer: ended by cancellation, never elapsed.
                 await asyncio.sleep(0.3)
                 raise
 
@@ -877,10 +923,13 @@ async def test_cancelled_join_still_closes_transport(
         session._tasks.add(slow)
         finishing = asyncio.create_task(session.finish())
         try:
-            async with asyncio.timeout(5.0):
-                while not session._done:
-                    await asyncio.sleep(0.005)
-            await asyncio.sleep(0.05)
+            await await_until(
+                lambda: session._done,
+                timeout=5.0,
+                description="the session teardown flag",
+            )
+            # A pure scheduler yield: finish() only needs to reach its join.
+            await asyncio.sleep(0)
             finishing.cancel()
             try:
                 async with asyncio.timeout(10.0):
@@ -902,8 +951,10 @@ async def test_cancelled_join_still_closes_transport(
         await server.stop()
 
 
+@pytest.mark.timeout(30)
 async def test_gated_handlers_survive_while_client_pongs(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """Gated text and binary handlers do not starve liveness on the wire.
 
@@ -934,7 +985,7 @@ async def test_gated_handlers_survive_while_client_pongs(
             await super().on_binary(payload)
 
     handler = _GatedHandler()
-    server = make_server(handler, deadline=0.4, ping_interval=0.05)
+    server = make_server(handler, clock=virtual_clock, deadline=0.4, ping_interval=0.05)
     await server.start()
     pump: asyncio.Task[None] | None = None
     pump_stop = asyncio.Event()
@@ -962,28 +1013,37 @@ async def test_gated_handlers_survive_while_client_pongs(
         def _texts() -> list[bytes]:
             return [p for op, p in client.received if op == WS_OP_TEXT]
 
-        async with asyncio.timeout(5.0):
-            while b"ready;" not in _texts():
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: b"ready;" in _texts(),
+            timeout=5.0,
+            description="the connect burst",
+        )
         await client.send_text("gated:1;")
         await client.send_binary(b"\x01\x02")
-        async with asyncio.timeout(5.0):
-            await entered_text.wait()
+        await await_until(
+            entered_text.is_set, timeout=5.0, description="the gated text entry"
+        )
         # Several deadlines pass with the command parked; the answered
-        # pongs must keep the session alive.
-        await asyncio.sleep(1.2)
+        # pongs must keep the session alive. The elapse fires the ping
+        # timers while the pump answers on real sockets in each settle.
+        await virtual_clock.elapse(1.2)
         assert handler.disconnect_calls == 0
         assert len(server.sessions) == 1
         gate_text.set()
         # The binary handler runs only after the text one completes
         # (ordered dispatch); the session must still be alive then.
-        async with asyncio.timeout(5.0):
-            await entered_binary.wait()
+        await await_until(
+            entered_binary.is_set,
+            timeout=5.0,
+            description="the gated binary entry",
+        )
         assert handler.disconnect_calls == 0
         gate_binary.set()
-        async with asyncio.timeout(5.0):
-            while b"done:1;" not in _texts() or not handler.binaries:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: b"done:1;" in _texts() and handler.binaries,
+            timeout=5.0,
+            description="the gated reply and binary delivery",
+        )
         assert handler.binaries == [b"\x01\x02"]
         assert handler.disconnect_calls == 0
         pump_stop.set()
@@ -1002,8 +1062,10 @@ async def test_gated_handlers_survive_while_client_pongs(
     assert handler.disconnect_calls == 1
 
 
+@pytest.mark.timeout(30)
 async def test_gated_handler_silent_client_still_expires(
     tcp_available: None,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A gated handler does not keep a silent session alive.
 
@@ -1025,18 +1087,22 @@ async def test_gated_handler_silent_client_still_expires(
             return CommandOutcome()
 
     handler = _GatedHandler()
-    server = make_server(handler, deadline=0.3)
+    server = make_server(handler, clock=virtual_clock, deadline=0.3)
     await server.start()
     stopped = False
     try:
         client = await RawClient.connect(server.bound_port)
         await client.read_until_ready()
         await client.send_text("gated:1;")
-        async with asyncio.timeout(5.0):
-            await entered.wait()
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        await await_until(
+            entered.is_set, timeout=5.0, description="the gated command entry"
+        )
+        await virtual_clock.elapse(0.31)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=5.0,
+            description="the watchdog disconnect",
+        )
         await _read_until_closed(client)
         assert handler.disconnect_calls == 1
         gate.set()
