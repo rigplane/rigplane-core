@@ -39,12 +39,14 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
-import time
+from collections.abc import AsyncGenerator, Coroutine
 from pathlib import Path
+from typing import Any, TypeVar
 
 import pytest
 
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import FaultPlan, FaultRule, MockIcomRadio
 
@@ -73,6 +75,13 @@ _FIXTURE_PATH = (
     / "ic7610"
     / "retransmit_gaps.jsonl"
 )
+
+# A stuck virtual-clock test would wait forever: its own loop time only moves
+# on ``elapse``, so this real-time watchdog is the bound (the pairing
+# ``src/rigplane/testing/timing.py`` mandates).
+pytestmark = pytest.mark.timeout(30)
+
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -144,18 +153,118 @@ def _parse_retransmit(pkt: bytes) -> tuple | None:
     return ("ranges", pairs)
 
 
-async def _collect(client: _UdpClient, duration: float) -> list[bytes]:
-    """Gather every packet arriving within ``duration`` seconds."""
+def _drain_nowait(client: _UdpClient) -> list[bytes]:
+    """Take every datagram loopback has delivered so far, without waiting."""
     out: list[bytes] = []
-    end = time.monotonic() + duration
-    while True:
-        remaining = end - time.monotonic()
-        if remaining <= 0:
-            return out
+    while not client.queue.empty():
         try:
-            out.append(await client.recv(remaining))
-        except TimeoutError:
-            return out
+            out.append(client.queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return out
+
+
+async def _collect(
+    client: _UdpClient, clock: VirtualClock, duration: float
+) -> list[bytes]:
+    """Gather every packet sent within ``duration`` virtual seconds.
+
+    Advances the clock (firing the simulator's 0.1 s fallback loop on the
+    way), then takes everything loopback delivered. The advance settles the
+    loop first, so packets sent before it are processed at the old reading
+    and only timer-driven rounds land in the window.
+    """
+    await clock.elapse(duration)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    return _drain_nowait(client)
+
+
+async def _next(client: _UdpClient) -> bytes:
+    """The next datagram loopback delivers (a real event, generously bounded)."""
+
+    def _pop() -> bytes | None:
+        try:
+            return client.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
+    return await await_until(_pop, timeout=10.0, description="the next datagram")
+
+
+async def _take(client: _UdpClient, n: int, description: str) -> list[bytes]:
+    """Take exactly ``n`` datagrams loopback delivers (a real event, bounded)."""
+    await await_until(
+        lambda: client.queue.qsize() >= n, timeout=10.0, description=description
+    )
+    return [client.queue.get_nowait() for _ in range(n)]
+
+
+def _is_ping_reply(pkt: bytes) -> bool:
+    """Whether ``pkt`` is a ping reply (0x15, ping type, reply flag set)."""
+    return (
+        len(pkt) == 0x15
+        and struct.unpack_from("<H", pkt, 4)[0] == _PT_PING
+        and pkt[0x10] == 0x01
+    )
+
+
+def _inject(sim: MockIcomRadio, client: _UdpClient, pkt: bytes) -> None:
+    """Feed one client packet through the simulator's synchronous entry point.
+
+    ``MockIcomRadio._on_packet`` handles the datagram inline, so it is
+    processed at the current virtual-clock reading — unlike a real ``send``,
+    whose loopback delivery would land at whatever virtual time the next
+    ``elapse`` settles. The simulator's radio-to-client answers still travel
+    the real loopback socket and are read from ``client``.
+    """
+    transport = client.transport
+    assert transport is not None
+    proto = sim._civ_proto
+    assert proto is not None
+    sim._on_packet(pkt, transport.get_extra_info("sockname"), "civ", proto)
+
+
+async def _drive(
+    clock: VirtualClock,
+    step: str,
+    coro: Coroutine[Any, Any, T],
+    budget_s: float,
+    granule_s: float = 0.05,
+) -> T:
+    """Run ``coro`` while advancing ``clock`` until it finishes.
+
+    Awaiting a production-client coroutine directly would freeze on a reply
+    the client's own virtual timeouts guard: nothing else moves the clock.
+    Each ``elapse`` fires every timer on the way and settles loop callbacks,
+    so real localhost I/O interleaves with timer progress (the shape of the
+    suite's G7250 journey helper). Only an exhausted budget raises.
+    """
+    task = asyncio.create_task(coro)
+    spent = 0.0
+    try:
+        while not task.done():
+            if spent >= budget_s:
+                break
+            step_s = min(granule_s, budget_s - spent)
+            await clock.elapse(step_s)
+            spent += step_s
+        if task.done():
+            return task.result()
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        raise
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    raise AssertionError(f"{step} did not finish within {budget_s:g} virtual s")
 
 
 async def _open_stream(
@@ -178,15 +287,17 @@ async def _open_stream(
 
 
 @pytest.fixture
-async def server():
-    s = MockIcomRadio()
+async def server(
+    virtual_clock: VirtualClock,
+) -> AsyncGenerator[MockIcomRadio, None]:
+    s = MockIcomRadio(clock=virtual_clock)
     await s.start()
     yield s
     await s.stop()
 
 
 @pytest.fixture
-async def client():
+async def client() -> AsyncGenerator[_UdpClient, None]:
     loop = asyncio.get_running_loop()
     proto = _UdpClient()
     await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
@@ -200,7 +311,7 @@ async def client():
 
 
 async def test_lost_tracked_packet_gets_single_requests_then_fill(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Packet 133 never arrives: at the next tracked packet (134) the radio
     asks for 133 in single form, twice; the resent 133 is answered."""
@@ -244,9 +355,9 @@ async def test_lost_tracked_packet_gets_single_requests_then_fill(
 
     # Quiesce (a pre-fill round may still be in flight), then the request
     # loop must go silent and the counter must stop.
-    await _collect(client, 0.15)
+    await _collect(client, virtual_clock, 0.15)
     sent = server.civ_retransmit_requests
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
     assert server.civ_retransmit_requests == sent
 
 
@@ -256,7 +367,7 @@ async def test_lost_tracked_packet_gets_single_requests_then_fill(
 
 
 async def test_unfilled_gap_repeats_ranges_twice_per_round(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Skipped 154-156: the radio repeats ``ranges [[154, 156]]`` twice per
     0.1 s round, answers no CI-V data, and still answers pings."""
@@ -284,10 +395,10 @@ async def test_unfilled_gap_repeats_ranges_twice_per_round(
     first = [await client.recv() for _ in range(2)]
     assert all(_parse_retransmit(p) == ("ranges", expected_ranges) for p in first)
 
-    # A 0.55 s window holds the immediate pair plus ~3-5 paced fallback
-    # rounds of two (the first timer fire lands inside the pacing window):
-    # every packet is the same ranges request, never the held echo.
-    window = await _collect(client, 0.55)
+    # A 0.55 s window holds the immediate pair plus the paced fallback
+    # rounds of two (one 0.1 s loop tick per round): every packet is the
+    # same ranges request, never the held echo.
+    window = await _collect(client, virtual_clock, 0.55)
     assert 6 <= len(window) <= 12
     assert len(window) % 2 == 0
     assert all(_parse_retransmit(p) == ("ranges", expected_ranges) for p in window)
@@ -295,20 +406,22 @@ async def test_unfilled_gap_repeats_ranges_twice_per_round(
     assert server.civ_gap_open is True
 
     # Pings are answered while tracked-packet processing is stalled.
-    await _collect(client, 0.2)  # drain in-flight requests
+    await _collect(client, virtual_clock, 0.2)  # drain in-flight requests
     client.send(_ping(), server.civ_port)
-    answered = False
-    for _ in range(20):
-        pkt = await client.recv(timeout=2.0)
-        if (
-            len(pkt) == 0x15
-            and struct.unpack_from("<H", pkt, 4)[0] == _PT_PING
-            and pkt[0x10] == 0x01
-        ):
-            answered = True
-            break
-        assert _parse_retransmit(pkt) is not None  # only requests otherwise
-    assert answered
+
+    def _ping_reply() -> bytes | None:
+        for pkt in _drain_nowait(client):
+            if _is_ping_reply(pkt):
+                return pkt
+            # Only pre-ping fallback requests can still be in flight.
+            assert _parse_retransmit(pkt) is not None
+        return None
+
+    assert (
+        await await_until(
+            _ping_reply, timeout=10.0, description="the ping reply while stalled"
+        )
+    ) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +430,7 @@ async def test_unfilled_gap_repeats_ranges_twice_per_round(
 
 
 async def test_idle_fills_release_held_request_in_order(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Skipped 131-133, then idle fills for 131/133 switch the request to
     single 132, and the idle carrying 132 releases the CI-V request held
@@ -357,7 +470,7 @@ async def test_idle_fills_release_held_request_in_order(
         client.send(_idle(seq), server.civ_port)
     held = _freq_get(seq=held_seq)
     client.send(held, server.civ_port)
-    window = await _collect(client, 0.25)
+    window = await _collect(client, virtual_clock, 0.25)
     assert window
     assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in window)
     assert server.civ_gap_open is True
@@ -365,7 +478,7 @@ async def test_idle_fills_release_held_request_in_order(
     # Idle fills for 131 and 133: the request narrows to single 132.
     client.send(_idle(131), server.civ_port)
     client.send(_idle(133), server.civ_port)
-    soon = await _collect(client, 0.2)
+    soon = await _collect(client, virtual_clock, 0.2)
     assert 2 <= len(soon) <= 8
     assert all(_parse_retransmit(p) == ("single", 132) for p in soon)
 
@@ -373,9 +486,8 @@ async def test_idle_fills_release_held_request_in_order(
     # 158 (CI-V DATA: echo + reply) are processed in sequence order.
     client.send(_idle(132), server.civ_port)
     got_echo = got_reply = False
-    deadline = time.monotonic() + 2.0
     while not (got_echo and got_reply):
-        pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
+        pkt = await _next(client)
         if _is_echo_of(pkt, held):
             got_echo = True
         elif _is_freq_reply(pkt):
@@ -384,9 +496,9 @@ async def test_idle_fills_release_held_request_in_order(
             assert _parse_retransmit(pkt) is not None  # pre-fill straggler
     assert server.civ_gap_open is False
 
-    await _collect(client, 0.15)
+    await _collect(client, virtual_clock, 0.15)
     sent = server.civ_retransmit_requests
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
     assert server.civ_retransmit_requests == sent
 
 
@@ -395,7 +507,7 @@ async def test_idle_fills_release_held_request_in_order(
 # ---------------------------------------------------------------------------
 
 
-async def test_single_gap_fill_resumes(server, client) -> None:
+async def test_single_gap_fill_resumes(server, client, virtual_clock) -> None:
     """Skipped 199 draws single requests; the idle carrying 199 closes the
     gap and later CI-V requests are answered normally."""
     rows = _fixture_rows("single_gap_filled_by_idle")
@@ -415,9 +527,9 @@ async def test_single_gap_fill_resumes(server, client) -> None:
     assert server.civ_gap_open is True
 
     client.send(_idle(199), server.civ_port)
-    await _collect(client, 0.15)  # drain pre-fill stragglers
+    await _collect(client, virtual_clock, 0.15)  # drain pre-fill stragglers
     assert server.civ_gap_open is False
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
 
     req = _freq_get(seq=201)
     client.send(req, server.civ_port)
@@ -431,7 +543,7 @@ async def test_single_gap_fill_resumes(server, client) -> None:
 
 
 async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """A re-sent OpenClose never restarts sequence tracking (MOR-3361).
 
@@ -453,12 +565,12 @@ async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
     # The re-sent OpenClose keeps the stream alive (its marker may still
     # arrive) but must not touch the tracker's numbering.
     client.send(_openclose(), server.civ_port)
-    await _collect(client, 0.2)
+    await _collect(client, virtual_clock, 0.2)
 
     before = server.civ_retransmit_requests
     for seq in range(last + 1):
         client.send(_freq_get(seq=seq), server.civ_port)
-    assert await _collect(client, 0.35) == []
+    assert await _collect(client, virtual_clock, 0.35) == []
     assert server.civ_gap_open is False
     assert server.civ_retransmit_requests == before
 
@@ -475,7 +587,7 @@ async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
 
 
 async def test_tracked_openclose_consumes_its_number(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Data 1-3 answered, tracked OpenClose 4, data 5: no false gap.
 
@@ -502,16 +614,18 @@ async def test_tracked_openclose_consumes_its_number(
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
-    await _collect(client, 0.15)
+    await _collect(client, virtual_clock, 0.15)
     assert server.civ_retransmit_requests == 0
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
 
 
-async def test_production_client_nudge_opens_no_gap() -> None:
+async def test_production_client_nudge_opens_no_gap(
+    virtual_clock: VirtualClock,
+) -> None:
     """The CI-V watchdog's OpenClose nudge takes a tracked number and the
     simulator consumes it: ``civ_gap_open`` is False afterwards and no
     retransmit request goes out."""
-    sim = MockIcomRadio()
+    sim = MockIcomRadio(clock=virtual_clock)
     await sim.start()
     try:
         radio = IcomRadio(
@@ -522,20 +636,31 @@ async def test_production_client_nudge_opens_no_gap() -> None:
             model="IC-7610",
         )
         with fast_connect():
-            await radio.connect()
+            await _drive(virtual_clock, "connect", radio.connect(), 60.0)
         assert radio.connected
-        assert await asyncio.wait_for(radio.get_freq(), timeout=10.0) == 14_074_000
+        assert (
+            await _drive(virtual_clock, "get_freq", radio.get_freq(), 30.0)
+            == 14_074_000
+        )
         assert sim.civ_gap_open is False
 
         sent = sim.civ_retransmit_requests
-        await radio._send_open_close(open_stream=True)
+        await _drive(
+            virtual_clock,
+            "nudge",
+            radio._send_open_close(open_stream=True),
+            30.0,
+        )
         # More tracked traffic after the nudge: pre-fix this data packet
         # opened a gap for the nudge's ignored number and was held.
-        assert await asyncio.wait_for(radio.get_freq(), timeout=10.0) == 14_074_000
-        await asyncio.sleep(0.4)  # let any timer-driven round arrive
+        assert (
+            await _drive(virtual_clock, "get_freq", radio.get_freq(), 30.0)
+            == 14_074_000
+        )
+        await virtual_clock.elapse(0.4)  # let any timer-driven round arrive
         assert sim.civ_gap_open is False
         assert sim.civ_retransmit_requests == sent
-        await radio.disconnect()
+        await _drive(virtual_clock, "disconnect", radio.disconnect(), 30.0)
     finally:
         await sim.stop()
 
@@ -546,7 +671,7 @@ async def test_production_client_nudge_opens_no_gap() -> None:
 
 
 async def test_out_of_order_fills_release_held_request(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Gap 134-136 filled as 135, 134, 136: the held CI-V request is
     answered in order and no new request goes out afterwards.
@@ -568,7 +693,7 @@ async def test_out_of_order_fills_release_held_request(
 
     held = _freq_get(seq=138)
     client.send(held, server.civ_port)
-    await _collect(client, 0.15)  # the round answering the held packet
+    await _collect(client, virtual_clock, 0.15)  # the round answering the held packet
     assert server.civ_gap_open is True
 
     # Out-of-order fills: 135 arrives ahead, 134 in order, 136 last —
@@ -577,9 +702,8 @@ async def test_out_of_order_fills_release_held_request(
     client.send(_idle(134), server.civ_port)
     client.send(_idle(136), server.civ_port)
     got_echo = got_reply = False
-    deadline = time.monotonic() + 2.0
     while not (got_echo and got_reply):
-        pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
+        pkt = await _next(client)
         if _is_echo_of(pkt, held):
             got_echo = True
         elif _is_freq_reply(pkt):
@@ -590,9 +714,9 @@ async def test_out_of_order_fills_release_held_request(
 
     # After the fill the request loop goes silent: no re-marked gap for
     # numbers already received.
-    await _collect(client, 0.15)
+    await _collect(client, virtual_clock, 0.15)
     sent = server.civ_retransmit_requests
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
     assert server.civ_retransmit_requests == sent
 
 
@@ -602,7 +726,7 @@ async def test_out_of_order_fills_release_held_request(
 
 
 async def test_reboot_clears_gap_tracking(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """After a reboot a client numbering from 0 is served.
 
@@ -622,9 +746,9 @@ async def test_reboot_clears_gap_tracking(
     assert server.civ_gap_open is True
 
     server.reboot(at=0, down_for=0, busy_for=0)
-    await asyncio.sleep(0.1)
+    await virtual_clock.elapse(0.1)
     assert server.civ_gap_open is False
-    await _collect(client, 0.2)  # drain pre-reboot requests in flight
+    await _collect(client, virtual_clock, 0.2)  # drain pre-reboot requests in flight
 
     # Fresh login after the reboot: numbering from 0 is served.
     client.send(_login(), server.control_port)
@@ -640,7 +764,7 @@ async def test_reboot_clears_gap_tracking(
 
 
 async def test_drop_session_clears_gap_tracking(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """After ``drop_session`` a client numbering from 0 is served.
 
@@ -660,9 +784,9 @@ async def test_drop_session_clears_gap_tracking(
     assert server.civ_gap_open is True
 
     server.drop_session(at=0, notice=False)
-    await asyncio.sleep(0.1)
+    await virtual_clock.elapse(0.1)
     assert server.civ_gap_open is False
-    await _collect(client, 0.2)  # drain pre-drop requests in flight
+    await _collect(client, virtual_clock, 0.2)  # drain pre-drop requests in flight
 
     # Fresh login after the drop: numbering from 0 is served.
     client.send(_login(), server.control_port)
@@ -677,14 +801,16 @@ async def test_drop_session_clears_gap_tracking(
     assert server.civ_gap_open is False
 
 
-async def test_new_claim_clears_gap_tracking() -> None:
+async def test_new_claim_clears_gap_tracking(
+    virtual_clock: VirtualClock,
+) -> None:
     """After a conninfo claims a new session, numbering from 0 is served.
 
     No login happens anywhere here, so the cleared tracking below is the
     new claim's own clear. Without it the previous session's numbering
     lingers and the restarted stream is ignored.
     """
-    sim = MockIcomRadio(single_owner=True)
+    sim = MockIcomRadio(single_owner=True, clock=virtual_clock)
     await sim.start()
     loop = asyncio.get_running_loop()
     proto = _UdpClient()
@@ -739,44 +865,16 @@ def _close(seq: int) -> bytes:
     return bytes(pkt)
 
 
-class _ManualClock:
-    """A hand-advanced clock driving the simulator's retransmit pacing.
-
-    The simulator stamps and compares round times through its ``clock``
-    attribute; freezing it here removes wall time from the pacing
-    assertion below. Starts at an arbitrary nonzero base.
-    """
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-async def _drain(client: _UdpClient, timeout: float = 0.05) -> list[bytes]:
-    """Collect every packet that arrives before ``timeout`` runs dry."""
-    out: list[bytes] = []
-    while True:
-        try:
-            out.append(await client.recv(timeout=timeout))
-        except TimeoutError:
-            return out
-
-
-async def _paced_sim(clock: _ManualClock) -> MockIcomRadio:
-    """A started simulator whose rounds answer only to ``clock``.
+async def _paced_sim(virtual_clock: VirtualClock) -> MockIcomRadio:
+    """A started simulator whose rounds answer only to ``virtual_clock``.
 
     Stops the silent-client repeat loop, so every round below is
-    packet-triggered and stamped with ``clock``. The fallback itself
+    packet-triggered and stamped with ``virtual_clock``. The fallback itself
     stays pinned by
     ``test_unfilled_gap_repeats_ranges_twice_per_round``. The caller
     must ``await sim.stop()``.
     """
-    sim = MockIcomRadio(clock=clock)
+    sim = MockIcomRadio(clock=virtual_clock)
     await sim.start()
     loop_task = sim._civ_gap_task
     sim._civ_gap_task = None
@@ -789,13 +887,17 @@ async def _paced_sim(clock: _ManualClock) -> MockIcomRadio:
     return sim
 
 
-async def _replay_rounds(window: str) -> tuple[int, list[float]]:
+async def _replay_rounds(
+    window: str, virtual_clock: VirtualClock
+) -> tuple[int, list[float]]:
     """Drive one window's recorded c2r timeline against a fresh simulator.
 
     Returns the recorded round count (one per r2c retransmit row) and the
-    simulator-clock time of each observed round. Client packets go out at
-    their recorded offsets on a manual clock, so round spacing is measured
-    on the simulator's clock, never wall time.
+    simulator-clock time of each observed round. Client packets are fed
+    through the simulator's synchronous entry point at their recorded
+    offsets on the shared virtual clock, so round spacing is measured on
+    the simulator's clock, never wall time. Every radio-to-client request
+    still travels the real loopback socket and is classified from the wire.
     """
     rows = _fixture_rows(window)
     script = [
@@ -809,11 +911,11 @@ async def _replay_rounds(window: str) -> tuple[int, list[float]]:
         for row in rows
         if row["dir"] == "r2c" and row["kind"].startswith("retransmit")
     )
-    clock = _ManualClock()
-    sim = await _paced_sim(clock)
+    sim = await _paced_sim(virtual_clock)
     loop = asyncio.get_running_loop()
     proto = _UdpClient()
     await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
+    wire: list[bytes] = []
     try:
         pre = window == "gap_filled_by_idle"
         await _open_stream(proto, sim, 129 if pre else script[0][1] - 1)
@@ -823,36 +925,50 @@ async def _replay_rounds(window: str) -> tuple[int, list[float]]:
             assert _is_echo_of(await proto.recv(), req)
             assert _is_freq_reply(await proto.recv())
         base = script[0][0]
+        prev_offset = 0.0
         starts: list[float] = []
-        retransmits = 0
         for stamp, seq, kind in script:
-            # The simulator processes this packet while the clock still
-            # reads the step's time, so an observed round is stamped here.
-            clock.now = 1000.0 + (stamp - base)
+            # The simulator processes this packet inline at the step's
+            # virtual time, so an observed round is stamped here.
+            offset = stamp - base
+            virtual_clock.advance(offset - prev_offset)
+            prev_offset = offset
             before = sim.civ_retransmit_requests
-            proto.send(
-                _idle(seq) if kind == "idle" else _freq_get(seq=seq), sim.civ_port
-            )
-            for pkt in await _drain(proto):
-                if _parse_retransmit(pkt) is not None:
-                    retransmits += 1
+            _inject(sim, proto, _idle(seq) if kind == "idle" else _freq_get(seq=seq))
             delta = sim.civ_retransmit_requests - before
             assert delta % 2 == 0, (window, delta)
-            starts.extend([clock.now] * (delta // 2))
-        assert retransmits == sim.civ_retransmit_requests, (window, retransmits)
+            starts.extend([virtual_clock()] * (delta // 2))
+
+        # The requests above travelled the real loopback socket: gather them
+        # from the wire and cross-check the counter.
+        def _rounds_done() -> bool:
+            wire.extend(_drain_nowait(proto))
+            return (
+                sum(1 for pkt in wire if _parse_retransmit(pkt) is not None)
+                == sim.civ_retransmit_requests
+            )
+
+        await await_until(
+            _rounds_done,
+            timeout=10.0,
+            description=f"{window} retransmit requests on the wire",
+        )
     finally:
         proto.close()
         await sim.stop()
+    retransmits = sum(1 for pkt in wire if _parse_retransmit(pkt) is not None)
     assert len(starts) * 2 == retransmits, (window, retransmits)
     return recorded, starts
 
 
-async def test_round_rate_matches_recording() -> None:
+async def test_round_rate_matches_recording(
+    virtual_clock: VirtualClock,
+) -> None:
     """Each window's client timeline draws about its recorded rounds.
 
     Per window the observed round count is within ±20 % of the recorded
     one and no two rounds are closer than 70 ms — both measured on the
-    simulator's injected manual clock, so a loaded runner cannot skew
+    simulator's shared virtual clock, so a loaded runner cannot skew
     them. The tail pins row 143 @1.005 of gap_filled_by_idle: fills 131/133
     narrow the request to single 132: a packet 3 ms after that round
     draws no round, one 53 ms after it is still silent, while the next
@@ -864,14 +980,13 @@ async def test_round_rate_matches_recording() -> None:
         "single_gap_filled_by_idle",
         "gap_filled_by_idle",
     ):
-        recorded, starts = await _replay_rounds(window)
+        recorded, starts = await _replay_rounds(window, virtual_clock)
         assert abs(len(starts) - recorded) * 5 <= recorded, (window, len(starts))
         if len(starts) >= 2:
             gaps = [after - before for before, after in zip(starts, starts[1:])]
             assert min(gaps) >= 0.070, (window, min(gaps))
 
-    clock = _ManualClock()
-    sim = await _paced_sim(clock)
+    sim = await _paced_sim(virtual_clock)
     loop = asyncio.get_running_loop()
     proto = _UdpClient()
     await loop.create_datagram_endpoint(lambda: proto, local_addr=(_HOST, 0))
@@ -881,23 +996,26 @@ async def test_round_rate_matches_recording() -> None:
         proto.send(req, sim.civ_port)
         assert _is_echo_of(await proto.recv(), req)
         assert _is_freq_reply(await proto.recv())
-        proto.send(_idle(134), sim.civ_port)
-        pair = [await proto.recv() for _ in range(2)]
+        _inject(sim, proto, _idle(134))
+        pair = await _take(proto, 2, "the ranges round for 131-133")
         assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
-        clock.advance(0.09)
-        proto.send(_idle(131), sim.civ_port)  # in order: fills, no round
-        proto.send(_idle(133), sim.civ_port)  # narrows to single 132: round
-        pair = [await proto.recv() for _ in range(2)]
+        virtual_clock.advance(0.09)
+        _inject(sim, proto, _idle(131))  # in order: fills, no round
+        _inject(sim, proto, _idle(133))  # narrows to single 132: round
+        pair = await _take(proto, 2, "the narrowed single round for 132")
         assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
-        clock.advance(0.003)
-        proto.send(_idle(135), sim.civ_port)  # ~3 ms after the round: silence
-        assert await _drain(proto) == []
-        clock.advance(0.05)  # ~53 ms after the round: still inside the window
-        proto.send(_idle(136), sim.civ_port)
-        assert await _drain(proto) == []
-        clock.advance(0.1)
-        proto.send(_idle(137), sim.civ_port)
-        pair = [await proto.recv() for _ in range(2)]
+        sent = sim.civ_retransmit_requests
+        virtual_clock.advance(0.003)
+        _inject(sim, proto, _idle(135))  # ~3 ms after the round: silence
+        assert await _collect(proto, virtual_clock, 0.0) == []
+        assert sim.civ_retransmit_requests == sent
+        virtual_clock.advance(0.05)  # ~53 ms after the round: still silent
+        _inject(sim, proto, _idle(136))
+        assert await _collect(proto, virtual_clock, 0.0) == []
+        assert sim.civ_retransmit_requests == sent
+        virtual_clock.advance(0.1)
+        _inject(sim, proto, _idle(137))
+        pair = await _take(proto, 2, "the round past the pacing window")
         assert all(_parse_retransmit(p) == ("single", 132) for p in pair)
     finally:
         proto.close()
@@ -905,7 +1023,7 @@ async def test_round_rate_matches_recording() -> None:
 
 
 async def test_tracked_openclose_close_consumes_its_number(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Data 1-3 answered, tracked OpenClose(close) 4, data 5: answered.
 
@@ -925,13 +1043,13 @@ async def test_tracked_openclose_close_consumes_its_number(
     assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
-    await _collect(client, 0.15)
+    await _collect(client, virtual_clock, 0.15)
     assert server.civ_retransmit_requests == 0
-    assert await _collect(client, 0.3) == []
+    assert await _collect(client, virtual_clock, 0.3) == []
 
 
 async def test_new_gap_never_remarks_held_numbers(
-    server: MockIcomRadio, client: _UdpClient
+    server: MockIcomRadio, client: _UdpClient, virtual_clock: VirtualClock
 ) -> None:
     """Idle 141 after fills 131-133 requests only (135,139): 140 is held.
 
@@ -947,13 +1065,13 @@ async def test_new_gap_never_remarks_held_numbers(
     client.send(_idle(134), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
     assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
-    await asyncio.sleep(0.09)
+    await virtual_clock.elapse(0.09)
     client.send(_idle(140), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
     assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
     for seq in (131, 132, 133):
         client.send(_idle(seq), server.civ_port)
-    await asyncio.sleep(0.09)
+    await virtual_clock.elapse(0.09)
     client.send(_idle(141), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
     assert all(_parse_retransmit(p) == ("ranges", [(135, 139)]) for p in pair)
