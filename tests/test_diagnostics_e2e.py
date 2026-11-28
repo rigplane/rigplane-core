@@ -13,9 +13,10 @@ typed-error responses.
 
 The direct-upload tests (Groups 1–2) run on the shared virtual clock
 (``rigplane.testing.timing.VirtualClock`` via the ``virtual_clock``
-fixture): each ``upload_bundle`` call is driven by ``_bounded``, which
-advances virtual time in granules while real localhost I/O settles, so
-the client's loop-time timeouts never depend on the wall clock.
+fixture): each ``upload_bundle`` call runs as a task whose completion
+is awaited as a real event with ``await_until`` while virtual time stays
+fixed, so the client's loop-time timeouts never depend on the wall
+clock.
 
 Performance budget: <60s for the entire file on CI (acceptance §9).
 """
@@ -48,44 +49,37 @@ from rigplane.diagnostics import (
     upload_bundle,
 )
 from rigplane.diagnostics import _discovery
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web.server import WebConfig, WebServer
 from _diagnostics_mock_server import MockReceiver
 
 T = TypeVar("T")
 
 
-async def _bounded(
-    clock: VirtualClock,
+async def _await_upload(
     step: str,
     coro: Coroutine[Any, Any, T],
     budget_s: float,
-    granule_s: float = 0.1,
 ) -> T:
-    """Drive ``clock`` until ``coro`` finishes or ``budget_s`` virtual seconds pass.
+    """Await a real localhost upload while virtual time stays fixed.
 
-    The coroutine runs as a task while the clock advances in ``granule_s``
-    steps (each :meth:`VirtualClock.elapse` fires every timer on the way and
-    settles loop callbacks, so real localhost I/O interleaves with timer
-    progress). Awaiting the task directly would freeze on a missing reply:
-    the client's timeouts run on this clock and nothing else moves it. On
-    success the task's own result (or exception) is returned (or raised);
-    only an exhausted budget raises
-    ``AssertionError("<step> did not finish within N virtual s")``. Budget
-    exhaustion — or a :meth:`VirtualClock.elapse` failure — cancels the step
-    task and awaits it (suppressing ``CancelledError``) before raising, so no
-    upload keeps running into teardown.
+    The coroutine runs as a task whose completion is awaited as a real
+    event with the shared :func:`await_until` (real-time deadline; its
+    loop turns keep settling so kernel bytes move). Virtual time never
+    advances here: no timer behavior is under test, so the client's own
+    loop-time timeouts cannot depend on the wall clock. On success the
+    task's own result (or exception) is returned (or raised); only an
+    exhausted budget raises ``AssertionError``. Any failure cancels the
+    step task and awaits it (suppressing ``CancelledError``) before
+    raising, so no upload keeps running into teardown.
     """
     task = asyncio.create_task(coro)
-    spent = 0.0
     try:
-        while not task.done():
-            if spent >= budget_s:
-                break
-            await clock.elapse(min(granule_s, budget_s - spent))
-            spent += granule_s
-        if task.done():
-            return task.result()
+        await await_until(
+            lambda: task.done(),
+            timeout=budget_s,
+            description=f"{step} upload completion",
+        )
     except BaseException:  # noqa: BLE001 — must free the orphaned step task
         if not task.done():
             task.cancel()
@@ -94,12 +88,7 @@ async def _bounded(
             except asyncio.CancelledError:
                 pass
         raise
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    raise AssertionError(f"{step} did not finish within {budget_s:g} virtual s")
+    return task.result()
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +158,7 @@ def _metadata_for(submission_id: str | None = None) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Group 1 — upload_bundle direct flow (shared virtual clock + _bounded driver)
+# Group 1 — upload_bundle direct flow (shared virtual clock, real-event wait)
 # ---------------------------------------------------------------------------
 
 
@@ -182,8 +171,7 @@ async def test_upload_succeeds_against_mock(
     receiver, url = mock_pair
     metadata = _metadata_for()
 
-    result = await _bounded(
-        virtual_clock,
+    result = await _await_upload(
         "upload",
         upload_bundle(bundle_file, metadata, endpoint=url),
         30.0,
@@ -211,8 +199,7 @@ async def test_upload_with_header_provider_passes_auth(
     async def provider() -> dict[str, str]:
         return {"Authorization": "Bearer fake-token"}
 
-    result = await _bounded(
-        virtual_clock,
+    result = await _await_upload(
         "upload",
         upload_bundle(
             bundle_file, _metadata_for(), endpoint=url, header_provider=provider
@@ -233,14 +220,12 @@ async def test_upload_idempotency_same_submission_id(
     receiver, url = mock_pair
     sub_id = str(uuid.uuid4())
 
-    r1 = await _bounded(
-        virtual_clock,
+    r1 = await _await_upload(
         "first upload",
         upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url),
         30.0,
     )
-    r2 = await _bounded(
-        virtual_clock,
+    r2 = await _await_upload(
         "deduped upload",
         upload_bundle(bundle_file, _metadata_for(sub_id), endpoint=url),
         30.0,
@@ -266,8 +251,7 @@ async def test_upload_401_retry_with_header_refresh(
         provider_calls["n"] += 1
         return {"Authorization": f"Bearer token-{provider_calls['n']}"}
 
-    result = await _bounded(
-        virtual_clock,
+    result = await _await_upload(
         "upload",
         upload_bundle(
             bundle_file, _metadata_for(), endpoint=url, header_provider=provider
@@ -283,7 +267,7 @@ async def test_upload_401_retry_with_header_refresh(
 
 
 # ---------------------------------------------------------------------------
-# Group 2 — Typed error mapping (shared virtual clock + _bounded driver)
+# Group 2 — Typed error mapping (shared virtual clock, real-event wait)
 # ---------------------------------------------------------------------------
 
 
@@ -297,8 +281,7 @@ async def test_rate_limited_raises_typed(
     receiver.response_mode = "rate_limited"
 
     with pytest.raises(RateLimited) as ei:
-        await _bounded(
-            virtual_clock,
+        await _await_upload(
             "upload",
             upload_bundle(bundle_file, _metadata_for(), endpoint=url),
             30.0,
@@ -316,8 +299,7 @@ async def test_bundle_too_large_raises_typed(
     receiver.response_mode = "bundle_too_large"
 
     with pytest.raises(BundleTooLarge):
-        await _bounded(
-            virtual_clock,
+        await _await_upload(
             "upload",
             upload_bundle(bundle_file, _metadata_for(), endpoint=url),
             30.0,
@@ -334,8 +316,7 @@ async def test_forbidden_content_raises_typed(
     receiver.response_mode = "forbidden"
 
     with pytest.raises(ForbiddenContent) as ei:
-        await _bounded(
-            virtual_clock,
+        await _await_upload(
             "upload",
             upload_bundle(bundle_file, _metadata_for(), endpoint=url),
             30.0,
@@ -353,8 +334,7 @@ async def test_metadata_invalid_raises_typed(
     receiver.response_mode = "metadata_invalid"
 
     with pytest.raises(MetadataInvalid) as ei:
-        await _bounded(
-            virtual_clock,
+        await _await_upload(
             "upload",
             upload_bundle(bundle_file, _metadata_for(), endpoint=url),
             30.0,
@@ -368,8 +348,7 @@ async def test_network_error_on_closed_port(
 ) -> None:
     # Port 1 is privileged + nothing listening: connection refused.
     with pytest.raises(NetworkError):
-        await _bounded(
-            virtual_clock,
+        await _await_upload(
             "upload",
             upload_bundle(
                 bundle_file,
