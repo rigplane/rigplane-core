@@ -261,10 +261,11 @@ def _pause_relative_read(monkeypatch, radio, *, call):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_split_selection_change_after_preservation_never_sets(
-    monkeypatch, model, command
+    monkeypatch, virtual_clock: VirtualClock, model, command
 ):
     async with _peer(model) as (radio, peer, server, reader, writer):
         before = dict(peer.slots)
@@ -295,9 +296,10 @@ async def test_split_selection_change_after_preservation_never_sets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 async def test_split_competing_client_write_is_rechecked_not_overwritten(
-    model, monkeypatch
+    model, monkeypatch, virtual_clock: VirtualClock
 ):
     """A preserved split write survives a concurrent client's raw write.
 
@@ -353,9 +355,7 @@ async def test_split_competing_client_write_is_rechecked_not_overwritten(
                     description="both clients' writes answering",
                 )
                 assert await reply_a == b"RPRT 0\n"
-                assert await reply_b == (
-                    f"FE FE E0 {addr:02X} FB FD\n".encode()
-                )
+                assert await reply_b == (f"FE FE E0 {addr:02X} FB FD\n".encode())
             assert peer.slots["B"] == (7_076_000, Mode.USB, 1, 0)
             sets = [
                 data
@@ -383,9 +383,10 @@ async def test_split_competing_client_write_is_rechecked_not_overwritten(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 async def test_split_direct_raw_transaction_marks_interference_scope(
-    model, monkeypatch
+    model, monkeypatch, virtual_clock: VirtualClock
 ):
     """A direct raw CI-V transaction counts as interference (MOR-3743).
 
@@ -414,9 +415,7 @@ async def test_split_direct_raw_transaction_marks_interference_scope(
                     0x26, data=b"\x01\x05\x01\x01", expect="ack", timeout=1.0
                 )
             )
-            await await_until(
-                foreign.done, description="the raw transaction answering"
-            )
+            await await_until(foreign.done, description="the raw transaction answering")
             result = await foreign
             assert result.status == "ack"
             release.set()
@@ -445,9 +444,10 @@ async def test_split_direct_raw_transaction_marks_interference_scope(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
-    model, monkeypatch
+    model, monkeypatch, virtual_clock: VirtualClock
 ):
     """A selection change during the readback fails the write, one SET.
 
@@ -497,8 +497,11 @@ async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
-async def test_split_vfo_switch_between_attempts_fails_the_write(model, monkeypatch):
+async def test_split_vfo_switch_between_attempts_fails_the_write(
+    model, monkeypatch, virtual_clock: VirtualClock
+):
     """A selection change between attempts fails the write (MOR-3743).
 
     A competing raw ``w`` write refuses A's first SET, and while the
@@ -822,10 +825,11 @@ async def test_split_reverse_mode_round_trip_keeps_selected_mode(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_split_mode_authority_change_during_preservation_never_sets(
-    model, command
+    model, command, virtual_clock: VirtualClock
 ):
     controller = Safety().authority()
 
@@ -864,10 +868,11 @@ async def test_split_mode_authority_change_during_preservation_never_sets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X PKTUSB 2400\n"])
 async def test_split_authority_change_while_commander_queued_never_sets(
-    monkeypatch, model, command
+    monkeypatch, virtual_clock: VirtualClock, model, command
 ):
     controller = Safety().authority()
 
