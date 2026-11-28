@@ -882,11 +882,9 @@ class ControlPhaseRuntime:
             data_flowing = isinstance(last_data, (int, float)) and (
                 now - float(last_data)
             ) <= getattr(h, "_civ_ready_idle_timeout", 3.0)
-            if transport_open and data_flowing:
+            if transport_open and data_flowing and h._civ_stream_ready:
                 h._conn_state = RadioConnectionState.CONNECTED
-                h._civ_stream_ready = True
                 h._civ_recovering = False
-                h._last_civ_data_received = now
                 # ``data_flowing`` being True implies ``last_data`` is numeric;
                 # re-narrow for mypy so ``float(last_data)`` type-checks.
                 assert isinstance(last_data, (int, float))
@@ -913,6 +911,8 @@ class ControlPhaseRuntime:
                 },
             )
             await h._force_cleanup_civ()
+            if h._session_lifecycle.full_recovery_pending:
+                return
             if h._civ_transport is not None:
                 # Defensive: _force_cleanup_civ normally nulls the transport.
                 # If a subclass/mock left it set, do not loop forever — bail.
@@ -1029,6 +1029,7 @@ class ControlPhaseRuntime:
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("soft_reconnect")
+            civ_rt._soft_recovery_epoch = h._civ_epoch
         else:
             h._advance_civ_generation("soft_reconnect")
         h._civ_last_waiter_gc_monotonic = time.monotonic()
@@ -1048,7 +1049,8 @@ class ControlPhaseRuntime:
             h._start_civ_worker()
             h._start_civ_data_watchdog()
         logger.info("Soft reconnect to %s (civ=%d)", h._host, h._civ_port)
-        await self._after_reconnect_parts(audio_runtime, audio_snapshot)
+        if not h._session_lifecycle.full_recovery_pending:
+            await self._after_reconnect_parts(audio_runtime, audio_snapshot)
 
     async def _after_reconnect_parts(
         self, audio_runtime: object, audio_snapshot: object
@@ -1221,6 +1223,9 @@ class ControlPhaseRuntime:
         busy = struct.unpack_from("<I", data, 0x60)[0]
         if busy != 0:
             logger.debug("conninfo notice busy=%d, session left alone", busy)
+            return
+        recipient = struct.unpack_from("<I", data, 0x0C)[0]
+        if recipient == 0 and self._host.radio_ready:
             return
         logger.warning(
             "conninfo notice: radio reported the LAN session free (busy=0), "
@@ -1634,6 +1639,24 @@ class ControlPhaseSessionMechanism:
         if shutdown is None:
             return
         await shutdown()
+
+    async def full_reconnect_once(self) -> bool:
+        """Renew the LAN login without releasing the managed-TX supervisor."""
+        h = self._cp._host
+        h._conn_state = RadioConnectionState.RECONNECTING
+        h._ctrl_transport._conninfo_notice_callback = None
+        await self._cp.release()
+        h._ctrl_transport.remote_id = 0
+        try:
+            await self._cp.soft_reconnect()
+        except Exception:
+            await self._cp.release()
+            h._conn_state = RadioConnectionState.RECONNECTING
+            h._civ_runtime.start_data_watchdog()
+            raise
+        if not h._civ_stream_ready:
+            h._civ_runtime._soft_recovery_epoch = h._civ_epoch
+        return h.radio_ready
 
     async def soft_reconnect_once(self) -> None:
         await self._cp.soft_reconnect()

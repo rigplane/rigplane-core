@@ -49,8 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import weakref
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
@@ -692,6 +691,7 @@ class CoreRadioSessionLifecycle:
         *,
         not_ready_cooldown_s: float = _STATUS_RETRY_PAUSE,
         reject_cooldown_s: float = _STATUS_REJECT_COOLDOWN,
+        full_reconnect_once: Callable[[], Awaitable[bool]] | None = None,
         max_recovery_attempts: int = _MAX_RECONNECTS,
         recovery_backoff_s: tuple[float, ...] = _RECONNECT_BACKOFF,
         max_connect_attempts: int = _MAX_CONNECT_ATTEMPTS,
@@ -701,6 +701,9 @@ class CoreRadioSessionLifecycle:
         first_connect_discovery_retries: int | None = None,
     ) -> None:
         self._mech = mechanism
+        # Only the LAN session mechanism can renew a control login during repair.
+        self._full_reconnect_once = full_reconnect_once
+        self._full_recovery_requested = False
         self._not_ready_cooldown_s = not_ready_cooldown_s
         self._reject_cooldown_s = reject_cooldown_s
         self._max_recovery_attempts = max_recovery_attempts
@@ -745,13 +748,6 @@ class CoreRadioSessionLifecycle:
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
         self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
-        # Recovery runs a preempting replacement cancelled on purpose
-        # (:meth:`supersede_recovery`); lets every coalesced caller tell that
-        # apart from a teardown cancel, however late it resumes (a per-run
-        # mark, not a single slot: a caller that retries starts a new run).
-        self._superseded_recoveries: weakref.WeakSet[asyncio.Task[None]] = (
-            weakref.WeakSet()
-        )
         # True once a session has been claimed (auth succeeded) and not yet
         # released — drives idempotent disconnect.
         self._claimed = False
@@ -1237,6 +1233,7 @@ class CoreRadioSessionLifecycle:
         await self._teardown(reason=LifecycleErrorReason.CANCELLED, shutdown=True)
 
     async def _teardown(self, *, reason: LifecycleErrorReason, shutdown: bool) -> None:
+        self._full_recovery_requested = False
         # Cancel any in-flight resident runner / recovery task first so their
         # own ``finally`` release does not race ours.
         for task_attr in ("_connect_task", "_recover_task"):
@@ -1276,20 +1273,14 @@ class CoreRadioSessionLifecycle:
             and self._recovery_waiters.get(task) is recovery
         )
 
-    def supersede_recovery(self) -> None:
-        """Cancel the in-flight recovery run because a replacement takes over.
+    @property
+    def full_recovery_pending(self) -> bool:
+        return self._full_recovery_requested
 
-        A coalesced :meth:`soft_reconnect` caller that was not itself
-        cancelled then sees ``RigplaneConnectionError`` ("superseded") instead
-        of a foreign ``CancelledError`` that would read as its own cancellation
-        (background pollers treat that as shutdown and exit for good).  A
-        teardown cancel (:meth:`disconnect`) is not marked: callers keep
-        ``CancelledError`` there.  No-op when no run is in flight.
-        """
-        recovery = self._recover_task
-        if recovery is not None and not recovery.done():
-            self._superseded_recoveries.add(recovery)
-            recovery.cancel()
+    def request_full_recovery(self) -> bool:
+        """Record a FULL request and report whether an owner is running."""
+        self._full_recovery_requested = True
+        return self._recover_task is not None and not self._recover_task.done()
 
     async def soft_reconnect(self) -> None:
         # Coalesce concurrent recovery onto the in-flight one.
@@ -1302,17 +1293,6 @@ class CoreRadioSessionLifecycle:
             self._recovery_waiters[caller] = recovery
         try:
             await recovery
-        except asyncio.CancelledError:
-            if (
-                recovery in self._superseded_recoveries
-                and recovery.cancelled()
-                and caller is not None
-                and caller.cancelling() == 0
-            ):
-                raise RigplaneConnectionError(
-                    "session recovery was superseded"
-                ) from None
-            raise
         finally:
             if caller is not None and self._recovery_waiters.get(caller) is recovery:
                 del self._recovery_waiters[caller]
@@ -1322,6 +1302,8 @@ class CoreRadioSessionLifecycle:
     async def _run_recover(self) -> None:
         last_exc: BaseException | None = None
         for attempt in range(1, self._max_recovery_attempts + 1):
+            if self._full_recovery_requested:
+                break
             self._recovery_attempt = attempt
             self._emit(
                 LifecycleState.RECOVERING,
@@ -1334,6 +1316,8 @@ class CoreRadioSessionLifecycle:
                     min(attempt - 2, len(self._recovery_backoff_s) - 1)
                 ]
                 await asyncio.sleep(backoff)
+                if self._full_recovery_requested:
+                    break
             try:
                 await self._mech.soft_reconnect_once()
             except Exception as exc:  # noqa: BLE001 — count + retry/exhaust
@@ -1344,9 +1328,31 @@ class CoreRadioSessionLifecycle:
                 )
                 continue
             else:
+                if self._full_recovery_requested:
+                    break
                 self._recovery_attempt = None
                 self._emit(LifecycleState.CONNECTED)
                 return
+
+        if self._full_reconnect_once is not None:
+            self._emit(
+                LifecycleState.RECOVERING,
+                reason=LifecycleErrorReason.DATA_WATCHDOG_STALL,
+            )
+            try:
+                while True:
+                    self._full_recovery_requested = False
+                    ready = await self._full_reconnect_once()
+                    if ready or not self._full_recovery_requested:
+                        break
+            except Exception:
+                _logger.warning("lifecycle.full_reconnect.failed", exc_info=True)
+                raise
+            finally:
+                self._full_recovery_requested = False
+                self._recovery_attempt = None
+            self._emit(LifecycleState.CONNECTED)
+            return
 
         # Exhausted: route through CLOSING with full release (T11).
         self._recovery_attempt = None

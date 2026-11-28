@@ -782,6 +782,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         self._session_lifecycle: CoreRadioSessionLifecycle = CoreRadioSessionLifecycle(
             self._session_mechanism,
+            full_reconnect_once=self._session_mechanism.full_reconnect_once,
             max_connect_attempts=4,
             # In-process SDK retry is immediate: the meaningful wait between
             # attempts is the radio's own keepalive window, and the lifecycle

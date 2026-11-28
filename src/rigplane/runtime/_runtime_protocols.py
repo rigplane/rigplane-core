@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from rigplane.radio_state import RadioState
     from rigplane.profiles import RadioProfile
     from rigplane.core.state_store import StateStore
+    from rigplane.runtime._connection_state import RadioConnectionState
     from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
     from rigplane.scope import ScopeAssembler, ScopeFrame
     from rigplane.transport import IcomTransport
@@ -57,6 +58,8 @@ class CivRuntimeHost(Protocol):
     _civ_data_watchdog_task: "asyncio.Task[None] | None"
 
     # CI-V health / recovery state
+    _conn_state: RadioConnectionState
+    _ctrl_transport: IcomTransport
     _civ_stream_ready: bool
     _civ_recovering: bool
     _civ_recovery_lock: asyncio.Lock
@@ -121,6 +124,11 @@ class ControlPhaseHost(Protocol):
     _conn_state: Any
     _has_connected_once: bool
     _auto_reconnect: bool
+    _civ_epoch: int
+    _session_lifecycle: CoreRadioSessionLifecycle
+
+    @property
+    def radio_ready(self) -> bool: ...
 
     # Control and CI-V transports
     _ctrl_transport: "IcomTransport"
