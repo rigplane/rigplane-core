@@ -1,421 +1,80 @@
-name: Tests (full matrix)
+name: Full validation
 
-# The full platform matrix runs on the merged tree on a schedule, on demand,
-# and on release-candidate tags. It does not run on every push to main: every
-# change reaches main through the merge queue, whose merge_group run already
-# tested the exact tree that lands (a squash keeps the tree), so a push run
-# only repeated it (MOR-3878).
+# MEASUREMENT BRANCH ONLY (MOR-4930, adviser 2026-11-27 19:38 EST).
+# Loops the quick-python-tests shard 1 (the shard where
+# test_tx_under_fault_matrix[ws-reboot-hold] failed in run 46077060678) on the
+# same runner class and Python as CI, at v3.4.0rc1 and at v3.3.1, with the
+# ptt_reboot_probe plugin: the reboot PTT-off budget raised to 90 s and one JSON
+# line per reboot row (elapsed to PTT off, simulator PTT transitions, Core's
+# session-loss / reconnect / release-attempt warnings with timestamps).
+
 on:
-  schedule:
-    # Twice a day, every day, 06:00 and 18:00 UTC (adviser decision 2026-11-20):
-    # the 3-hourly weekday run's four ~25 min legs took ~1.7 build slots all day,
-    # FIFO ahead of merge-group jobs, while weekends had no full matrix at all.
-    # Main only advances through the merge queue, so this stays the broader safety
-    # net behind it, within half a day. A tick whose commit already passed this
-    # workflow is skipped by the `fresh` job.
-    - cron: "0 6,18 * * *"
   workflow_dispatch:
     inputs:
-      rc:
-        description: "Release-candidate run: also run the slow-marked tests"
-        type: boolean
-        default: false
-  push:
-    # Release-candidate tags (vX.Y.ZrcN) are tested here exactly once; the
-    # final tag goes on the same commit, so no later run repeats them.
-    tags: ["v*rc*"]
-
-# A reusable workflow may not ask for more than its caller grants, and the
-# gates called below read pull-request metadata; the `fresh` job reads runs.
-permissions:
-  contents: read
-  actions: read
-  pull-requests: read
+      runs:
+        description: loop count per ref
+        default: "20"
 
 concurrency:
-  group: tests-full-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: measure-mor4930-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  fresh:
-    # Scheduled runs only: skip a tick when this exact commit already passed
-    # this workflow (an earlier tick, a dispatch or the candidate tag run).
-    # `test` and `capture-harness` are skipped with a false answer.
-    runs-on: [self-hosted, Linux, ARM64, light]
-    timeout-minutes: 5
-    outputs:
-      run: ${{ steps.check.outputs.run }}
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Has this commit already passed the full matrix
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          RUNS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/full.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=1
-        run: |
-          set -euo pipefail
-          run=true
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            passed="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" "$RUNS_URL" \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_count"])')"
-            if [ "$passed" != "0" ]; then
-              run=false
-            fi
-          fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-          echo "full matrix needed for this commit: $run"
-
-  test:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
-    # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
-    # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
-    # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
-    # Build pool, not the 2 GiB gate pool (MOR-4280): the full not-slow suite across three interpreters.
-    runs-on: [self-hosted, Linux, X64, build]
-    # RC dispatch and candidate tags run slow-marked tests (`-m "not benchmark"`);
-    # main@3cb86021 rc dispatches hit the 25-minute job cap at ~25:17. Scheduled
-    # and non-rc dispatches keep the shorter budget.
-    # MOR-4544: 25 min was shorter than the suite itself (22-29 min on a loaded host), so
-    # every scheduled safety-net run was cancelled before it finished.
-    timeout-minutes: ${{ (inputs.rc || github.ref_type == 'tag') && 60 || 40 }}
+  ptt-reboot-loop:
+    runs-on: [self-hosted, Linux, build]
+    timeout-minutes: 300
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        ref: [v3.4.0rc1, v3.3.1]
     env:
-      # Pin uv to the matrix interpreter. Without this, `uv run` satisfies
-      # requires-python=">=3.11" with the newest interpreter on the runner
-      # (3.13), so every matrix job silently tested 3.13 (MOR-590).
-      UV_PYTHON: ${{ matrix.python-version }}
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          # Architecture debt guards compare HEAD with the reachable PR base.
-          fetch-depth: 2
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
-        # already installed its packages (pytest, ruff, mypy, pydantic,
-        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
-        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
-        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
-        # tests ran skipped in CI while still showing green. `uv sync
-        # --all-extras` installs every extra declared in pyproject.toml's
-        # [project.optional-dependencies], so those tests run instead of
-        # skipping.
-        run: uv sync --all-extras
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm ci
-
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm run build
-          rm -f ../src/rigplane/web/static
-          mkdir -p ../src/rigplane/web/static
-          cp -r dist/* ../src/rigplane/web/static/
-
-      - name: Lint web boundary
-        run: uv run ruff check src/rigplane/web
-
-      - name: Type-check web boundary
-        run: uv run mypy --strict src/rigplane/web
-
-      - name: Lint architecture (import-linter)
-        run: uv run lint-imports
-
-      - name: Run tests
-        id: tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}/.github/scripts
-          RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics
-        # When the dispatch input `rc` is true, or the run is a release-candidate
-        # tag, the -m replaces the 'not slow and not benchmark' from addopts, so
-        # the slow-marked tests run too.
-        run: |
-          # Without pipefail the pipe's exit status is tee's (always 0), so
-          # pytest failures were swallowed and the step reported success.
-          # Capture pytest's exit code via PIPESTATUS, extract the summary
-          # (still needed for the badge, including on failure), then exit
-          # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -p pytest_worker_diagnostics -n auto ${{ (inputs.rc || github.ref_type == 'tag') && '-m "not benchmark"' || '' }} --tb=short --timeout=300 --timeout-method=thread \
-            | tee pytest-output.txt
-          rc=${PIPESTATUS[0]}
-          SUMMARY=$(tail -1 pytest-output.txt)
-          PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          exit "$rc"
-
-      - name: Bound worker diagnostics
-        if: always()
-        continue-on-error: true
-        run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
-
-      - name: Upload worker diagnostics
-        if: failure()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: worker-diagnostics-${{ matrix.python-version }}
-          path: |
-            ${{ runner.temp }}/pytest-worker-diagnostics/events-*.jsonl
-            ${{ runner.temp }}/pytest-worker-diagnostics/phases-*.jsonl
-            ${{ runner.temp }}/pytest-worker-diagnostics/controller-*.jsonl
-            ${{ runner.temp }}/pytest-worker-diagnostics/dump-*.txt
-            ${{ runner.temp }}/pytest-worker-diagnostics/fatal-*.log
-            ${{ runner.temp }}/pytest-worker-diagnostics/timeout-*.log
-            ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
-          if-no-files-found: ignore
-          # MOR-4718 (owner rule: no big artifacts in GitHub): the bounded
-          # diagnostics are stored only when the job fails, for one day. The
-          # finalize step above still bounds the files on every run; only
-          # the upload is conditional.
-          retention-days: 1
-
-      # The web UI truncates a long step log, so a red matrix leg could hide
-      # which test failed unless someone had a runner-host login. The Run
-      # tests step already tees the full pytest output (the short test
-      # summary info section included) into pytest-output.txt; upload it
-      # unconditionally: it is a small text log (a 0.5 MB artifact), unlike
-      # the worker diagnostics above (MOR-4718).
-      - name: Upload pytest output
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: pytest-output-${{ matrix.python-version }}
-          path: pytest-output.txt
-          if-no-files-found: ignore
-          retention-days: 3
-
-      - name: Extract version
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main'
-        id: version
-        run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Update tests badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-tests.json
-          label: tests
-          message: "${{ steps.tests.outputs.passed }} passed"
-          color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
-
-      - name: Update version badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-version.json
-          label: version
-          message: "v${{ steps.version.outputs.version }}"
-          color: blue
-
-      - name: Update mypy badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-mypy.json
-          label: mypy
-          message: "0 errors"
-          color: blue
-
-  frontend:
-    # MOR-4544: the frontend checks do not depend on the Python version. They ran inside
-    # every `test` matrix leg (about 5 min each on a fast host, 11 on a slow one), so the
-    # wall time of the run paid for them. One parallel job runs them once.
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    runs-on: [self-hosted, Linux, X64, build]
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm ci
-
-      - name: i18n catalog lint
-        run: |
-          cd frontend
-          npm run i18n:check
-
-      - name: Frontend type-check
-        run: |
-          cd frontend
-          npm run check
-
-      - name: Frontend unit tests
-        run: |
-          cd frontend
-          npx vitest run
-
-  capture-harness:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
-    # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
-    # workflow before this. Deliberately a single dedicated job, NOT a
-    # matrix leg — the capture matrix is Python-version-independent (it
-    # only exercises the built frontend in a real browser), so multiplying
-    # it by matrix.python-version (3.11/3.12/3.13) would triple runner
-    # minutes for zero additional coverage.
-    #
-    # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this job used
-    # to run `continue-on-error: true` for one cycle (MOR-1382); that cycle
-    # is closed — quick-leg green on PR #2286 run 31127603844, full-leg
-    # green on dispatched run 31137987620 (capture-harness green alongside
-    # the 3.11/3.12/3.13 matrix) — so the owner flipped it to blocking here.
-    # The browser/deps install step below fails loud on its own (no
-    # `|| true` masking) so a chromium provisioning failure reads as
-    # "Install deps + Playwright chromium" red, never as a fixtures
-    # regression in the `Run fixture-harness capture` step.
-    #
-    # Build pool, not the 2 GiB gate pool (MOR-4280): Playwright Chromium plus a Node frontend build.
-    runs-on: [self-hosted, Linux, ARM64, build]
-    # Budget: ~45s once the Playwright browser cache is warm (npm ci +
-    # cached chromium + the capture matrix itself). 10 minutes is a
-    # generous ceiling for a cold cache / first run on a new runner image,
-    # not the expected steady-state duration.
-    timeout-minutes: 10
-    # MOR-3778: presetting the variables Chromium's browser process adds at
-    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
-    # loop test. Nothing in this repo reads them.
-    env:
+      UV_PYTHON: "3.11"
       DBUS_SESSION_BUS_ADDRESS: 'disabled:'
       FC_FONTATIONS: '1'
       VK_ICD_FILENAMES: ''
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # Read the LOCKFILE-RESOLVED exact version, not package.json's range.
-      # `devDependencies['@playwright/test']` is the string "^1.55.0", which
-      # resolves to 1.58.2 today: keying the cache on the range would let a
-      # lockfile-only Playwright bump hit the SAME key, restore the old
-      # browser, re-download the new one, and then skip the save (an exact
-      # key hit never re-saves) — permanently poisoning the cache it exists
-      # to populate.
-      - name: Resolve Playwright version
-        id: pw
-        run: |
-          cd frontend
-          echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
-
-      # Playwright's own browser cache, keyed on the runner's OS and
-      # architecture and the lockfile-resolved @playwright/test version
-      # (frontend/package-lock.json). The pool mixes arm64 and x64 runners, and
-      # a cache saved on one architecture holds no browser for the other. This is what
-      # "playwright install dominates" is about: a cache hit skips the
-      # ~100-200MB chromium download entirely and turns this job's dominant
-      # cost into the capture matrix run itself.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: pw-cache
+          path: meas
+      - uses: actions/checkout@v6
         with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.pw.outputs.version }}
-
-      # Fails loud on its own: no `|| true` masking. A chromium download or
-      # `npm ci` failure red-flags THIS step — reads as provisioning — and
-      # never reaches the capture step below.
-      - name: Install deps + Playwright chromium
+          ref: ${{ matrix.ref }}
+          path: core
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            core/pyproject.toml
+            core/uv.lock
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dependencies
+        working-directory: core
+        run: uv sync --all-extras
+      - name: Loop shard 1 with the probe
+        working-directory: core
+        env:
+          PYTHONPATH: ${{ github.workspace }}/core/.github/scripts:${{ github.workspace }}/meas
+          PTTPROBE_OUT: ${{ runner.temp }}/pttprobe-${{ matrix.ref }}.jsonl
+          RUNS: ${{ inputs.runs }}
         run: |
-          cd frontend
-          npm ci
-          npx playwright install chromium
-
-      - name: Install Playwright Chromium system dependencies
-        working-directory: frontend
-        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
-
-      # Blocking since MOR-1386 gate promotion — see the job header comment.
-      # The browser and system-dependency steps above fail loud on their own,
-      # so a red here means a fixture regression only.
-      - name: Run fixture-harness capture
-        id: capture
-        run: node frontend/fixtures/capture.mjs
-
-      - name: Annotate result
+          set -u
+          shards=$(grep -m1 -oE 'QUICK_PYTHON_SHARDS: *"?[0-9]+' .github/workflows/quick.yml | grep -oE '[0-9]+$' || echo 4)
+          echo "ref ${{ matrix.ref }} head $(git rev-parse HEAD) shards $shards arch $(uname -m) nproc $(nproc)"
+          for i in $(seq 1 "$RUNS"); do
+            before=$(wc -l < "$PTTPROBE_OUT" 2>/dev/null || echo 0)
+            uv run pytest tests/ -p pytest_shard --shard "1/$shards" -p ptt_reboot_probe \
+              -n auto --maxprocesses 4 --tb=line -q --timeout=300 --timeout-method=thread \
+              -p no:cacheprovider > out.txt 2>&1
+            after=$(wc -l < "$PTTPROBE_OUT" 2>/dev/null || echo 0)
+            echo "run $i: $(tail -1 out.txt) | probe rows $((after - before)) | load $(cut -d' ' -f1-3 /proc/loadavg)"
+            grep -E "^FAILED|stayed" out.txt | head -5 || true
+          done
+          echo "== summary"
+          grep -o '"waits": \[[^]]*\]' "$PTTPROBE_OUT" | sort | uniq -c | sort -rn | head -40 || true
+      - uses: actions/upload-artifact@v4
         if: always()
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the Run fixture-harness capture step log." || true'
-
-  # The informational per-PR gates (path-filtered on pull_request, not required
-  # contexts, so the merge queue does not run them) get their signal on the
-  # merged tree here, with the same job definitions, instead of from a push run
-  # after every merge (MOR-3878). A scheduled run is not path-selected.
-  visual:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    uses: ./.github/workflows/visual.yml
-
-  state-types-gate:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    uses: ./.github/workflows/state-types-gate.yml
-
-  consumer-contracts-gate:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    uses: ./.github/workflows/consumer-contracts-gate.yml
-
-  doc-citation-gate:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    uses: ./.github/workflows/doc-citation-gate.yml
-
-  rebrand-gate:
-    needs: fresh
-    if: needs.fresh.outputs.run == 'true'
-    uses: ./.github/workflows/rebrand-gate.yml
+        with:
+          name: pttprobe-${{ matrix.ref }}
+          path: ${{ runner.temp }}/pttprobe-${{ matrix.ref }}.jsonl
+          if-no-files-found: warn
