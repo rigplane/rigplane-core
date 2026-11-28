@@ -1,5 +1,4 @@
 import asyncio
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -52,6 +51,7 @@ from rigplane.runtime.tx_interlock import (
     get_tx_interlock_command_family_metadata,
     resolve_rf_state,
 )
+from rigplane.testing.timing import virtual_clock
 from rigplane.web.radio_poller import (
     _WEB_IMMEDIATE_BLOCK_FAMILIES,
     CommandQueue,
@@ -102,7 +102,12 @@ def _observe_ptt(
     observed_at: float | None = None,
     generation: int | None = None,
 ) -> None:
-    observed_at = time.monotonic() if observed_at is None else observed_at
+    # Stamp with the store's own freshness time (MOR-4825): the RF-state age is
+    # recomputed from the snapshot, so a wall-clock read here would put manual
+    # and store clocks on unrelated scales. On a real-clock store this is the
+    # same instant ``time.monotonic()`` would have given.
+    if observed_at is None:
+        observed_at = store.snapshot().generated_at_monotonic
     generation = store.provider_generation if generation is None else generation
     store.apply(
         Observation(
@@ -891,7 +896,8 @@ async def test_application_connect_refuses_without_fresh_rx(state: str) -> None:
         _observe_ptt(
             store,
             state == "tx",
-            observed_at=time.monotonic() - (5 if state == "stale" else 0),
+            observed_at=store.snapshot().generated_at_monotonic
+            - (5 if state == "stale" else 0),
         )
     if state == "old_generation":
         store.begin_provider_generation()
@@ -986,7 +992,9 @@ async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
     stale_ptt: bool,
 ) -> None:
     poller, radio, store = connect_vfo_poller()
-    _observe_ptt(store, stale_ptt, observed_at=time.monotonic() - 5.0)
+    _observe_ptt(
+        store, stale_ptt, observed_at=store.snapshot().generated_at_monotonic - 5.0
+    )
 
     async def read(command: int, **kwargs: object) -> bool:
         assert command == 0x1C
@@ -1006,7 +1014,10 @@ async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
 
 
 @pytest.mark.parametrize("outcome", ("timeout", "new_generation"))
-async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) -> None:
+@virtual_clock
+async def test_connect_read_timeout_or_epoch_change_never_selects(
+    clock, outcome: str
+) -> None:
     poller, radio, store = connect_vfo_poller()
     entered, release = asyncio.Event(), asyncio.Event()
     radio.send_civ = AsyncMock()
@@ -1026,6 +1037,10 @@ async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) 
     await asyncio.wait_for(entered.wait(), timeout=0.5)
     await poller.select_vfo_a_on_connect(read_only=False)
     release.set()
+    # The virtual loop fires no timer on its own: move past the 0.01 s
+    # connection-PTT bound so the parked "timeout" read settles the same way
+    # the wall clock did; the "new_generation" read already resumed above.
+    await clock.elapse(0.05)
     await task
     radio.send_civ.assert_awaited_once()
     assert all(frame[4] != 0x07 for frame in radio.wire.sent_frames)
