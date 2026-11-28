@@ -505,7 +505,7 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         radio._reconnect_callback()
         await await_until(
             lambda: radio.enable_scope.await_count == 1,
-            timeout=10.0,
+            timeout=5.0,
             description="scope re-enable queued by reconnect",
         )
 
@@ -771,7 +771,7 @@ async def test_control_delivers_simulator_liveness_on_cached_state(
             await _close_ws(writer)
             await await_until(
                 lambda: not srv._control_event_queues,
-                timeout=10.0,
+                timeout=5.0,
                 description="control event queue unregistration",
             )
 
@@ -2245,7 +2245,7 @@ async def test_bridge_patch_updates_running_gain_and_get_reports_values(
                 len(radio.pushed) == sequence
                 and len(backend.tx_streams[0].written_frames) == sequence
             ),
-            timeout=10.0,
+            timeout=5.0,
             description="bridge gain stage frames through worker threads",
         )
         assert radio.pushed[-1] == (
@@ -3602,7 +3602,7 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     # the Web's to run, so nothing here may wait on it.
     await await_until(
         lambda: radio.enable_scope.await_count == 1,
-        timeout=10.0,
+        timeout=5.0,
         description="scope re-enable queued by reconnect",
     )
 
@@ -3640,7 +3640,7 @@ async def test_passive_reconnect_attempts_no_vfo_select_or_swap(
     srv._on_radio_reconnect()  # noqa: SLF001
     await await_until(
         poller._initial_fetch_done.is_set,  # noqa: SLF001
-        timeout=10.0,
+        timeout=5.0,
         description="passive reconnect initial fetch completion",
     )
 
@@ -3677,7 +3677,7 @@ async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
     srv._on_radio_reconnect()  # noqa: SLF001
     await await_until(
         lambda: seed_call_count >= 1,
-        timeout=10.0,
+        timeout=5.0,
         description="scan-facts reseed on reconnect",
     )
 
@@ -3731,43 +3731,38 @@ async def test_scope_health_monitor_unconfirmed_session_does_not_reenable(
     virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._radio_scope_demand = True
-    srv._scope_enabled = False
-    srv._scope_health_interval = 0.01
-    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
-    virtual_clock.scope_to(monkeypatch, server_module)
+    """An unconfirmed (not ready) session gets no re-enable write."""
+    srv, radio, queued = await _virtual_scope_server(
+        monkeypatch, virtual_clock, interval=0.01
+    )
+    session = srv._radio_scope_session
+    assert session is not None and session.enabled
+    assert queued == []
+    # Post-reconnect state: the session needs a re-enable but is not ready,
+    # so the monitor must withhold the write until readiness is confirmed.
+    await session.invalidate(
+        connection_epoch=srv.command_state_store.provider_generation
+    )
+    assert not session.enabled
 
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
         await _elapse_scope_windows(virtual_clock, 3, interval=0.01)
+        assert radio.enable_scope.await_count == 0
+        assert queued == []
+        assert _scope_hidden_verdict(srv) is None
+        # The session was genuinely pending, not dead: confirming readiness
+        # performs exactly the one withheld re-enable write, and the monitor
+        # then holds the converged state without a duplicate.
+        await session.set_ready(True)
+        assert radio.enable_scope.await_count == 1
+        assert len(queued) == 1
+        assert session.enabled
+        await _elapse_scope_windows(virtual_clock, 2, interval=0.01)
+        assert radio.enable_scope.await_count == 1
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    assert not srv.command_queue.has_commands
-
-
-def _record_scope_commands_completing_like_a_poller(
-    srv: WebServer,
-    queued: list[EnableScope],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Record EnableScope entries and complete them so the monitor advances."""
-    put_ordered = srv.command_queue.put_ordered
-
-    def observe_and_complete(command: object, **kwargs: object) -> object:
-        entry = put_ordered(command, **kwargs)
-        if isinstance(command, EnableScope):
-            queued.append(command)
-            future = kwargs.get("future")
-            if isinstance(future, asyncio.Future) and not future.done():
-                future.set_result(None)
-        return entry
-
-    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
 
 
 SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
@@ -3910,26 +3905,39 @@ async def test_scope_health_monitor_keyed_tx_queues_nothing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: keyed managed TX pauses scope re-enable writes and retries."""
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._radio_scope_demand = True
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
-    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
+    srv, radio, queued = await _virtual_scope_server(
+        monkeypatch, virtual_clock, interval=0.01
+    )
+    session = srv._radio_scope_session
+    assert session is not None and session.enabled
+    assert queued == []
+    # A re-enable is pending (post-reconnect state) while TX is keyed: the
+    # session must pause its radio writes until the key releases. Removing
+    # the TX suppression makes the setup and the keyed windows write.
     srv._managed_tx_keyed = True  # noqa: SLF001
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
-    virtual_clock.scope_to(monkeypatch, server_module)
+    await session.invalidate(
+        connection_epoch=srv.command_state_store.provider_generation
+    )
+    await session.set_ready(True)
+    assert not session.enabled
+    assert radio.enable_scope.await_count == 0
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
         await _elapse_scope_windows(virtual_clock, 6, interval=0.01)
+        assert radio.enable_scope.await_count == 0
+        assert queued == []
+        assert _scope_hidden_verdict(srv) is None
+        # De-key: the monitor itself performs the withheld re-enable write.
+        srv._managed_tx_keyed = False  # noqa: SLF001
+        await _elapse_scope_windows(virtual_clock, 2, interval=0.01)
+        assert radio.enable_scope.await_count == 1
+        assert len(queued) == 1
+        assert session.enabled
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert queued == []
     assert "giving up" not in caplog.text
 
 
@@ -3940,31 +3948,54 @@ async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: fresh observed PTT ON pauses scope writes without keyed intent."""
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._radio_scope_demand = True
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
-    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
+    srv, radio, queued = await _virtual_scope_server(
+        monkeypatch, virtual_clock, interval=0.01
+    )
+    session = srv._radio_scope_session
+    assert session is not None and session.enabled
+    assert queued == []
+    generation = srv.command_state_store.provider_generation
     srv.command_state_store.apply_current(
         _store_observation(
-            OBSERVED_PTT_PATH, ObservedPtt.ON, at=virtual_clock(), max_age=60.0
+            OBSERVED_PTT_PATH,
+            ObservedPtt.ON,
+            at=virtual_clock(),
+            max_age=60.0,
+            generation=generation,
         )
     )
     assert srv._managed_tx_keyed is False  # noqa: SLF001
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
-    virtual_clock.scope_to(monkeypatch, server_module)
+    # A re-enable is pending (post-reconnect state) while observed PTT is ON:
+    # the session must pause its radio writes until the PTT releases.
+    await session.invalidate(connection_epoch=generation)
+    await session.set_ready(True)
+    assert not session.enabled
+    assert radio.enable_scope.await_count == 0
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
         await _elapse_scope_windows(virtual_clock, 6, interval=0.01)
+        assert radio.enable_scope.await_count == 0
+        assert queued == []
+        assert _scope_hidden_verdict(srv) is None
+        # PTT releases: the monitor itself performs the withheld re-enable.
+        srv.command_state_store.apply_current(
+            _store_observation(
+                OBSERVED_PTT_PATH,
+                ObservedPtt.OFF,
+                at=virtual_clock(),
+                max_age=60.0,
+                generation=generation,
+            )
+        )
+        await _elapse_scope_windows(virtual_clock, 2, interval=0.01)
+        assert radio.enable_scope.await_count == 1
+        assert len(queued) == 1
+        assert session.enabled
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert queued == []
     assert "giving up" not in caplog.text
 
 
@@ -3975,27 +4006,39 @@ async def test_scope_health_monitor_long_tx_never_gives_up(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: a TX longer than the retry budget logs no give-up."""
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._radio_scope_demand = True
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
-    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
+    srv, radio, queued = await _virtual_scope_server(
+        monkeypatch, virtual_clock, interval=0.01
+    )
+    session = srv._radio_scope_session
+    assert session is not None and session.enabled
+    assert queued == []
+    # A re-enable stays pending through a long keyed TX: the session pauses
+    # its radio writes for the whole stall and never gives up on the intent.
     srv._managed_tx_keyed = True  # noqa: SLF001
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
-    virtual_clock.scope_to(monkeypatch, server_module)
+    await session.invalidate(
+        connection_epoch=srv.command_state_store.provider_generation
+    )
+    await session.set_ready(True)
+    assert not session.enabled
+    assert radio.enable_scope.await_count == 0
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
         # Well past three retries under TX, on the clock.
         await _elapse_scope_windows(virtual_clock, 15, interval=0.01)
+        assert radio.enable_scope.await_count == 0
+        assert queued == []
+        assert _scope_hidden_verdict(srv) is None
+        # De-key: the monitor itself performs the withheld re-enable write.
+        srv._managed_tx_keyed = False  # noqa: SLF001
+        await _elapse_scope_windows(virtual_clock, 2, interval=0.01)
+        assert radio.enable_scope.await_count == 1
+        assert len(queued) == 1
+        assert session.enabled
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert queued == []
     assert "giving up" not in caplog.text
 
 
