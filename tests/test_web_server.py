@@ -22,8 +22,8 @@ import json
 import logging
 import socket
 import struct
-import time
 from pathlib import Path
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -57,7 +57,7 @@ from rigplane.ws import (
     make_accept_key,
     make_frame,
 )
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
 
 # ---------------------------------------------------------------------------
 # Frontend static build guard
@@ -289,6 +289,63 @@ async def _close_ws(writer: asyncio.StreamWriter) -> None:
         await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
     except Exception:
         pass
+
+
+async def _elapse_until(
+    clock: VirtualClock,
+    condition: Callable[[], object],
+    *,
+    budget: float,
+    step: float,
+    description: str,
+) -> None:
+    """Advance ``clock`` until ``condition`` holds (MOR-4075 virtual wait).
+
+    The virtual-clock analogue of :func:`await_until` for code parked on
+    loop timers (poller gaps, keepalive/reaper intervals, bounded closes):
+    check first, then advance timer-by-timer so every woken task runs to
+    quiescence before the next timer fires. ``budget`` is a bound for a
+    stuck run, never the expected wait — elapse is deterministic, so a
+    condition the code will ever meet is met long before the budget.
+    """
+    elapsed = 0.0
+    while not condition():
+        if elapsed >= budget:
+            pytest.fail(
+                f"{description} not met after {budget}s of virtual time; "
+                "something awaits an event only a further elapse or a "
+                "real event could deliver"
+            )
+        await clock.elapse(step)
+        elapsed += step
+
+
+async def _skip_handshake_virtual(
+    clock: VirtualClock, reader: asyncio.StreamReader
+) -> None:
+    """Run :func:`_ws_skip_handshake` to completion on a virtual clock.
+
+    The skip proves absence (no more handshake frames) with a short
+    per-frame timeout, which on a virtual loop only fires while the clock
+    advances — so drive it the same way timer-parked production code is
+    driven instead of awaiting it directly.
+    """
+    skip = asyncio.create_task(_ws_skip_handshake(reader))
+    try:
+        await _elapse_until(
+            clock,
+            skip.done,
+            budget=5.0,
+            step=0.1,
+            description="handshake frames to settle",
+        )
+    finally:
+        if not skip.done():
+            skip.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await skip
+        else:
+            skip.result()
 
 
 # ---------------------------------------------------------------------------
@@ -1209,21 +1266,32 @@ class TestControlChannel:
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_vfo_swap_command(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         _seed_fresh_rx(server.command_state_store)
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
             cmd = {"type": "cmd", "id": "vs-1", "name": "vfo_swap", "params": {}}
             await _ws_send_text(writer, json.dumps(cmd))
             _, payload = await _ws_recv_frame(reader)
             resp = json.loads(payload)
             assert resp["ok"] is True
-            # vfo_swap goes through command queue; wait for poller to drain it
-            await asyncio.sleep(0.05)
+            # vfo_swap goes through the command queue; the poller drains it
+            # on its (virtual) gap timers, so advance those, not wall time.
+            await _elapse_until(
+                virtual_clock,
+                lambda: mock_radio.swap_main_sub.await_count > 0,
+                budget=2.0,
+                step=0.01,
+                description="poller to dispatch vfo_swap",
+            )
             # #1114: the poller dispatches to ``swap_main_sub`` directly on
             # dual-RX rigs; the deprecated wrapper has been removed.
             mock_radio.swap_main_sub.assert_awaited_once()
@@ -1553,14 +1621,20 @@ class TestAudioHandlerCodecDetection:
         mock_pkt.data = b"\x00\x01" * 50  # 100 bytes of fake audio
         bus._on_opus_packet(mock_pkt)
 
-        # Give relay loop a chance to process
-        await asyncio.sleep(0.1)
+        # The relay fans out by event (no timers): wait for the frame itself.
+        await await_until(
+            lambda: not handler._frame_queue.empty(),
+            description="relay to fan out the injected packet",
+        )
 
         # Retrieve the encoded web frame from the handler's queue (assigned by broadcaster)
         frame = handler._frame_queue.get_nowait()
         return frame
 
-    async def test_pcm_codec_produces_pcm16_web_frame(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_pcm_codec_produces_pcm16_web_frame(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         from rigplane.types import AudioCodec
         from rigplane.web.protocol import AUDIO_CODEC_PCM16
 
@@ -1570,7 +1644,10 @@ class TestAudioHandlerCodecDetection:
             f"but got 0x{frame[1]:02x}"
         )
 
-    async def test_opus_codec_produces_opus_web_frame(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_opus_codec_produces_opus_web_frame(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         from rigplane.types import AudioCodec
         from rigplane.web.protocol import AUDIO_CODEC_OPUS
 
@@ -1580,7 +1657,10 @@ class TestAudioHandlerCodecDetection:
             f"but got 0x{frame[1]:02x}"
         )
 
-    async def test_sample_rate_encoded_correctly(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_sample_rate_encoded_correctly(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         import struct
 
         from rigplane.types import AudioCodec
@@ -1589,15 +1669,19 @@ class TestAudioHandlerCodecDetection:
         sr_field = struct.unpack_from("<H", frame, 4)[0]
         assert sr_field == 480, f"Expected 480 (48000//100) but got {sr_field}"
 
-    async def test_unknown_codec_falls_back_to_pcm16(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_unknown_codec_falls_back_to_pcm16(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         from rigplane.web.protocol import AUDIO_CODEC_PCM16
 
         # Pass a non-AudioCodec value (e.g. MagicMock) — must default to PCM16
         frame = await self._start_rx_and_capture(MagicMock(), 48000)
         assert frame[1] == AUDIO_CODEC_PCM16
 
+    @pytest.mark.timeout(30)
     async def test_ic7610_pcm_native_can_emit_browser_opus_by_profile_policy(
-        self,
+        self, virtual_clock: VirtualClock
     ) -> None:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
@@ -1640,7 +1724,10 @@ class TestAudioHandlerCodecDetection:
             mock_pkt = MagicMock()
             mock_pkt.data = pcm_payload
             bus._on_opus_packet(mock_pkt)
-            await asyncio.sleep(0.1)
+            await await_until(
+                lambda: not handler._frame_queue.empty(),
+                description="relay to fan out the injected packet",
+            )
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_OPUS
@@ -1652,8 +1739,9 @@ class TestAudioHandlerCodecDetection:
             frame_ms=20,
         )
 
+    @pytest.mark.timeout(30)
     async def test_serial_backend_ignores_direct_lan_browser_opus_profile_policy(
-        self,
+        self, virtual_clock: VirtualClock
     ) -> None:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
@@ -1684,14 +1772,18 @@ class TestAudioHandlerCodecDetection:
         mock_pkt = MagicMock()
         mock_pkt.data = b"\x01\x02" * 960
         bus._on_opus_packet(mock_pkt)
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: not handler._frame_queue.empty(),
+            description="relay to fan out the injected packet",
+        )
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
         assert frame[AUDIO_HEADER_SIZE:] == mock_pkt.data
 
+    @pytest.mark.timeout(30)
     async def test_browser_opus_policy_falls_back_to_pcm16_when_encoder_unavailable(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, virtual_clock: VirtualClock
     ) -> None:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
@@ -1732,7 +1824,10 @@ class TestAudioHandlerCodecDetection:
                 mock_pkt = MagicMock()
                 mock_pkt.data = pcm_payload
                 bus._on_opus_packet(mock_pkt)
-            await asyncio.sleep(0.1)
+            await await_until(
+                lambda: handler._frame_queue.qsize() >= 2,
+                description="relay to fan out both injected packets",
+            )
 
         frames = [handler._frame_queue.get_nowait() for _ in range(2)]
         assert [frame[1] for frame in frames] == [AUDIO_CODEC_PCM16, AUDIO_CODEC_PCM16]
@@ -1748,8 +1843,9 @@ class TestAudioHandlerCodecDetection:
         ]
         assert len(warnings) == 1
 
+    @pytest.mark.timeout(30)
     async def test_browser_can_request_pcm16_when_opus_decode_is_unavailable(
-        self,
+        self, virtual_clock: VirtualClock
     ) -> None:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
@@ -1780,7 +1876,10 @@ class TestAudioHandlerCodecDetection:
         mock_pkt = MagicMock()
         mock_pkt.data = pcm_payload
         bus._on_opus_packet(mock_pkt)
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: not handler._frame_queue.empty(),
+            description="relay to fan out the injected packet",
+        )
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
@@ -1826,7 +1925,10 @@ class TestBroadcasterFrameMsInvariant:
         mock_pkt = MagicMock()
         mock_pkt.data = b"\x00\x01" * (payload_size // 2)
         bus._on_opus_packet(mock_pkt)
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: not handler._frame_queue.empty(),
+            description="relay to fan out the injected packet",
+        )
 
         return handler._frame_queue.get_nowait()
 
@@ -1840,7 +1942,10 @@ class TestBroadcasterFrameMsInvariant:
         _, _, _seq, sr100, ch, frame_ms = struct.unpack_from("<BBHHBB", frame, 0)
         return sr100 * 100, ch, frame_ms, len(frame) - AUDIO_HEADER_SIZE
 
-    async def test_frame_ms_matches_1364_byte_ic7610_packet(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_frame_ms_matches_1364_byte_ic7610_packet(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """IC-7610 real-world: 1364 B @ 48 kHz mono PCM16 → 14 ms (was 20)."""
         from rigplane.types import AudioCodec
 
@@ -1855,7 +1960,10 @@ class TestBroadcasterFrameMsInvariant:
         )
         assert frame_ms == 14
 
-    async def test_frame_ms_matches_1920_byte_exact_20ms_packet(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_frame_ms_matches_1920_byte_exact_20ms_packet(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """Exactly 20 ms @ 48 kHz mono PCM16 = 1920 B → frame_ms == 20."""
         from rigplane.types import AudioCodec
 
@@ -1865,7 +1973,10 @@ class TestBroadcasterFrameMsInvariant:
         _, _, frame_ms, _ = self._parse_header(frame)
         assert frame_ms == 20
 
-    async def test_frame_ms_matches_3840_byte_stereo_20ms_packet(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_frame_ms_matches_3840_byte_stereo_20ms_packet(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """Stereo: 3840 B @ 48 kHz × 2ch × 2bytes = 20 ms."""
         from rigplane.types import AudioCodec
 
@@ -1909,7 +2020,10 @@ class TestBroadcasterCodecInvalidation:
         handler = AudioHandler(mock_ws, mock_radio, broadcaster)
         return handler, broadcaster, mock_radio
 
-    async def test_invalidate_flag_triggers_refresh_on_next_packet(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_invalidate_flag_triggers_refresh_on_next_packet(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         from rigplane.types import AudioCodec
 
         handler, broadcaster, mock_radio = self._setup(AudioCodec.PCM_1CH_16BIT, 48000)
@@ -1918,7 +2032,10 @@ class TestBroadcasterCodecInvalidation:
         pkt_mono = MagicMock()
         pkt_mono.data = b"\x00\x01" * 960
         mock_radio.audio_bus._on_opus_packet(pkt_mono)
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: not handler._frame_queue.empty(),
+            description="relay to fan out the mono packet",
+        )
         handler._frame_queue.get_nowait()
         assert broadcaster._channels == 1
 
@@ -1929,7 +2046,12 @@ class TestBroadcasterCodecInvalidation:
         pkt_stereo = MagicMock()
         pkt_stereo.data = b"\x00\x01" * 1920
         mock_radio.audio_bus._on_opus_packet(pkt_stereo)
-        await asyncio.sleep(0.05)
+        # The refresh runs in the relay iteration for this packet: wait for
+        # its effect rather than a fixed delay.
+        await await_until(
+            lambda: broadcaster._channels == 2 and not broadcaster._codec_stale,
+            description="relay to pick up the invalidated codec state",
+        )
 
         assert broadcaster._channels == 2
         assert broadcaster._codec_stale is False
@@ -1944,7 +2066,10 @@ class TestBroadcasterCodecInvalidation:
         )
         assert broadcaster._codec_stale is True
 
-    async def test_static_codec_refreshes_only_on_start(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_static_codec_refreshes_only_on_start(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         from rigplane.types import AudioCodec
 
         handler, broadcaster, mock_radio = self._setup(AudioCodec.PCM_1CH_16BIT, 48000)
@@ -1958,7 +2083,12 @@ class TestBroadcasterCodecInvalidation:
                 pkt = MagicMock()
                 pkt.data = b"\x00\x01" * 100
                 mock_radio.audio_bus._on_opus_packet(pkt)
-                await asyncio.sleep(0.02)
+            # All five packets flow through the relay by event; the refresh
+            # must still have run exactly once (at start), not per packet.
+            await await_until(
+                lambda: handler._frame_queue.qsize() >= 5,
+                description="relay to fan out all five packets",
+            )
             assert spy.call_count == 1
 
 
@@ -2358,7 +2488,10 @@ class TestBroadcasterPhonesMixInit:
 class TestWsKeepalive:
     """WebSocketConnection.keepalive_loop() sends RFC 6455 ping frames."""
 
-    async def test_keepalive_sends_ping_frame(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_keepalive_sends_ping_frame(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """keepalive_loop writes a WS PING frame after the interval elapses."""
         written: list[bytes] = []
 
@@ -2371,8 +2504,8 @@ class TestWsKeepalive:
         ws = WebSocketConnection(reader, writer)
         task = asyncio.create_task(ws.keepalive_loop(interval=0.05))
         try:
-            # Wait slightly longer than the interval so at least one ping fires.
-            await asyncio.sleep(0.12)
+            # Advance past the interval so at least one ping fires.
+            await virtual_clock.elapse(0.12)
         finally:
             task.cancel()
             try:
@@ -2404,7 +2537,10 @@ class TestWsKeepalive:
         except asyncio.CancelledError:
             pass  # expected
 
-    async def test_keepalive_exits_when_connection_closed(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_keepalive_exits_when_connection_closed(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """keepalive_loop stops without error if ws.close() is called first."""
         reader = asyncio.StreamReader()
         writer = MagicMock(spec=asyncio.StreamWriter)
@@ -2443,26 +2579,30 @@ class TestHalfOpenWsReaper:
         assert len(conns) == 1, f"expected exactly one tracked ws, got {len(conns)}"
         return conns[0]
 
+    @pytest.mark.timeout(30)
     async def test_half_open_peer_reaped_by_zombie_reaper(
         self,
         server: WebServer,
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
+        virtual_clock: VirtualClock,
     ) -> None:
         """A stale control session is reaped without inventing a legacy OFF."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             before = len(server._client_tasks)  # noqa: SLF001
             assert before >= 1
 
             ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
-            # Fake clock: simulate a peer that stopped answering PONGs long
-            # ago, per the existing keepalive test convention (no real 60s
-            # wait).
-            ws._last_pong = time.monotonic() - 1000.0  # noqa: SLF001
+            # Virtual clock: simulate a peer that stopped answering PONGs
+            # long ago, per the existing keepalive test convention (no
+            # real 60s wait). Both ends of the liveness check read the
+            # shared virtual clock, so the verdict is deterministic.
+            ws._clock = virtual_clock  # noqa: SLF001
+            ws._last_pong = virtual_clock() - 1000.0  # noqa: SLF001
             ws._pong_timeout = 0.01  # noqa: SLF001
             assert ws.is_alive() is False
 
@@ -2471,11 +2611,14 @@ class TestHalfOpenWsReaper:
             )
             try:
                 with caplog.at_level(logging.INFO):
-                    await asyncio.wait_for(
-                        await_until(
-                            lambda: len(server._client_tasks) < before,  # noqa: SLF001
-                        ),
-                        timeout=2.0,
+                    # The reaper sleeps on virtual timers (its pass
+                    # interval, the bounded close): advance those.
+                    await _elapse_until(
+                        virtual_clock,
+                        lambda: len(server._client_tasks) < before,  # noqa: SLF001
+                        budget=5.0,
+                        step=0.01,
+                        description="zombie reaper to reap the half-open peer",
                     )
             finally:
                 reaper.cancel()
@@ -2519,8 +2662,12 @@ class TestHalfOpenWsReaper:
         )
         assert any("ws disconnect" in r.message for r in caplog.records)
 
+    @pytest.mark.timeout(30)
     async def test_healthy_client_not_aborted_by_reaper(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """A connection with a recent pong must survive multiple
         zombie-reaper passes at a tight interval (no false-positive kill of
@@ -2528,18 +2675,22 @@ class TestHalfOpenWsReaper:
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
             before = len(server._client_tasks)  # noqa: SLF001
 
             ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
-            ws._last_pong = time.monotonic()  # noqa: SLF001 -- fresh, healthy
+            # Fresh on the shared virtual clock: the reaper's passes must
+            # all read it as alive.
+            ws._clock = virtual_clock  # noqa: SLF001
+            ws._last_pong = virtual_clock()  # noqa: SLF001 -- fresh, healthy
             assert ws.is_alive() is True
 
             reaper = asyncio.create_task(
                 server._zombie_reaper(interval=0.01)  # noqa: SLF001
             )
             try:
-                await asyncio.sleep(0.1)  # let several reaper passes run
+                # Let several reaper passes run on the virtual clock.
+                await virtual_clock.elapse(0.1)
             finally:
                 reaper.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -2550,11 +2701,13 @@ class TestHalfOpenWsReaper:
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_saturated_peer_reaper_not_wedged(
         self,
         server: WebServer,
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
+        virtual_clock: VirtualClock,
     ) -> None:
         """A stale connection whose transport write buffer is saturated
         above the high-water mark, against a peer that has stopped
@@ -2570,13 +2723,16 @@ class TestHalfOpenWsReaper:
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             before = len(server._client_tasks)  # noqa: SLF001
             assert before >= 1
 
             ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
-            ws._last_pong = time.monotonic() - 1000.0  # noqa: SLF001
+            # Stale on the shared virtual clock; the liveness verdict and
+            # the reaper passes below all read it, deterministically.
+            ws._clock = virtual_clock  # noqa: SLF001
+            ws._last_pong = virtual_clock() - 1000.0  # noqa: SLF001
             ws._pong_timeout = 0.01  # noqa: SLF001
             assert ws.is_alive() is False
 
@@ -2637,8 +2793,10 @@ class TestHalfOpenWsReaper:
                         saturated = True
                         break
                 # Yield so the loop's _write_ready() flushes whatever the
-                # kernel will take before the next measurement.
-                await asyncio.sleep(0.05)
+                # kernel will take before the next measurement. A bare
+                # yield parks on no timer, so it works on a virtual loop
+                # where a fixed sleep would never fire.
+                await asyncio.sleep(0)
             # `reader` is intentionally never read from below -- the peer
             # stops consuming, so both the OS socket buffers and the
             # transport's own queue fill and stay full.
@@ -2659,16 +2817,17 @@ class TestHalfOpenWsReaper:
                     # Bounded budget -- must fail FAST (not hang for
                     # minutes/TCP-RTO) if the reaper's close() is not
                     # bounded with an abort() fallback.
-                    await asyncio.wait_for(
-                        await_until(
-                            lambda: len(server._client_tasks) < before,  # noqa: SLF001
-                        ),
-                        timeout=5.0,
+                    await _elapse_until(
+                        virtual_clock,
+                        lambda: len(server._client_tasks) < before,  # noqa: SLF001
+                        budget=5.0,
+                        step=0.05,
+                        description="zombie reaper to reap the saturated peer",
                     )
                 # The reaper task must still be alive and looping -- proof
                 # a second pass runs, i.e. the reaper itself was not
                 # wedged by the saturated close().
-                await asyncio.sleep(0.2)
+                await virtual_clock.elapse(0.2)
                 assert not reaper.done(), (
                     "zombie-reaper task died or is wedged after reaping "
                     "the saturated-peer connection"
@@ -2697,8 +2856,9 @@ class TestHalfOpenWsReaper:
 class TestScopeLifecycle:
     """Scope is disabled on the radio when the last handler disconnects."""
 
+    @pytest.mark.timeout(30)
     async def test_shutdown_with_pending_scope_and_no_poller_is_fail_open(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, virtual_clock: VirtualClock
     ) -> None:
         """A dead executor cannot block the later client-teardown phase."""
         radio = _add_scope_capable_attrs(MagicMock())
@@ -2784,7 +2944,10 @@ class TestConfigurableKeepalive:
         cfg = WebConfig(keepalive_interval=5.0)
         assert cfg.keepalive_interval == 5.0
 
-    async def test_large_interval_no_pings_during_short_test(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_large_interval_no_pings_during_short_test(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """With keepalive_interval=9999, no ping frames arrive in a short test."""
         config = WebConfig(
             host="127.0.0.1",
@@ -2796,16 +2959,37 @@ class TestConfigurableKeepalive:
             host, port = _addr(srv)
             reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
             try:
-                # Collect frames for 100ms — should get hello but no pings
-                frames = []
+                # Collect frames until a quiet window proves no pings follow
+                # the hello. The quiet-window timeout only fires while the
+                # virtual clock advances, so collect in a task and drive it.
+                frames: list[tuple[int, bytes]] = []
+
+                async def _collect() -> None:
+                    try:
+                        while True:
+                            opcode, payload = await asyncio.wait_for(
+                                _ws_recv_frame(reader), timeout=0.1
+                            )
+                            frames.append((opcode, payload))
+                    except asyncio.TimeoutError:
+                        pass
+
+                collect = asyncio.create_task(_collect())
                 try:
-                    while True:
-                        opcode, payload = await asyncio.wait_for(
-                            _ws_recv_frame(reader), timeout=0.1
-                        )
-                        frames.append((opcode, payload))
-                except asyncio.TimeoutError:
-                    pass
+                    await _elapse_until(
+                        virtual_clock,
+                        collect.done,
+                        budget=5.0,
+                        step=0.05,
+                        description="frame collection to go quiet",
+                    )
+                finally:
+                    if not collect.done():
+                        collect.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await collect
+                    else:
+                        collect.result()
                 # Should have received exactly the hello text frame
                 assert len(frames) >= 1
                 assert frames[0][0] == WS_OP_TEXT
@@ -2874,7 +3058,8 @@ class TestRadioPoller:
         attach_scope_session(radio)
         return radio
 
-    async def test_poller_starts_and_stops(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_poller_starts_and_stops(self, virtual_clock: VirtualClock) -> None:
         """RadioPoller start/stop lifecycle."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
@@ -2885,7 +3070,8 @@ class TestRadioPoller:
 
         poller.start()
         assert poller.running
-        await asyncio.sleep(0.05)
+        # Let the poller iterate on the virtual clock instead of wall time.
+        await virtual_clock.elapse(0.05)
 
         poller.stop()
         assert not poller.running
@@ -2908,7 +3094,8 @@ class TestRadioPoller:
         assert freq_cmds[0].freq == 14074000
         assert len(ptt_cmds) == 2
 
-    async def test_poller_executes_commands(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_poller_executes_commands(self, virtual_clock: VirtualClock) -> None:
         """Commands queued are executed by the poller."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq
 
@@ -2920,7 +3107,13 @@ class TestRadioPoller:
 
         poller.start()
         queue.put(SetFreq(7074000))
-        await asyncio.sleep(0.1)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_freq.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetFreq",
+        )
         poller.stop()
 
         radio.set_freq.assert_awaited_with(7074000)
@@ -2942,7 +3135,10 @@ class TestRadioPoller:
         assert task1 is task2
         poller.stop()
 
-    async def test_set_key_speed_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_key_speed_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetKeySpeed(speed) calls radio.set_key_speed and updates RadioState.key_speed."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetKeySpeed
 
@@ -2954,14 +3150,23 @@ class TestRadioPoller:
 
         poller.start()
         queue.put(SetKeySpeed(24))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_key_speed.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetKeySpeed",
+        )
         poller.stop()
 
         radio.set_key_speed.assert_awaited_once_with(24)
         assert poller._radio_state is not None
         assert poller._radio_state.key_speed == 24
 
-    async def test_set_break_in_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_break_in_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetBreakIn(mode) calls radio.set_break_in and updates RadioState.break_in."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetBreakIn
 
@@ -2976,14 +3181,15 @@ class TestRadioPoller:
         # MOR-2121: a fixed ``asyncio.sleep(0.03)`` here raced the poller
         # task's own scheduling under ``pytest -n auto`` on a loaded host --
         # 30ms is not a guaranteed wall-clock budget for the task to run.
-        # Poll for the awaited call instead of assuming a fixed delay covers
-        # it (same idiom as ``TestHalfOpenWsReaper._wait_until`` above).
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while (
-            radio.set_break_in.await_count == 0
-            and asyncio.get_running_loop().time() < deadline
-        ):
-            await asyncio.sleep(0.01)
+        # Drive the virtual clock until the awaited call lands instead of
+        # assuming a fixed delay covers it.
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_break_in.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetBreakIn",
+        )
         poller.stop()
 
         radio.set_break_in.assert_awaited_once_with(1)
@@ -3051,7 +3257,10 @@ class TestSwitchScopeReceiver:
         attach_scope_session(radio)
         return radio
 
-    async def test_switch_scope_receiver_main_sends_civ(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_switch_scope_receiver_main_sends_civ(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SwitchScopeReceiver(0) sends 0x27/0x12/0x00 CI-V command."""
         from rigplane.web.radio_poller import (
             CommandQueue,
@@ -3065,7 +3274,18 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SwitchScopeReceiver(0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: any(
+                c[0][0] == 0x27
+                and c.kwargs.get("sub") == 0x12
+                and c.kwargs.get("data") == bytes([0x00])
+                for c in radio.send_civ.call_args_list
+            ),
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SwitchScopeReceiver(MAIN)",
+        )
         poller.stop()
 
         scope_calls = [c for c in radio.send_civ.call_args_list if c[0][0] == 0x27]
@@ -3074,7 +3294,10 @@ class TestSwitchScopeReceiver:
             for c in scope_calls
         ), "Expected CI-V 0x27/0x12/0x00 for MAIN scope"
 
-    async def test_switch_scope_receiver_sub_sends_civ(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_switch_scope_receiver_sub_sends_civ(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SwitchScopeReceiver(1) sends 0x27/0x12/0x01 CI-V command."""
         from rigplane.web.radio_poller import (
             CommandQueue,
@@ -3088,7 +3311,18 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SwitchScopeReceiver(1))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: any(
+                c[0][0] == 0x27
+                and c.kwargs.get("sub") == 0x12
+                and c.kwargs.get("data") == bytes([0x01])
+                for c in radio.send_civ.call_args_list
+            ),
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SwitchScopeReceiver(SUB)",
+        )
         poller.stop()
 
         scope_calls = [c for c in radio.send_civ.call_args_list if c[0][0] == 0x27]
@@ -3097,7 +3331,10 @@ class TestSwitchScopeReceiver:
             for c in scope_calls
         ), "Expected CI-V 0x27/0x12/0x01 for SUB scope"
 
-    async def test_switch_scope_receiver_rejects_out_of_range_receiver(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_switch_scope_receiver_rejects_out_of_range_receiver(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """Out-of-range receiver value must not be masked into a valid target."""
         from rigplane.web.radio_poller import (
             CommandQueue,
@@ -3111,7 +3348,13 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SwitchScopeReceiver(0xFF))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: not queue.has_commands,
+            budget=2.0,
+            step=0.01,
+            description="poller to drain the rejected command",
+        )
         poller.stop()
 
         scope_calls = [c for c in radio.send_civ.call_args_list if c[0][0] == 0x27]
@@ -3119,7 +3362,10 @@ class TestSwitchScopeReceiver:
             "Expected invalid receiver to be rejected without CI-V send"
         )
 
-    async def test_select_vfo_sub_sends_receiver_select(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_select_vfo_sub_sends_receiver_select(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SelectVfo("SUB") goes through ``select_receiver`` (issue #1172).
 
         Wave 4-C migrated the poller off the raw ``_civ(0x07, [0xD1])``
@@ -3137,7 +3383,16 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SelectVfo("SUB"))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: any(
+                c[0][0] == 0x07 and c.kwargs.get("data") == bytes([0xD1])
+                for c in radio.send_civ.call_args_list
+            ),
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SelectVfo(SUB)",
+        )
         poller.stop()
 
         # Public API: poller now routes through ``select_receiver``.
@@ -3169,7 +3424,10 @@ class TestSwitchScopeReceiver:
             "Expected scope to follow selected receiver (0x27 0x12 0x01)"
         )
 
-    async def test_select_vfo_main_noop_when_already_main(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_select_vfo_main_noop_when_already_main(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SelectVfo("MAIN") emits no CI-V when already on MAIN."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SelectVfo
 
@@ -3179,7 +3437,13 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SelectVfo("MAIN"))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: not queue.has_commands,
+            budget=2.0,
+            step=0.01,
+            description="poller to drain the noop SelectVfo",
+        )
         poller.stop()
 
         # Idempotent: no call to the public API when already on the target.
@@ -3192,7 +3456,10 @@ class TestSwitchScopeReceiver:
         ]
         assert len(select_calls) == 0, "Should NOT emit 0x07 select when already MAIN"
 
-    async def test_set_split_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_split_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetSplit(on) sends the wire command; split is observation-backed (0x0F).
 
         The legacy RadioState.split mirror was removed (MOR-437); read-after-write
@@ -3208,14 +3475,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetSplit(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_split.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetSplit",
+        )
         poller.stop()
 
         radio.set_split.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.split is False  # no legacy mirror write
 
-    async def test_set_rit_status_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_rit_status_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetRitStatus(on) calls radio.set_rit_status and updates RadioState.rit_on."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetRitStatus
 
@@ -3226,14 +3502,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetRitStatus(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_rit_status.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetRitStatus",
+        )
         poller.stop()
 
         radio.set_rit_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_on is True
 
-    async def test_set_rit_tx_status_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_rit_tx_status_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetRitTxStatus(on) calls radio.set_rit_tx_status and updates RadioState.rit_tx."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetRitTxStatus
 
@@ -3245,14 +3530,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetRitTxStatus(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_rit_tx_status.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetRitTxStatus",
+        )
         poller.stop()
 
         radio.set_rit_tx_status.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_tx is True
 
-    async def test_set_rit_frequency_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_rit_frequency_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetRitFrequency(freq) calls radio.set_rit_frequency and updates RadioState.rit_freq."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetRitFrequency
 
@@ -3264,14 +3558,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetRitFrequency(-200))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_rit_frequency.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetRitFrequency",
+        )
         poller.stop()
 
         radio.set_rit_frequency.assert_awaited_once_with(-200)
         assert poller._radio_state is not None
         assert poller._radio_state.rit_freq == -200
 
-    async def test_set_pbt_inner_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_pbt_inner_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetPbtInner(level) calls radio.set_pbt_inner and updates receiver state."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetPbtInner
 
@@ -3282,14 +3585,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetPbtInner(150, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_pbt_inner.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetPbtInner",
+        )
         poller.stop()
 
         radio.set_pbt_inner.assert_awaited_once_with(150, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_inner == 150
 
-    async def test_set_pbt_outer_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_pbt_outer_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetPbtOuter(level) calls radio.set_pbt_outer and updates receiver state."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetPbtOuter
 
@@ -3300,14 +3612,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetPbtOuter(200, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_pbt_outer.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetPbtOuter",
+        )
         poller.stop()
 
         radio.set_pbt_outer.assert_awaited_once_with(200, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.pbt_outer == 200
 
-    async def test_set_nr_level_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_nr_level_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetNRLevel sends the wire command; nr_level is observation-backed (0x14 0x06).
 
         The legacy receiver-state mirror was removed (MOR-437).
@@ -3321,14 +3642,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetNRLevel(42, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_nr_level.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetNRLevel",
+        )
         poller.stop()
 
         radio.set_nr_level.assert_awaited_once_with(42, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.nr_level == 0  # no legacy mirror write
 
-    async def test_set_nb_level_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_nb_level_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetNBLevel sends the wire command; nb_level is observation-backed (0x14 0x12).
 
         The legacy receiver-state mirror was removed (MOR-437).
@@ -3342,14 +3672,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetNBLevel(17, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_nb_level.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetNBLevel",
+        )
         poller.stop()
 
         radio.set_nb_level.assert_awaited_once_with(17, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.nb_level == 0  # no legacy mirror write
 
-    async def test_set_auto_notch_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_auto_notch_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetAutoNotch sends the wire command; auto_notch is observation-backed (0x16 0x41).
 
         The legacy receiver-state mirror was removed (MOR-437).
@@ -3363,14 +3702,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetAutoNotch(True, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_auto_notch.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetAutoNotch",
+        )
         poller.stop()
 
         radio.set_auto_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.auto_notch is False  # no legacy mirror write
 
-    async def test_set_manual_notch_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_manual_notch_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetManualNotch sends the wire command; manual_notch is observation-backed (0x16 0x48).
 
         The legacy receiver-state mirror was removed (MOR-437).
@@ -3384,14 +3732,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetManualNotch(True, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_manual_notch.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetManualNotch",
+        )
         poller.stop()
 
         radio.set_manual_notch.assert_awaited_once_with(True, receiver=0)
         assert poller._radio_state is not None
         assert poller._radio_state.main.manual_notch is False  # no legacy mirror write
 
-    async def test_set_notch_filter_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_notch_filter_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetNotchFilter threads receiver; notch_filter is observation-backed (0x14 0x0D).
 
         The legacy global-scalar mirror write was removed alongside the
@@ -3406,14 +3763,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetNotchFilter(91, receiver=1))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_notch_filter.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetNotchFilter",
+        )
         poller.stop()
 
         radio.set_notch_filter.assert_awaited_once_with(91, receiver=1)
         assert poller._radio_state is not None
         assert poller._radio_state.notch_filter == 0  # no legacy mirror write
 
-    async def test_set_agc_time_constant_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_agc_time_constant_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetAgcTimeConstant sends the wire command; agc_time_constant is observation-backed (0x1A 0x04).
 
         The legacy receiver-state mirror was removed (MOR-437).
@@ -3431,7 +3797,13 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetAgcTimeConstant(9, receiver=0))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_agc_time_constant.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetAgcTimeConstant",
+        )
         poller.stop()
 
         radio.set_agc_time_constant.assert_awaited_once_with(9, receiver=0)
@@ -3460,7 +3832,10 @@ class TestSwitchScopeReceiver:
         assert poller._radio_state is not None
         assert poller._radio_state.cw_pitch == 600
 
-    async def test_set_mic_gain_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_mic_gain_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetMicGain sends the wire command; mic_gain is observation-backed (0x14 0x0B).
 
         The legacy RadioState.mic_gain mirror was removed (MOR-437).
@@ -3474,14 +3849,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetMicGain(123))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_mic_gain.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetMicGain",
+        )
         poller.stop()
 
         radio.set_mic_gain.assert_awaited_once_with(123)
         assert poller._radio_state is not None
         assert poller._radio_state.mic_gain == 0  # no legacy mirror write
 
-    async def test_set_vox_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_vox_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetVox sends the wire command; vox_on is observation-backed (0x16 0x46).
 
         The legacy RadioState.vox_on mirror was removed (MOR-437).
@@ -3495,14 +3879,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetVox(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_vox.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetVox",
+        )
         poller.stop()
 
         radio.set_vox.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.vox_on is False  # no legacy mirror write
 
-    async def test_set_compressor_level_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_compressor_level_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetCompressorLevel sends the wire command; compressor_level is observation-backed (0x14 0x0E).
 
         The legacy RadioState.compressor_level mirror was removed (MOR-437).
@@ -3520,14 +3913,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetCompressorLevel(88))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_compressor_level.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetCompressorLevel",
+        )
         poller.stop()
 
         radio.set_compressor_level.assert_awaited_once_with(88)
         assert poller._radio_state is not None
         assert poller._radio_state.compressor_level == 0  # no legacy mirror write
 
-    async def test_set_monitor_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_monitor_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetMonitor sends the wire command; monitor_on is observation-backed (0x16 0x45).
 
         The legacy RadioState.monitor_on mirror was removed (MOR-437).
@@ -3541,14 +3943,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetMonitor(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_monitor.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetMonitor",
+        )
         poller.stop()
 
         radio.set_monitor.assert_awaited_once_with(True)
         assert poller._radio_state is not None
         assert poller._radio_state.monitor_on is False  # no legacy mirror write
 
-    async def test_set_monitor_gain_sends_wire_without_legacy_mirror(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_monitor_gain_sends_wire_without_legacy_mirror(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetMonitorGain sends the wire command; monitor_gain is observation-backed (0x14 0x15).
 
         The legacy RadioState.monitor_gain mirror was removed (MOR-437).
@@ -3562,14 +3973,23 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetMonitorGain(55))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_monitor_gain.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetMonitorGain",
+        )
         poller.stop()
 
         radio.set_monitor_gain.assert_awaited_once_with(55)
         assert poller._radio_state is not None
         assert poller._radio_state.monitor_gain == 0  # no legacy mirror write
 
-    async def test_set_dial_lock_updates_radio_and_state(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_set_dial_lock_updates_radio_and_state(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """SetDialLock(on) calls radio.set_dial_lock and updates RadioState.dial_lock."""
         from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetDialLock
 
@@ -3580,7 +4000,13 @@ class TestSwitchScopeReceiver:
 
         poller.start()
         queue.put(SetDialLock(True))
-        await asyncio.sleep(0.03)
+        await _elapse_until(
+            virtual_clock,
+            lambda: radio.set_dial_lock.await_count > 0,
+            budget=2.0,
+            step=0.01,
+            description="poller to execute SetDialLock",
+        )
         poller.stop()
 
         radio.set_dial_lock.assert_awaited_once_with(True)
@@ -3591,14 +4017,18 @@ class TestSwitchScopeReceiver:
 class TestSwitchScopeReceiverCommand:
     """ControlHandler handles 'switch_scope_receiver' command."""
 
+    @pytest.mark.timeout(30)
     async def test_switch_scope_receiver_command_ok(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """switch_scope_receiver command sends CI-V 0x27/0x12/0x01 for SUB."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3616,7 +4046,18 @@ class TestSwitchScopeReceiverCommand:
             assert resp["result"]["receiver"] == 1
 
             # Allow poller to execute the queued command
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: any(
+                    c[0][0] == 0x27
+                    and c.kwargs.get("sub") == 0x12
+                    and c.kwargs.get("data") == bytes([0x01])
+                    for c in mock_radio.send_civ.call_args_list
+                ),
+                budget=2.0,
+                step=0.01,
+                description="poller to execute switch_scope_receiver(SUB)",
+            )
 
             scope_calls = [
                 c for c in mock_radio.send_civ.call_args_list if c[0][0] == 0x27
@@ -3628,14 +4069,18 @@ class TestSwitchScopeReceiverCommand:
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_switch_scope_receiver_command_main(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """switch_scope_receiver with receiver=0 sends CI-V 0x27/0x12/0x00."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3653,7 +4098,18 @@ class TestSwitchScopeReceiverCommand:
             assert resp["result"]["receiver"] == 0
 
             # Allow poller to execute the queued command
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: any(
+                    c[0][0] == 0x27
+                    and c.kwargs.get("sub") == 0x12
+                    and c.kwargs.get("data") == bytes([0x00])
+                    for c in mock_radio.send_civ.call_args_list
+                ),
+                budget=2.0,
+                step=0.01,
+                description="poller to execute switch_scope_receiver(MAIN)",
+            )
 
             scope_calls = [
                 c for c in mock_radio.send_civ.call_args_list if c[0][0] == 0x27
@@ -3669,14 +4125,18 @@ class TestSwitchScopeReceiverCommand:
 class TestScopeAdvancedCommands:
     """ControlHandler handles set_scope_during_tx, set_scope_center_type, set_scope_fixed_edge."""
 
+    @pytest.mark.timeout(30)
     async def test_set_scope_during_tx_on(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """set_scope_during_tx with on=true calls radio.set_scope_during_tx(True)."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3693,19 +4153,29 @@ class TestScopeAdvancedCommands:
             assert resp["ok"] is True
             assert resp["result"]["on"] is True
 
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: mock_radio.set_scope_during_tx.await_count > 0,
+                budget=2.0,
+                step=0.01,
+                description="poller to execute set_scope_during_tx(on)",
+            )
             mock_radio.set_scope_during_tx.assert_called_once_with(True)
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_set_scope_during_tx_off(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """set_scope_during_tx with on=false calls radio.set_scope_during_tx(False)."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3722,19 +4192,29 @@ class TestScopeAdvancedCommands:
             assert resp["ok"] is True
             assert resp["result"]["on"] is False
 
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: mock_radio.set_scope_during_tx.await_count > 0,
+                budget=2.0,
+                step=0.01,
+                description="poller to execute set_scope_during_tx(off)",
+            )
             mock_radio.set_scope_during_tx.assert_called_once_with(False)
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_set_scope_center_type(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """set_scope_center_type sends center_type to radio."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3751,19 +4231,29 @@ class TestScopeAdvancedCommands:
             assert resp["ok"] is True
             assert resp["result"]["center_type"] == 2
 
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: mock_radio.set_scope_center_type.await_count > 0,
+                budget=2.0,
+                step=0.01,
+                description="poller to execute set_scope_center_type",
+            )
             mock_radio.set_scope_center_type.assert_called_once_with(2)
         finally:
             await _close_ws(writer)
 
+    @pytest.mark.timeout(30)
     async def test_set_scope_fixed_edge(
-        self, server: WebServer, mock_radio: MagicMock
+        self,
+        server: WebServer,
+        mock_radio: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """set_scope_fixed_edge sends start_hz and span_hz to radio."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _ws_skip_handshake(reader)
+            await _skip_handshake_virtual(virtual_clock, reader)
 
             cmd = json.dumps(
                 {
@@ -3782,7 +4272,13 @@ class TestScopeAdvancedCommands:
             assert resp["result"]["start_hz"] == 14_000_000
             assert resp["result"]["end_hz"] == 15_000_000
 
-            await asyncio.sleep(0.03)
+            await _elapse_until(
+                virtual_clock,
+                lambda: mock_radio.set_scope_fixed_edge.await_count > 0,
+                budget=2.0,
+                step=0.01,
+                description="poller to execute set_scope_fixed_edge",
+            )
             mock_radio.set_scope_fixed_edge.assert_called_once_with(
                 edge=1,
                 start_hz=14_000_000,
