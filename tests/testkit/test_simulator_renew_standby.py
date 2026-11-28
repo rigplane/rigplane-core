@@ -105,11 +105,31 @@ async def _assert_virtual_silence(
     window and then assert nothing landed — the same meaning, on virtual
     time. Firing the loop's timers on the way is intended: a retransmit
     round or hold expiry the test forbids would land in the queue and fail.
+
+    Contract: call only after positive evidence that the packet under test
+    was already handled (a reply on the same socket, or sim-side state such
+    as gap closure) — ``elapse`` settles the loop's own callbacks, not
+    bytes still in the kernel, so silence alone never proves delivery.
     """
     await clock.elapse(duration)
     assert client.queue.empty(), (
         f"expected silence, received {client.queue.qsize()} datagram(s)"
     )
+
+
+async def _ping_roundtrip(client: _UdpClient, port: int) -> None:
+    """Barrier: a ping reply proving every earlier datagram was handled.
+
+    The simulator handles UDP inline in ``datagram_received`` and loopback
+    preserves same-socket order, so a reply to a ping sent after the packet
+    under test proves that packet was already processed. Send pings from the
+    same socket as the packet under test; a reply on another socket proves
+    nothing about its ordering. A foreign-identity ping has no session side
+    effects (only the holder's ping re-arms the keepalive).
+    """
+    client.send(_ping(), port)
+    reply = await client.recv()
+    assert len(reply) == 0x15 and reply[0x10] == 0x01
 
 
 async def _login_get_token(client: _UdpClient, server: MockIcomRadio) -> int:
@@ -251,13 +271,11 @@ async def test_token_remove_retires_token(
     )
 
 
-async def test_default_mode_remove_with_unknown_token_is_noop(
-    server, client, virtual_clock: VirtualClock
-) -> None:
+async def test_default_mode_remove_with_unknown_token_is_noop(server, client) -> None:
     """In default mode a token-remove naming no session retires nothing."""
     token = await _login_get_token(client, server)
     client.send(_token_remove(0xDEAD), server.control_port)
-    await virtual_clock.elapse(0.05)
+    await _ping_roundtrip(client, server.control_port)  # the remove was handled
     assert server.token == token  # no new epoch
 
     client.send(_renewal(token), server.control_port)
@@ -516,7 +534,9 @@ async def test_foreign_token_remove_is_noop(virtual_clock: VirtualClock) -> None
         assert sim.session_held is True
 
         second.send(_token_remove(), sim.control_port)
-        await virtual_clock.elapse(0.05)
+        # Same-socket barrier: the ping reply proves the foreign remove was
+        # handled (a renewal on another socket would not order against it).
+        await _ping_roundtrip(second, sim.control_port)
         assert sim.token == token  # no new epoch: the foreign remove was a no-op
 
         first.send(_renewal(token), sim.control_port)
@@ -594,9 +614,9 @@ async def test_foreign_close_is_noop_two_sockets(virtual_clock: VirtualClock) ->
         await civ.recv()  # stream marker
 
         intruder.send(_close(seq=0), sim.civ_port)
-        await virtual_clock.elapse(0.05)
+        await _ping_roundtrip(intruder, sim.civ_port)  # intruder close handled
         ctrl.send(_as_sender(_close(seq=0), _CTRL_SENDER), sim.civ_port)
-        await virtual_clock.elapse(0.05)
+        await _ping_roundtrip(ctrl, sim.civ_port)  # control close handled
         assert sim.session_held is True  # the holder kept its session
         assert sim.token == token  # no new epoch
 
@@ -913,6 +933,15 @@ async def _assert_standby_fill_consumed(
         )
         assert server.civ_gap_open is True  # tracked, just never asked
         client.send(filler, server.civ_port)  # fills seq 1: drain consumes
+        # Positive handling evidence while standby is still on: the fill and
+        # the drain run in the same synchronous handler, so a closed gap
+        # proves the held packet was consumed before standby ends.
+        await await_until(
+            lambda: not server.civ_gap_open,
+            timeout=5.0,
+            description="the standby fill to close the gap",
+        )
+        assert server.civ_gap_open is False
         await _assert_virtual_silence(
             virtual_clock, client, 0.35
         )  # packet round + two loop rounds
@@ -1008,7 +1037,7 @@ async def test_late_close_after_reclaim_does_not_end_new_session(
         assert sim.session_held is True
 
         a_civ.send(_close(seq=0), sim.civ_port)  # A's late close
-        await virtual_clock.elapse(0.1)
+        await _ping_roundtrip(a_civ, sim.civ_port)  # the late close was handled
         assert sim.session_held is True  # B kept its session
         assert sim.token == fresh_token  # no new epoch
 
@@ -1071,7 +1100,7 @@ async def test_late_close_with_no_session_does_not_retire_fresh_token(
         assert fresh_token == sim.token  # issued, not yet granted
 
         a_civ.send(_close(seq=0), sim.civ_port)  # A's late close
-        await virtual_clock.elapse(0.1)
+        await _ping_roundtrip(a_civ, sim.civ_port)  # the late close was handled
         assert sim.session_held is False  # still no session
         assert sim.token == fresh_token  # the fresh epoch survived
 
