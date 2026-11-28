@@ -367,6 +367,7 @@ class AudioStream:
         self._rx_packets_delivered = 0
         self._rx_packets_lost = 0
         self._tx_packets_sent = 0
+        self._last_tx_frame_monotonic: float | None = None
         self._rx_jitter_ema_packets = 0.0
         self._rx_jitter_max_packets = 0
         self._rx_underruns = 0
@@ -604,7 +605,12 @@ class AudioStream:
         self._state = AudioState.TRANSMITTING
         self._tx_seq = 0
         self._tx_packets_sent = 0
+        self._last_tx_frame_monotonic = None
         logger.info("Audio TX started")
+
+    @property
+    def last_tx_frame_monotonic(self) -> float | None:
+        return self._last_tx_frame_monotonic
 
     async def push_tx(self, audio_data: bytes) -> None:
         """Send an audio frame to the radio.
@@ -633,6 +639,7 @@ class AudioStream:
                 send_seq=self._tx_seq,
             )
             await self._transport.send_tracked(pkt)
+            self._last_tx_frame_monotonic = asyncio.get_running_loop().time()
             self._tx_seq = (self._tx_seq + 1) & 0xFFFF
             self._tx_packets_sent += 1
             offset += MAX_AUDIO_PAYLOAD

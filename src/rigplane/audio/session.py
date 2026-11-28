@@ -291,6 +291,7 @@ class AudioSession:
         self._listeners: list[Callable[[AudioSessionEvent], None]] = []
         self._last_event: AudioSessionEvent | None = None
         self._rx_silent_reported = False
+        self._rx_resume_pending = False
 
     @property
     def state(self) -> AudioSessionState:
@@ -597,6 +598,7 @@ class AudioSession:
                 await self._disarm_tx()  # MOR-574: TX down BEFORE RX drops
             await self._drop_rx(closing_rx)
             self._state = AudioSessionState.IDLE
+            self._rx_resume_pending = False
         elif desired is AudioSessionState.TX_ONLY:
             # Full-duplex, TX demand, no RX. Shed any RX first (TX-down then
             # RX-drop if a TX leg is up — MOR-574), then arm TX alone.
@@ -782,6 +784,7 @@ class AudioSession:
 
     async def _reestablish_locked(self) -> None:
         self._recovering_from = None
+        self._rx_resume_pending = bool(self._rx_subs)
         await self._apply(recover=True)
 
     # ── Health watchdog (MOR-581 — surface only, recovery is step 20) ────
@@ -820,12 +823,21 @@ class AudioSession:
             # armed (still "starting") RX leg.
             ref = self._rx_armed_at if last is None else max(last, self._rx_armed_at)
             if now - ref >= self._rx_liveness_timeout:
+                self._rx_resume_pending = True
                 self._recovering_from = self._state
                 self._state = AudioSessionState.RECOVERING
                 logger.warning("audio-session: RX silent %.1fs — RECOVERING", now - ref)
                 self._emit("rx_silent")
+            elif (
+                self._rx_resume_pending
+                and last is not None
+                and last >= self._rx_armed_at
+            ):
+                self._rx_resume_pending = False
+                self._emit("rx_resumed")
         elif self._state is AudioSessionState.RECOVERING:
             if last is not None and now - last < self._rx_liveness_timeout:
+                self._rx_resume_pending = False
                 self._recovering_from = None
                 self._state = self._desired()
                 logger.info("audio-session: RX frames resumed — %s", self._state.value)
