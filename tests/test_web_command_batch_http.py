@@ -19,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_store import FreshnessClock
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio import IcomRadio
 from rigplane.testing.timing import VirtualClock
@@ -498,7 +499,9 @@ async def test_http_single_set_vfo_freq_reports_readback_body(
         )
     )
     generation = store.provider_generation
-    poller = RadioPoller(radio, srv.command_queue, state_store=store)  # type: ignore[arg-type]
+    poller = RadioPoller(  # type: ignore[arg-type]
+        radio, srv.command_queue, state_store=store, clock=virtual_clock
+    )
     for path, value in (
         (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
         (FieldPath.active("0", "freq_mode", "mode"), "LSB"),
@@ -647,7 +650,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope(
         )
         generation = store.provider_generation
         poller = RadioPoller(  # type: ignore[arg-type]
-            radio, srv.command_queue, state_store=store
+            radio, srv.command_queue, state_store=store, clock=virtual_clock
         )
         for path, value in (
             (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
@@ -1441,6 +1444,12 @@ _TEST_SOURCE = SourceMetadata(source="test", provider="tests")
 def _observe_ptt(
     srv: WebServer, value: bool, now: float, *, age_seconds: float = 0.0
 ) -> None:
+    # The RF-age check recomputes age from the snapshot (generated_at, real by
+    # default) instead of trusting the FRESH flag, so pin the store clock to
+    # the shared virtual time: otherwise wall time leaks into the age while no
+    # virtual time elapses. Fresh rows stay fresh (age 0 < 60 s max_age) and
+    # the stale row stays stale (age 120 s >= max_age).
+    srv.command_state_store._freshness_clock = FreshnessClock(start=now)  # noqa: SLF001
     srv.command_state_store.apply_current(
         Observation(
             path=_PTT_PATH,
