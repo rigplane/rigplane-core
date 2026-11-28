@@ -129,6 +129,23 @@ class _FakeLoop:
 # ---------------------------------------------------------------------------
 
 
+class TestDiscardPendingAudio:
+    @pytest.mark.parametrize("queued_count", [0, 1, PACKET_QUEUE_MAXSIZE])
+    async def test_discards_backlog_and_preserves_new_audio(
+        self, queued_count: int
+    ) -> None:
+        transport = IcomTransport()
+        for _ in range(queued_count):
+            transport._packet_queue.put_nowait(b"stale audio")
+
+        transport.discard_pending_audio()
+        assert transport.queue_pressure == 0.0
+        transport.discard_pending_audio()
+
+        transport._packet_queue.put_nowait(b"fresh audio")
+        assert await transport.receive_packet() == b"fresh audio"
+
+
 class TestConnectionState:
     def test_initial_state(self) -> None:
         t = IcomTransport()
