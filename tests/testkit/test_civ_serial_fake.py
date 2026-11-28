@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import time
 
 import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.profiles import resolve_radio_profile
+from rigplane.testing.timing import VirtualClock, virtual_clock
 
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
+
+pytestmark = pytest.mark.timeout(30)
 
 
 def _split_frames(data: bytes) -> list[bytes]:
@@ -35,14 +37,18 @@ def _split_frames(data: bytes) -> list[bytes]:
 
 
 async def _read_frames(reader: asyncio.StreamReader, count: int) -> list[bytes]:
-    """Read until *count* frames have arrived (or the 1 s guard fires)."""
+    """Read until *count* frames have arrived (or the 1 s guard fires).
+
+    Every test in this file runs on the shared virtual clock, so the guard
+    is a virtual bound: immediate replies return without any elapse, while
+    a delayed reply needs ``clock.elapse()`` past its delay first.
+    """
     data = bytearray()
-    deadline = time.monotonic() + 1.0
     while True:
         chunk = await asyncio.wait_for(reader.read(512), timeout=1.0)
         data += chunk
         frames = _split_frames(bytes(data))
-        if len(frames) >= count or time.monotonic() > deadline:
+        if len(frames) >= count:
             return frames
 
 
@@ -55,7 +61,26 @@ async def _roundtrip(
     return await _read_frames(reader, replies)
 
 
-async def test_identity_answer_is_profile_derived() -> None:
+async def _expect_silence(
+    reader: asyncio.StreamReader, clock: VirtualClock, window: float
+) -> None:
+    """Assert nothing arrives within *window* of virtual time.
+
+    A negative wait the virtual clock bounds: advance past the window and
+    check the pending read never completed, instead of waiting out a real
+    timeout and catching it.
+    """
+    probe = asyncio.ensure_future(reader.read(512))
+    try:
+        await clock.elapse(window)
+        assert not probe.done(), "the radio answered inside the silent window"
+    finally:
+        probe.cancel()
+        await asyncio.gather(probe, return_exceptions=True)
+
+
+@virtual_clock
+async def test_identity_answer_is_profile_derived(clock: VirtualClock) -> None:
     profile = resolve_radio_profile(model="IC-7300")
     fake = CivSerialFake()
     assert fake.civ_addr == profile.civ_addr
@@ -71,7 +96,10 @@ async def test_identity_answer_is_profile_derived() -> None:
     assert parsed.data == fake.model_id
 
 
-async def test_profile_without_expected_ids_must_not_guess_a_model_id() -> None:
+@virtual_clock
+async def test_profile_without_expected_ids_must_not_guess_a_model_id(
+    clock: VirtualClock,
+) -> None:
     profile = resolve_radio_profile(model="IC-705")
     assert not profile.expected_identity_ids  # guard: the premise of this test
     with pytest.raises(ValueError, match="expected_ids"):
@@ -87,7 +115,8 @@ async def test_profile_without_expected_ids_must_not_guess_a_model_id() -> None:
     assert parse_civ_frame(reply).data == b"\x01\x05"
 
 
-async def test_frequency_get_set_roundtrip() -> None:
+@virtual_clock
+async def test_frequency_get_set_roundtrip(clock: VirtualClock) -> None:
     fake = CivSerialFake(frequency_hz=14_074_000)
     _, get_reply = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03)
@@ -109,7 +138,8 @@ async def test_frequency_get_set_roundtrip() -> None:
     assert parse_civ_frame(get_reply).data == b"\x00\x50\x13\x07\x00"
 
 
-async def test_mode_and_filter_roundtrip() -> None:
+@virtual_clock
+async def test_mode_and_filter_roundtrip(clock: VirtualClock) -> None:
     fake = CivSerialFake(mode=0x01, filter_width=1)
     _, reply = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x04)
@@ -125,7 +155,8 @@ async def test_mode_and_filter_roundtrip() -> None:
     assert fake.filter_width == 2
 
 
-async def test_ptt_get_and_set() -> None:
+@virtual_clock
+async def test_ptt_get_and_set(clock: VirtualClock) -> None:
     fake = CivSerialFake()
     _, reply = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
@@ -141,7 +172,8 @@ async def test_ptt_get_and_set() -> None:
     assert fake.ptt is True
 
 
-async def test_s_meter_read() -> None:
+@virtual_clock
+async def test_s_meter_read(clock: VirtualClock) -> None:
     fake = CivSerialFake(s_meter=120)
     _, reply = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x15, sub=0x02)
@@ -149,8 +181,10 @@ async def test_s_meter_read() -> None:
     assert parse_civ_frame(reply).data == b"\x01\x20"  # 2-byte BCD for 120
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
-async def test_data_mode_read_can_be_refused_while_the_write_still_works() -> None:
+@virtual_clock
+async def test_data_mode_read_can_be_refused_while_the_write_still_works(
+    clock: VirtualClock,
+) -> None:
     """``refuse_data_mode_read`` NAKs the ``1A 06`` READ only: the fake can
     still model a radio that does not answer the data-mode read while the
     data-mode write (and the ``26 00`` round trip) keeps working."""
@@ -177,7 +211,10 @@ async def test_data_mode_read_can_be_refused_while_the_write_still_works() -> No
     assert parse_civ_frame(sel).data == bytes([0x00, 0x01, 0x01, 0x01])
 
 
-async def test_unknown_opcode_naks_but_broadcast_stays_silent() -> None:
+@virtual_clock
+async def test_unknown_opcode_naks_but_broadcast_stays_silent(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake()
     _, reply = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x07, data=b"\xd2")
@@ -192,7 +229,10 @@ async def test_unknown_opcode_naks_but_broadcast_stays_silent() -> None:
     assert len(frames) == 1  # echo only — an unknown broadcast gets silence
 
 
-async def test_frame_for_another_address_is_not_answered() -> None:
+@virtual_clock
+async def test_frame_for_another_address_is_not_answered(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake()
     frames = await _roundtrip(
         fake, build_civ_frame(0xA4, CONTROLLER_ADDR, 0x19, sub=0x00), replies=1
@@ -201,7 +241,8 @@ async def test_frame_for_another_address_is_not_answered() -> None:
     assert fake.commands[-1].to_addr == 0xA4  # still recorded
 
 
-async def test_echo_can_be_disabled() -> None:
+@virtual_clock
+async def test_echo_can_be_disabled(clock: VirtualClock) -> None:
     fake = CivSerialFake(echo=False)
     (reply,) = await _roundtrip(
         fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03), replies=1
@@ -209,33 +250,41 @@ async def test_echo_can_be_disabled() -> None:
     assert parse_civ_frame(reply).command == 0x03
 
 
-async def test_delay_identity_answer() -> None:
+@virtual_clock
+async def test_delay_identity_answer(clock: VirtualClock) -> None:
     fake = CivSerialFake()
     fake.delay_identity_answer(0.15)
     reader, writer = await fake.open_serial_connection()
-    started = time.monotonic()
-    writer.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x19, sub=0x00))
-    frames = await _read_frames(reader, 2)
-    elapsed = time.monotonic() - started
-    assert elapsed >= 0.15
-    assert parse_civ_frame(frames[1]).data == fake.model_id
+    request = build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x19, sub=0x00)
+    started = clock()
+    writer.write(request)
+    # The echo is synchronous, but the identity reply waits out its delay.
+    (echo,) = await _read_frames(reader, 1)
+    assert echo == request
+    await clock.elapse(0.2)
+    (reply,) = await _read_frames(reader, 1)
+    assert clock() - started >= 0.15
+    assert parse_civ_frame(reply).data == fake.model_id
 
 
-async def test_silence_keeps_the_link_open_but_answers_nothing() -> None:
+@virtual_clock
+async def test_silence_keeps_the_link_open_but_answers_nothing(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake()
     reader, writer = await fake.open_serial_connection()
     fake.silence(0.2)
     writer.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03))
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(reader.read(512), timeout=0.1)
+    await _expect_silence(reader, clock, 0.1)
 
-    await asyncio.sleep(0.25)  # let the silence window lapse
+    await clock.elapse(0.15)  # let the silence window lapse (0.25 past its start)
     writer.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03))
     frames = await _read_frames(reader, 2)
     assert parse_civ_frame(frames[1]).command == 0x03
 
 
-async def test_answer_identity_after_reconnect_only() -> None:
+@virtual_clock
+async def test_answer_identity_after_reconnect_only(clock: VirtualClock) -> None:
     fake = CivSerialFake()
     fake.answer_identity_after_reconnect_only()
     request = build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x19, sub=0x00)
@@ -252,7 +301,10 @@ async def test_answer_identity_after_reconnect_only() -> None:
     assert parse_civ_frame(reply).data == fake.model_id
 
 
-async def test_wrong_model_id_defaults_to_another_profile_id() -> None:
+@virtual_clock
+async def test_wrong_model_id_defaults_to_another_profile_id(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake()
     fake.wrong_model_id()
     ic7610 = resolve_radio_profile(model="IC-7610")
@@ -266,14 +318,16 @@ async def test_wrong_model_id_defaults_to_another_profile_id() -> None:
     assert parse_civ_frame(reply).data == fake.model_id
 
 
-async def test_usb_vanish_and_reappear() -> None:
+@virtual_clock
+async def test_usb_vanish_and_reappear(clock: VirtualClock) -> None:
     fake = CivSerialFake()
     reader, writer = await fake.open_serial_connection()
     fake.usb_vanish(at=0.02)
     fake.usb_reappear(after=0.3)
 
+    await clock.elapse(0.02)  # let the device disappear
     with pytest.raises(OSError) as read_error:
-        await asyncio.wait_for(reader.read(512), timeout=1.0)
+        await reader.read(512)
     assert read_error.value.errno == errno.ENODEV
     with pytest.raises(OSError):
         writer.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03))
@@ -281,7 +335,7 @@ async def test_usb_vanish_and_reappear() -> None:
         await fake.open_serial_connection()
     assert open_error.value.errno == errno.ENODEV
 
-    await asyncio.sleep(0.35)  # let the device reappear
+    await clock.elapse(0.3)  # let the device reappear (0.32 past the start)
     reader2, writer2 = await fake.open_serial_connection()
     writer2.write(build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x19, sub=0x00))
     echo, reply = await _read_frames(reader2, 2)
@@ -364,27 +418,39 @@ def _to_fake(fake: CivSerialFake, body_hex: str) -> bytes:
     return bytes.fromhex(f"fefe{fake.civ_addr:02x}e0{body_hex}fd")
 
 
-async def test_native_frequency_read_keeps_precedence_over_the_table() -> None:
+@virtual_clock
+async def test_native_frequency_read_keeps_precedence_over_the_table(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
     # The native state (default 14 074 000 Hz), not the recorded 14 282 600.
     assert parse_civ_frame(reply).data == b"\x00\x40\x07\x14\x00"
 
 
-async def test_cmd29_wrapped_frequency_read_is_naked_from_the_table() -> None:
+@virtual_clock
+async def test_cmd29_wrapped_frequency_read_is_naked_from_the_table(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "290003"), replies=1)
     assert parse_civ_frame(reply).command == 0xFA  # NAK, never the native 03
 
 
-async def test_cmd29_request_absent_from_the_table_is_naked() -> None:
+@virtual_clock
+async def test_cmd29_request_absent_from_the_table_is_naked(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "29001c00"), replies=1)
     # A wrapped PTT read: unwrapping into the native 1C 00 handler is forbidden.
     assert parse_civ_frame(reply).command == 0xFA
 
 
-async def test_cmd29_wrapped_read_answered_wrapped_from_the_table() -> None:
+@virtual_clock
+async def test_cmd29_wrapped_read_answered_wrapped_from_the_table(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "29001502"), replies=1)
     parsed = parse_civ_frame(reply)
@@ -394,7 +460,10 @@ async def test_cmd29_wrapped_read_answered_wrapped_from_the_table() -> None:
     assert parsed.data == b"\x00\x00"
 
 
-async def test_unwrapped_unknown_request_answered_from_the_table() -> None:
+@virtual_clock
+async def test_unwrapped_unknown_request_answered_from_the_table(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "140a"), replies=1)
     parsed = parse_civ_frame(reply)
@@ -402,13 +471,17 @@ async def test_unwrapped_unknown_request_answered_from_the_table() -> None:
     assert parsed.data == b"\x00\x13"
 
 
-async def test_unwrapped_unknown_request_missing_from_the_table_naks() -> None:
+@virtual_clock
+async def test_unwrapped_unknown_request_missing_from_the_table_naks(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     (reply,) = await _roundtrip(fake, _to_fake(fake, "140b"), replies=1)
     assert parse_civ_frame(reply).command == 0xFA
 
 
-async def test_echo_default_comes_from_the_table() -> None:
+@virtual_clock
+async def test_echo_default_comes_from_the_table(clock: VirtualClock) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table())
     assert fake.echo is False  # the hand-built rows carry no echo row
     (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
@@ -420,7 +493,8 @@ async def test_echo_default_comes_from_the_table() -> None:
     assert parse_civ_frame(reply2).command == 0x03
 
 
-async def test_without_a_table_the_fake_is_unchanged() -> None:
+@virtual_clock
+async def test_without_a_table_the_fake_is_unchanged(clock: VirtualClock) -> None:
     fake = CivSerialFake()
     assert fake.echo is True
     request = build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x03)
@@ -457,20 +531,19 @@ _SILENT_TABLE_ROWS = [
 ]
 
 
-@pytest.mark.realtime(
-    reason="asserts that nothing arrives: a negative wait only the real clock bounds"
-)
-async def test_recorded_silence_is_not_answered() -> None:
+@virtual_clock
+async def test_recorded_silence_is_not_answered(clock: VirtualClock) -> None:
     table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
     fake = CivSerialFake(recorded_answers=table)
     reader, writer = await fake.open_serial_connection()
     writer.write(_to_fake(fake, "7f"))
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(reader.read(512), timeout=0.2)
+    await _expect_silence(reader, clock, 0.2)
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
-async def test_unrecorded_request_is_still_naked_beside_recorded_silence() -> None:
+@virtual_clock
+async def test_unrecorded_request_is_still_naked_beside_recorded_silence(
+    clock: VirtualClock,
+) -> None:
     table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
     fake = CivSerialFake(recorded_answers=table)
     (reply,) = await _roundtrip(fake, _to_fake(fake, "7e"), replies=1)
@@ -513,44 +586,49 @@ def _native_read_fake(*, capture_replay: bool) -> CivSerialFake:
     return CivSerialFake(recorded_answers=table, capture_replay=capture_replay)
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
-async def test_capture_replay_reproduces_a_recorded_data_reply() -> None:
+@virtual_clock
+async def test_capture_replay_reproduces_a_recorded_data_reply(
+    clock: VirtualClock,
+) -> None:
     fake = CivSerialFake(recorded_answers=_recorded_table(), capture_replay=True)
     (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
     assert parse_civ_frame(reply).data == b"\x00\x60\x28\x14\x00"  # not native
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
-async def test_capture_replay_reproduces_a_recorded_refusal() -> None:
+@virtual_clock
+async def test_capture_replay_reproduces_a_recorded_refusal(
+    clock: VirtualClock,
+) -> None:
     fake = _native_read_fake(capture_replay=True)
     (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
     assert parse_civ_frame(reply).command == 0xFA
 
 
-@pytest.mark.realtime(
-    reason="asserts that nothing arrives: a negative wait only the real clock bounds"
-)
-async def test_capture_replay_reproduces_recorded_silence() -> None:
+@virtual_clock
+async def test_capture_replay_reproduces_recorded_silence(
+    clock: VirtualClock,
+) -> None:
     fake = _native_read_fake(capture_replay=True)
     reader, writer = await fake.open_serial_connection()
     writer.write(_to_fake(fake, "04"))
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(reader.read(512), timeout=0.2)
+    await _expect_silence(reader, clock, 0.2)
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
-async def test_capture_replay_answers_an_unrecorded_read_natively() -> None:
+@virtual_clock
+async def test_capture_replay_answers_an_unrecorded_read_natively(
+    clock: VirtualClock,
+) -> None:
     fake = _native_read_fake(capture_replay=True)
     (reply,) = await _roundtrip(fake, _to_fake(fake, "1900"), replies=1)
     assert parse_civ_frame(reply).data == fake.model_id
 
 
-@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
 @pytest.mark.parametrize(
     ("body", "command"), [("03", 0x03), ("04", 0x04)], ids=["frequency", "mode"]
 )
+@virtual_clock
 async def test_without_capture_replay_native_reads_win_over_the_recording(
-    body: str, command: int
+    clock: VirtualClock, body: str, command: int
 ) -> None:
     fake = _native_read_fake(capture_replay=False)
     (reply,) = await _roundtrip(fake, _to_fake(fake, body), replies=1)
