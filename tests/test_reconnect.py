@@ -18,6 +18,7 @@ from test_audio_session_health import _FakeWriter, _response_json
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs, _build_conninfo
 from rigplane_testkit.leaked_radio_guard import fake_connected
+from rigplane.testing.timing import VirtualClock, await_until
 
 
 @pytest.fixture
@@ -43,7 +44,11 @@ class TestWatchdog:
         radio._control_phase._start_watchdog()
         assert radio._watchdog_task is not None
         radio._control_phase._stop_watchdog()
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: radio._watchdog_task is None,
+            timeout=5.0,
+            description="watchdog task handle cleared after stop",
+        )
         assert radio._watchdog_task is None
 
     @pytest.mark.asyncio
@@ -52,18 +57,40 @@ class TestWatchdog:
         r._control_phase._stop_watchdog()  # should not raise
 
     @pytest.mark.asyncio
-    async def test_watchdog_triggers_on_timeout(self, radio: IcomRadio) -> None:
+    async def test_watchdog_triggers_on_timeout(
+        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watchdog should set connected=False after timeout with no activity."""
+        from rigplane.runtime import radio_reconnect
+
+        # The watchdog reads the module's own clock and sleep: point both at
+        # the shared virtual clock, so its 0.5 s check interval costs no wall
+        # time. connect() is failed fast — the attempt it makes is what the
+        # reconnect task's release is observed through, not a real radio.
+        clock = VirtualClock(start=1000.0)
+        clock.scope_to(monkeypatch, radio_reconnect)
         radio._control_phase._start_watchdog()
-        # Wait longer than watchdog_timeout
-        await asyncio.sleep(0.6)
-        assert not radio._connected
-        # Reconnect task should have been started
-        assert radio._reconnect_task is not None
-        # Clean up
-        radio._intentional_disconnect = True
-        radio._control_phase._stop_reconnect()
-        radio._control_phase._stop_watchdog()
+        with patch.object(
+            radio, "connect", new_callable=AsyncMock, side_effect=OSError("no radio")
+        ):
+            await await_until(
+                lambda: radio._reconnect_task is not None and not radio._connected,
+                timeout=5.0,
+                description="watchdog fires and the reconnect release drops the link",
+            )
+            assert not radio._connected
+            # Reconnect task should have been started
+            assert radio._reconnect_task is not None
+            # Clean up
+            task = radio._reconnect_task
+            radio._intentional_disconnect = True
+            radio._control_phase._stop_reconnect()
+            radio._control_phase._stop_watchdog()
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="reconnect task ends after the intentional stop",
+            )
 
     # The three tests below drive ``watchdog_loop`` on a FAKE clock: every
     # watchdog sleep advances the clock by exactly its interval (plus any
@@ -191,22 +218,63 @@ class TestReconnect:
         """Setting intentional_disconnect should prevent reconnect."""
         radio._intentional_disconnect = True
         radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: radio._reconnect_task.done(),
+            timeout=5.0,
+            description="reconnect loop exits on intentional disconnect",
+        )
         # Should exit immediately
         assert radio._reconnect_task.done()
 
     @pytest.mark.asyncio
-    async def test_reconnect_increments_delay(self, radio: IcomRadio) -> None:
+    async def test_reconnect_increments_delay(
+        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Reconnect should use exponential backoff."""
-        # The reconnect will fail (no real radio), but we verify it tries
+        from rigplane.runtime import radio_reconnect
+
+        # Backoff sleeps live in the reconnect module: point them at the
+        # shared virtual clock so repeated retries cost no wall time, and
+        # fail connect() deterministically so no real socket is touched.
+        clock = VirtualClock(start=1000.0)
+        clock.scope_to(monkeypatch, radio_reconnect)
+        statuses: list[dict[str, Any]] = []
+        radio.set_reconnect_status_callback(statuses.append)
         radio._connected = False
         radio._intentional_disconnect = False
-        radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-        await asyncio.sleep(0.5)
-        # Should still be trying (not connected, not intentional)
-        radio._intentional_disconnect = True
-        radio._control_phase._stop_reconnect()
-        await asyncio.sleep(0.05)
+        with patch.object(
+            radio, "connect", new_callable=AsyncMock, side_effect=OSError("no radio")
+        ) as mock_connect:
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await await_until(
+                lambda: mock_connect.await_count >= 5,
+                timeout=5.0,
+                description="reconnect loop retries with backoff",
+            )
+            # Should still be trying (not connected, not intentional)
+            task = radio._reconnect_task
+            assert task is not None
+            assert not task.done()
+            assert statuses[0]["state"] == "reconnecting"
+            assert statuses[0]["attempt"] == 1
+            assert [s["attempt"] for s in statuses[:5]] == [1, 2, 3, 4, 5]
+            assert all(s["state"] == "reconnecting" for s in statuses[:5])
+            # Backoff grows exponentially (0.1 -> 0.2 -> 0.4) then pins at
+            # the radio's reconnect_max_delay cap (0.5).
+            assert clock.sleeps[0] == pytest.approx(radio._reconnect_delay)
+            assert clock.sleeps[1] == pytest.approx(radio._reconnect_delay * 2)
+            assert clock.sleeps[2] == pytest.approx(radio._reconnect_delay * 4)
+            assert clock.sleeps[1] > clock.sleeps[0]
+            assert clock.sleeps[2] > clock.sleeps[1]
+            assert clock.sleeps[3] == pytest.approx(radio._reconnect_max_delay)
+            assert all(d <= radio._reconnect_max_delay for d in clock.sleeps)
+            radio._intentional_disconnect = True
+            radio._control_phase._stop_reconnect()
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="reconnect task ends after the intentional stop",
+            )
 
 
 class TestReconnectLifecycleRelease:
@@ -226,10 +294,14 @@ class TestReconnectLifecycleRelease:
         async def _body() -> None:
             radio._reconnect_task = asyncio.current_task()
             radio._control_phase._stop_reconnect()
-            await asyncio.sleep(0.05)
+            await asyncio.Event().wait()  # parked until the external stop cancels us
 
         task = asyncio.create_task(_body())
-        await asyncio.sleep(0.01)  # let _body reach its internal stop
+        await await_until(
+            lambda: radio._reconnect_task is task,
+            timeout=5.0,
+            description="_body reaches its internal stop",
+        )
         assert not task.cancelled()
         assert radio._reconnect_task is task
         radio._control_phase._stop_reconnect()  # external stop: cancels
@@ -466,7 +538,11 @@ class TestReconnectPermanentErrors:
         with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
             mock_connect.side_effect = AuthenticationError("wrong password")
             radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-            await asyncio.sleep(0.15)
+            await await_until(
+                lambda: radio._reconnect_task.done(),
+                timeout=5.0,
+                description="reconnect loop aborts on authentication error",
+            )
             assert radio._reconnect_task.done()
             assert radio._conn_state == RadioConnectionState.DISCONNECTED
             # Should have tried only once
@@ -480,7 +556,11 @@ class TestReconnectPermanentErrors:
         with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
             mock_connect.side_effect = ValueError("invalid config")
             radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-            await asyncio.sleep(0.15)
+            await await_until(
+                lambda: radio._reconnect_task.done(),
+                timeout=5.0,
+                description="reconnect loop aborts on value error",
+            )
             assert radio._reconnect_task.done()
             assert radio._conn_state == RadioConnectionState.DISCONNECTED
             assert mock_connect.call_count == 1
@@ -493,27 +573,48 @@ class TestReconnectPermanentErrors:
         with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
             mock_connect.side_effect = TypeError("bad arg")
             radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-            await asyncio.sleep(0.15)
+            await await_until(
+                lambda: radio._reconnect_task.done(),
+                timeout=5.0,
+                description="reconnect loop aborts on type error",
+            )
             assert radio._reconnect_task.done()
             assert radio._conn_state == RadioConnectionState.DISCONNECTED
             assert mock_connect.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_transient_error_retries(self, radio: IcomRadio) -> None:
+    async def test_transient_error_retries(
+        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Transient errors (OSError) should still retry."""
+        from rigplane.runtime import radio_reconnect
+
+        # Backoff sleeps live in the reconnect module: point them at the
+        # shared virtual clock so the 0.1 s first retry costs no wall time.
+        clock = VirtualClock(start=1000.0)
+        clock.scope_to(monkeypatch, radio_reconnect)
         radio._connected = False
         radio._intentional_disconnect = False
         with patch.object(radio, "connect", new_callable=AsyncMock) as mock_connect:
             mock_connect.side_effect = OSError("network unreachable")
             radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
             # Let it retry a few times (delay starts at 0.1)
-            await asyncio.sleep(0.35)
+            await await_until(
+                lambda: mock_connect.call_count >= 2,
+                timeout=5.0,
+                description="reconnect loop retries after a transient error",
+            )
             assert mock_connect.call_count >= 2
             assert radio._conn_state == RadioConnectionState.RECONNECTING
             # Clean up
+            task = radio._reconnect_task
             radio._intentional_disconnect = True
             radio._control_phase._stop_reconnect()
-            await asyncio.sleep(0.05)
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="reconnect task ends after the intentional stop",
+            )
 
 
 class TestExternalCatSessionResetOnConnect:
@@ -637,22 +738,43 @@ class TestReconnectStatusCallback:
 
     @pytest.mark.asyncio
     async def test_watchdog_trigger_reports_first_attempt(
-        self, radio: IcomRadio
+        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The watchdog trigger point surfaces ``reconnecting`` immediately."""
+        from rigplane.runtime import radio_reconnect
+
+        # Same shared-clock scoping as the watchdog tests above: the 0.5 s
+        # check interval and the reconnect backoff cost no wall time.
+        # connect() fails fast so the attempt the watchdog starts retries
+        # without touching a real radio.
+        clock = VirtualClock(start=1000.0)
+        clock.scope_to(monkeypatch, radio_reconnect)
         statuses: list[dict[str, Any]] = []
         radio.set_reconnect_status_callback(statuses.append)
         radio._control_phase._start_watchdog()
-        await asyncio.sleep(0.6)  # > watchdog_timeout (0.3 s), no activity
-        assert statuses, "watchdog trigger must surface a reconnecting status"
-        assert statuses[0]["state"] == "reconnecting"
-        assert statuses[0]["attempt"] == 1
-        assert statuses[0]["next_retry_seconds"] == 0.1
-        # Clean up
-        radio._intentional_disconnect = True
-        radio._control_phase._stop_reconnect()
-        radio._control_phase._stop_watchdog()
-        await asyncio.sleep(0.05)
+        with patch.object(
+            radio, "connect", new_callable=AsyncMock, side_effect=OSError("no radio")
+        ):
+            await await_until(
+                lambda: len(statuses) >= 1,
+                timeout=5.0,
+                description="watchdog trigger surfaces a reconnecting status",
+            )
+            assert statuses, "watchdog trigger must surface a reconnecting status"
+            assert statuses[0]["state"] == "reconnecting"
+            assert statuses[0]["attempt"] == 1
+            assert statuses[0]["next_retry_seconds"] == 0.1
+            # Clean up
+            task = radio._reconnect_task
+            radio._intentional_disconnect = True
+            radio._control_phase._stop_reconnect()
+            radio._control_phase._stop_watchdog()
+            assert task is not None
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="reconnect task ends after the intentional stop",
+            )
 
 
 def _web_radio_stub() -> SimpleNamespace:
