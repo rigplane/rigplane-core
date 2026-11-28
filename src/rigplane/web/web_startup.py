@@ -34,6 +34,7 @@ from ..core.state_pipeline_contracts import (
     Observation,
     startup_critical_path,
 )
+from ..core.startup_failure import StartupCause, StartupPhase, startup_operation
 from ..profiles import RadioProfile
 from ..radio_state import RadioState
 from ..runtime._civ_rx import _profile_path_for_observation
@@ -887,26 +888,27 @@ async def _start_web_server(
             read_only=server._config.read_only
         )
 
-    server._server = await asyncio.start_server(
-        server._accept_client,
-        host=server._config.host,
-        port=server._config.port,
-        ssl=ssl_ctx,
-        reuse_address=True,
-        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
-        # listener guarding a single radio session (same rationale as
-        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
-        # second rigplane instance silently bind the same web port on
-        # macOS/BSD, so two instances raced for the same radio with no
-        # error and the operator saw a half-dead UI. It also undermined the
-        # check_ports_available() preflight (MOR-1437): an orphan holding
-        # the port with SO_REUSEPORT set could let the preflight probe bind
-        # successfully right alongside it. Contrast with the UDP discovery
-        # responder (web/discovery.py), which legitimately opts into
-        # SO_REUSEPORT so multiple co-located instances can each announce
-        # their own radio on the shared discovery port — that is a
-        # best-effort broadcast responder, not an exclusive session guard.
-    )
+    with startup_operation(StartupCause.WEB_BIND_FAILED, StartupPhase.WEB_BIND):
+        server._server = await asyncio.start_server(
+            server._accept_client,
+            host=server._config.host,
+            port=server._config.port,
+            ssl=ssl_ctx,
+            reuse_address=True,
+            # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
+            # listener guarding a single radio session (same rationale as
+            # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
+            # second rigplane instance silently bind the same web port on
+            # macOS/BSD, so two instances raced for the same radio with no
+            # error and the operator saw a half-dead UI. It also undermined the
+            # check_ports_available() preflight (MOR-1437): an orphan holding
+            # the port with SO_REUSEPORT set could let the preflight probe bind
+            # successfully right alongside it. Contrast with the UDP discovery
+            # responder (web/discovery.py), which legitimately opts into
+            # SO_REUSEPORT so multiple co-located instances can each announce
+            # their own radio on the shared discovery port — that is a
+            # best-effort broadcast responder, not an exclusive session guard.
+        )
     server._server_was_running = True
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"

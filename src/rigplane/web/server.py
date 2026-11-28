@@ -90,6 +90,13 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
+from ..core.startup_failure import (
+    StartupCause,
+    StartupPhase,
+    complete_startup,
+    report_startup_failures,
+    startup_operation,
+)
 from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
@@ -3793,6 +3800,7 @@ class WebServer:
         self.broadcast_event("connection_status", dict(status))
         self._broadcast_state_update()
 
+    @report_startup_failures(StartupCause.WEB_START_FAILED, StartupPhase.WEB_START)
     async def start(self) -> None:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
         from .web_startup import start_web_server  # noqa: TID251
@@ -4037,6 +4045,7 @@ class WebServer:
             on_started()
         if self._config.emit_startup_event:
             self.emit_startup_event()
+        complete_startup()
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
@@ -8661,6 +8670,7 @@ async def _send_response(
 # ------------------------------------------------------------------
 
 
+@report_startup_failures(StartupCause.WEB_START_FAILED, StartupPhase.WEB_START)
 async def run_web_server(radio: "Radio | None" = None, **kwargs: Any) -> None:
     """Create a :class:`WebServer` from *kwargs* and run it forever.
 
@@ -8670,6 +8680,9 @@ async def run_web_server(radio: "Radio | None" = None, **kwargs: Any) -> None:
 
         await run_web_server(radio, host="0.0.0.0", port=8080)
     """
-    config = WebConfig(**kwargs)
+    with startup_operation(
+        StartupCause.CONFIGURATION_INVALID, StartupPhase.CONFIGURATION
+    ):
+        config = WebConfig(**kwargs)
     server = WebServer(radio, config)
     await server.serve_forever()

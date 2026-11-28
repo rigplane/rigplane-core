@@ -1980,7 +1980,7 @@ def test_main_branches(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
             self._args = args
             self.help_called = False
 
-        def parse_args(self):
+        def parse_args(self, args=None, namespace=None):
             return self._args
 
         def print_help(self):

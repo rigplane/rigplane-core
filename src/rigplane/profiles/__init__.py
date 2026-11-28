@@ -37,6 +37,7 @@ from rigplane.core.radio_transport import RadioTransport
 from rigplane.core.radio_owned_modes import RadioOwnedModeDefinition
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import PowerWriteQuantum
+from rigplane.core.startup_failure import StartupCause, StartupPhase, startup_operation
 from rigplane.core.types import (
     ScopeFixedEdgeRange,
     MemoryProfile,
@@ -1249,20 +1250,23 @@ def resolve_radio_profile(
     guessing a default profile (plan §8.1 Q5): an unidentified radio must
     refuse rather than be silently driven as some other rig.
     """
-    _ensure_loaded()
-    if isinstance(profile, RadioProfile):
-        return profile
-    if isinstance(profile, str) and profile.strip():
-        return get_radio_profile(profile)
-    if isinstance(model, str) and model.strip():
-        return get_radio_profile(model)
-    if radio_addr is not None and radio_addr in _by_civ_addr:
-        return _by_civ_addr[radio_addr]
-    raise ValueError(
-        "Cannot resolve a radio profile: no profile, model, or matching "
-        "radio_addr identifies the radio. Pass an explicit profile= or "
-        "model= — rigplane no longer guesses a default rig."
-    )
+    with startup_operation(
+        StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+    ):
+        _ensure_loaded()
+        if isinstance(profile, RadioProfile):
+            return profile
+        if isinstance(profile, str) and profile.strip():
+            return get_radio_profile(profile)
+        if isinstance(model, str) and model.strip():
+            return get_radio_profile(model)
+        if radio_addr is not None and radio_addr in _by_civ_addr:
+            return _by_civ_addr[radio_addr]
+        raise ValueError(
+            "Cannot resolve a radio profile: no profile, model, or matching "
+            "radio_addr identifies the radio. Pass an explicit profile= or "
+            "model= — rigplane no longer guesses a default rig."
+        )
 
 
 def reload_profiles() -> None:

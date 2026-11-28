@@ -7,6 +7,7 @@ from collections.abc import Callable
 from ..radio import IcomRadio  # noqa: TID251
 from ..profiles.rig_loader import RigLoadError
 from ..radio_protocol import Radio
+from ..core.startup_failure import StartupCause, StartupPhase, startup_operation
 from .config import (
     BackendConfig,
     LanBackendConfig,
@@ -142,10 +143,13 @@ def create_radio(config: BackendConfig) -> Radio:
         if config.model is None or not config.model.strip():
             # R59/MOR-2425: the default this replaced drove an IC-7300 as an
             # IC-7610. Not resolved from ``radio_addr`` either.
-            raise ValueError(
-                "Serial backend needs an explicit radio model: pass --model "
-                "(e.g. --model IC-7300); rigplane does not guess a default rig."
-            )
+            with startup_operation(
+                StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+            ):
+                raise ValueError(
+                    "Serial backend needs an explicit radio model: pass --model "
+                    "(e.g. --model IC-7300); rigplane does not guess a default rig."
+                )
         model = config.model.upper()
 
         if _is_yaesu_serial_model(model):
@@ -166,11 +170,14 @@ def create_radio(config: BackendConfig) -> Radio:
         if constructor is None:
             # MOR-174: never silently impersonate an IC-7610 — driving real
             # hardware with the wrong CI-V personality is a foot-gun.
-            raise ValueError(
-                f"Unsupported serial model {model!r}; supported: "
-                f"{', '.join(sorted(_SERIAL_MODEL_CLASSES))}, "
-                "and Yaesu FT-series (FTX-1, FT-710, ...)."
-            )
+            with startup_operation(
+                StartupCause.PROFILE_UNRESOLVED, StartupPhase.PROFILE_RESOLUTION
+            ):
+                raise ValueError(
+                    f"Unsupported serial model {model!r}; supported: "
+                    f"{', '.join(sorted(_SERIAL_MODEL_CLASSES))}, "
+                    "and Yaesu FT-series (FTX-1, FT-710, ...)."
+                )
 
         return constructor()(
             device=config.device,
