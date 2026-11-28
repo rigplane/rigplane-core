@@ -204,6 +204,50 @@ describe('getFrequencyPermit', () => {
       { status: 'allowed', band: '20m' },
     );
   });
+  // MOR-4840: the nearest out-of-band gaps on the IC-7300 golden. 65 MHz and
+  // 69.5 MHz tune (the VHF RX range covers 60-74.8 MHz) but sit in no TX band
+  // row, so the shared refusal path denies them — the GTR7 customer shape
+  // (tune somewhere TX cannot go, TX refused, nothing keyed) at data level.
+  it('IC-7300 golden: 65 MHz and 69.5 MHz tune but deny TX (no covering TX band)', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: {
+        freqRanges: { start: number; end: number }[];
+        txBands: { name: string; start: number; end: number }[];
+      };
+    }>)['IC-7300'];
+    const { freqRanges, txBands } = capabilities;
+
+    for (const freq of [65_000_000, 69_500_000]) {
+      expect(
+        freqRanges.some((range) => range.start <= freq && range.end >= freq),
+      ).toBe(true);
+      expect(getFrequencyPermit(freq, txBands)).toEqual(
+        { status: 'denied', reason: 'outside-configured-ranges' },
+      );
+    }
+  });
+  // MOR-4840: the second radio of the pair. The IC-7610 golden declares no 4 m
+  // row (HF + 6 m only), so 70.200 MHz — permitted-by-data on the IC-7300 —
+  // denies here through the same shared path, as does the 65 MHz gap.
+  it('IC-7610 golden: 70.2 MHz and 65 MHz deny TX (no 4 m row); 20 m allows', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: {
+        freqRanges: { start: number; end: number }[];
+        txBands: { name: string; start: number; end: number }[];
+      };
+    }>)['IC-7610'];
+    const { txBands } = capabilities;
+
+    expect(txBands.some((band) => band.name === '4m')).toBe(false);
+    for (const freq of [70_200_000, 65_000_000]) {
+      expect(getFrequencyPermit(freq, txBands)).toEqual(
+        { status: 'denied', reason: 'outside-configured-ranges' },
+      );
+    }
+    expect(getFrequencyPermit(14_074_000, txBands)).toEqual(
+      { status: 'allowed', band: '20m' },
+    );
+  });
   it.each([
     [150, undefined, 'denied'], [150, null, 'denied'], [150, [], 'denied'],
     [Number.NaN, [{ name: 'test', start: 100, end: 200 }], 'denied'],
