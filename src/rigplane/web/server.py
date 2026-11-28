@@ -207,6 +207,7 @@ from .runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
+    _conn_state_value,
     connection_liveness_payload,
     primary_receiver_snapshot_ids,
     projected_af_level_sub_tag,
@@ -4658,12 +4659,25 @@ class WebServer:
     def _runtime_connection_payload(self) -> dict[str, Any]:
         """Connection/reconnect status block for the runtime payload (MOR-594).
 
-        Mirrors the latest reconnect-status callback payload; before any
-        status arrives it is derived from the radio's ``connected`` flag.
+        MOR-4821: supported live ``conn_state`` values take precedence over
+        cached reconnect callbacks. In particular, serial CONNECTING and
+        RECONNECTING agree with the health verdict. Other phases and backends
+        can still have different connection and health projections. The cached
+        callback payload is used only when its state still matches live; its
+        ``attempt`` /
+        ``next_retry_seconds`` detail is dropped the moment it goes stale
+        rather than masking the live state.
         """
+        live = _conn_state_value(self._radio)
+        if live == "connecting":
+            # Same mapping health applies: a held or opening link reads
+            # as reconnecting on both surfaces.
+            live = "reconnecting"
         status = self._connection_status
-        if status is not None:
+        if status is not None and (live is None or status.get("state") == live):
             return dict(status)
+        if live in ("connected", "reconnecting", "disconnected"):
+            return {"state": live, "attempt": 0, "next_retry_seconds": None}
         radio = self._radio
         connected = (
             bool(getattr(radio, "connected", False)) if radio is not None else False

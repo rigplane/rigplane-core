@@ -35,7 +35,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
@@ -107,6 +107,7 @@ from ..core.radio_protocol import (
     RelativeVfoFrequencyWritable,
     RelativeVfoReadbackCapable,
 )
+from ..core.radio_transport import RadioTransport, control_transport_of
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_store import FreshnessState, StateSnapshot, StateStore
 from ..core.tx_target import (
@@ -1715,6 +1716,7 @@ class RadioPoller:
 
     async def _run(self) -> None:
         _backoff = 0.0
+        _closed_pause = False
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
 
         def entries_for_turn() -> Iterator[CommandQueueEntry]:
@@ -1833,14 +1835,49 @@ class RadioPoller:
                             )
                     await asyncio.sleep(self._adaptive_gap())
 
+                # Keep the disconnected log and paced probes even when the
+                # acquisition drain can suppress sends without raising an error.
+                if not self._transport_open_for_acquisition():
+                    _backoff = max(_backoff, 0.5)
+                    if not _closed_pause:
+                        _closed_pause = True
+                        logger.info(
+                            "radio-poller: radio disconnected, backing off %.1fs",
+                            _backoff,
+                        )
+                elif _closed_pause:
+                    _closed_pause = False
+                    # Errors while the transport was closed must not keep an
+                    # open link behind the old readiness-based error backoff.
+                    _backoff = 0.0
+
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
-                    await asyncio.sleep(_backoff)
+                    if _closed_pause:
+                        # A timer may fire just before its deadline. One outer
+                        # timeout avoids rearming that same near-zero remainder.
+                        try:
+                            async with asyncio.timeout(_backoff):
+                                while (
+                                    not self._queue.has_commands
+                                    and not self._transport_open_for_acquisition()
+                                ):
+                                    await self._queue.wait(timeout=self._fast_interval)
+                        except TimeoutError:
+                            pass
+                        if (
+                            self._queue.has_commands
+                            or self._transport_open_for_acquisition()
+                        ):
+                            continue
+                    else:
+                        await asyncio.sleep(_backoff)
                     # Still try one query to detect reconnection
                     try:
                         await self._send_query()
                         if (
-                            getattr(self._radio, "connected", False) is not True
+                            not self._transport_open_for_acquisition()
+                            or getattr(self._radio, "connected", False) is not True
                             or getattr(self._radio, "radio_ready", False) is not True
                         ):
                             _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
@@ -1851,6 +1888,8 @@ class RadioPoller:
                         _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         continue
                     except Exception:
+                        if _closed_pause:
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
                         continue
 
                 # 2. Send fast meter query
@@ -3550,6 +3589,23 @@ class RadioPoller:
             pending_request_count=pending_request_count,
         )
 
+    def _transport_open_for_acquisition(self) -> bool:
+        """Apply the closed-control-transport pause only to serial backends."""
+        if control_transport_of(self._radio) is not RadioTransport.SERIAL:
+            return True
+        control = getattr(self._radio, "control_connected", None)
+        if isinstance(control, bool):
+            return control
+        return getattr(self._radio, "connected", True) is not False
+
+    def _dispatchable_acquisition_requests(
+        self, pending: Sequence[AcquisitionRequest]
+    ) -> Sequence[AcquisitionRequest]:
+        """Filter acquisition while a serial control transport is closed."""
+        if not self._transport_open_for_acquisition():
+            return []
+        return pending
+
     def _state_acquisition_drain(self) -> AcquisitionDrain:
         """Return this seat's drain, built on first use.
 
@@ -3571,7 +3627,7 @@ class RadioPoller:
                 store=lambda: self._state_store,
                 in_flight=self._acquisition_in_flight,
                 expired=self._acquisition_request_expired,
-                dispatchable=lambda pending: pending,
+                dispatchable=self._dispatchable_acquisition_requests,
                 report_failure=self._record_acquisition_failure,
                 report_executor_missing=self._report_acquisition_executor_missing,
                 report_executor_error=self._report_acquisition_executor_error,
