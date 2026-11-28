@@ -7,8 +7,12 @@ link-quality signals (client-reported ``underruns`` + server-side
 dwell; with the flag OFF (the default) a client's codec must NEVER
 change mid-stream — exactly the static MOR-584 per-connection choice.
 
-Deterministic: the controller clock is injected (``_FakeClock``) — no
-test sleeps through the real 3 s / 10 s / 30 s windows.
+Deterministic: the controller clock is the shared ``VirtualClock``
+(``rigplane.testing.timing``) injected through the broadcaster's
+``_adaptive_monotonic`` seam — no test sleeps through the real 3 s /
+10 s / 30 s windows. Relay delivery and fire-and-forget ``audio_format``
+acks are real loop events awaited with ``await_until``, never wall-time
+``asyncio.sleep``.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from rigplane.audio_bus import AudioBus
 from rigplane.radio_protocol import AudioCapable
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster, AudioHandler
 from rigplane.web.handlers.audio import CLEAN_WINDOW_S, DEGRADE_WINDOW_S, DWELL_S
@@ -33,19 +38,6 @@ from rigplane.ws import WebSocketConnection
 
 # 20 ms @ 48 kHz mono s16le.
 PCM_PAYLOAD = b"\x01\x02" * 960
-
-
-class _FakeClock:
-    """Injected monotonic clock — drives windows/dwell without sleeping."""
-
-    def __init__(self, start: float = 1000.0) -> None:
-        self.now = start
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
 
 
 class _FakeTranscoder:
@@ -80,26 +72,52 @@ def _make_ws() -> MagicMock:
 
 
 def _make_adaptive(
-    radio: Any, clock: _FakeClock | None = None
-) -> tuple[AudioBroadcaster, _FakeClock]:
-    clock = clock or _FakeClock()
+    radio: Any, clock: VirtualClock | None = None
+) -> tuple[AudioBroadcaster, VirtualClock]:
+    clock = clock or VirtualClock(start=1000.0)
     broadcaster = AudioBroadcaster(radio, adaptive_egress=True)
     broadcaster._adaptive_monotonic = clock
     return broadcaster, clock
 
 
-async def _inject(bus: AudioBus, payload: bytes = PCM_PAYLOAD, count: int = 1) -> None:
+async def _inject(
+    bus: AudioBus,
+    handler: AudioHandler,
+    payload: bytes = PCM_PAYLOAD,
+    count: int = 1,
+) -> None:
+    """Feed ``count`` radio packets and wait for the relay loop to fan them out.
+
+    The relay counter ``broadcaster._seq`` advances once per processed
+    packet even when the bounded per-client queue evicts, so it — not the
+    queue depth — is the deterministic delivery signal. Any adaptive
+    switch the relay iterations fired settles its fire-and-forget
+    ``audio_format`` ack before returning.
+    """
+    broadcaster = handler._broadcaster
+    seq = broadcaster._seq
     for _ in range(count):
         pkt = MagicMock()
         pkt.data = payload
         bus._on_opus_packet(pkt)
-    await asyncio.sleep(0.1)
+    await await_until(
+        lambda: broadcaster._seq >= seq + count,
+        description="relay loop to fan out the injected frames",
+    )
+    await await_until(
+        lambda: not broadcaster._ack_tasks,
+        description="adaptive audio_format ack delivery",
+    )
 
 
 async def _report(handler: AudioHandler, underruns: int) -> None:
     await handler._handle_control({"type": "audio_stats", "underruns": underruns})
-    # Let a fire-and-forget audio_format ack task (if any) run.
-    await asyncio.sleep(0)
+    # The controller decision above is synchronous; the audio_format ack
+    # a switch emits is a fire-and-forget task — wait for the real send.
+    await await_until(
+        lambda: not handler._broadcaster._ack_tasks,
+        description="adaptive audio_format ack delivery",
+    )
 
 
 def _acks(ws: MagicMock) -> list[dict[str, Any]]:
@@ -120,7 +138,7 @@ _TRANSCODER_PATCH = "rigplane.web.handlers.audio.create_pcm_opus_transcoder"
 
 
 async def _degrade_to_opus(
-    handler: AudioHandler, clock: _FakeClock, *, underruns_from: int = 0
+    handler: AudioHandler, clock: VirtualClock, *, underruns_from: int = 0
 ) -> int:
     """Drive sustained degradation past DEGRADE_WINDOW_S; return underruns."""
     underruns = underruns_from + 1
@@ -145,7 +163,7 @@ class TestAdaptiveDegrade:
         ws = _make_ws()
         handler = AudioHandler(ws, radio, broadcaster)
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-        await _inject(bus)
+        await _inject(bus, handler)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
@@ -164,7 +182,7 @@ class TestAdaptiveDegrade:
         with patch(_TRANSCODER_PATCH, return_value=_FakeTranscoder()):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
             await _degrade_to_opus(handler, clock)
-            await _inject(bus)
+            await _inject(bus, handler)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_OPUS, (
@@ -193,7 +211,7 @@ class TestAdaptiveDegrade:
             await _report(handler, 3)
             clock.advance(DEGRADE_WINDOW_S - 2.0 + 0.1)
             await _report(handler, 3)
-            await _inject(bus)
+            await _inject(bus, handler)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_OPUS
@@ -213,7 +231,7 @@ class TestAdaptiveDegrade:
         await _report(handler, 2)
         clock.advance(DEGRADE_WINDOW_S)
         await _report(handler, 2)
-        await _inject(bus)
+        await _inject(bus, handler)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
@@ -231,10 +249,10 @@ class TestAdaptiveDegrade:
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
 
         for _ in range(4):
-            await _inject(bus)
+            await _inject(bus, handler)
             clock.advance(DEGRADE_WINDOW_S / 4)
         clock.advance(DEGRADE_WINDOW_S)
-        await _inject(bus)
+        await _inject(bus, handler)
 
         state = broadcaster._client_adaptive[id(handler._frame_queue)]
         assert state.codec == AUDIO_CODEC_PCM16
@@ -254,7 +272,7 @@ class TestAdaptiveDegrade:
         await _report(handler, 1)  # clean — episode reset
         clock.advance(0.1)
         await _report(handler, 2)  # new episode, not yet sustained
-        await _inject(bus)
+        await _inject(bus, handler)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
@@ -286,7 +304,7 @@ class TestAdaptiveDegrade:
             # Nobody drains the queue: each relay iteration past the
             # watermark evicts-oldest and increments ws_queue_drops.
             for _ in range(10):
-                await _inject(bus)
+                await _inject(bus, handler)
                 clock.advance(0.5)
 
         state = broadcaster._client_adaptive[id(handler._frame_queue)]
@@ -306,12 +324,12 @@ class TestAdaptiveUpgrade:
         with patch(_TRANSCODER_PATCH, return_value=_FakeTranscoder()):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
             underruns = await _degrade_to_opus(handler, clock)
-            await _inject(bus)  # encodes one Opus frame → encoder exists
+            await _inject(bus, handler)  # encodes one Opus frame → encoder exists
             assert len(broadcaster._client_opus_transcoders) == 1
 
             clock.advance(CLEAN_WINDOW_S)
             await _report(handler, underruns)  # unchanged counters = clean
-            await _inject(bus)
+            await _inject(bus, handler)
 
         assert _drain_codecs(handler)[-1] == AUDIO_CODEC_PCM16, (
             "a fully clean CLEAN_WINDOW_S must restore PCM16"
@@ -333,7 +351,7 @@ class TestAdaptiveUpgrade:
 
             clock.advance(CLEAN_WINDOW_S - 1.0)
             await _report(handler, underruns)
-            await _inject(bus)
+            await _inject(bus, handler)
 
         assert _drain_codecs(handler)[-1] == AUDIO_CODEC_OPUS
 
@@ -361,7 +379,7 @@ class TestAdaptiveDwell:
                 underruns += 1
                 await _report(handler, underruns)
             assert clock.now - switch_at < DWELL_S
-            await _inject(bus)
+            await _inject(bus, handler)
             assert _drain_codecs(handler)[-1] == AUDIO_CODEC_PCM16, (
                 "a switch within DWELL_S of the previous one is flapping"
             )
@@ -371,7 +389,7 @@ class TestAdaptiveDwell:
                 clock.advance(1.5)
                 underruns += 1
                 await _report(handler, underruns)
-            await _inject(bus)
+            await _inject(bus, handler)
             assert _drain_codecs(handler)[-1] == AUDIO_CODEC_OPUS
 
 
@@ -384,7 +402,7 @@ class TestAdaptiveExemptions:
         handler = AudioHandler(_make_ws(), radio, broadcaster)
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_PCM16)
         await _degrade_to_opus(handler, clock)
-        await _inject(bus)
+        await _inject(bus, handler)
 
         assert broadcaster._client_adaptive == {}
         assert broadcaster._client_opus_transcoders == {}
@@ -398,7 +416,7 @@ class TestAdaptiveExemptions:
         handler = AudioHandler(_make_ws(), radio, broadcaster)
         await handler._start_rx()
         await _degrade_to_opus(handler, clock)
-        await _inject(bus)
+        await _inject(bus, handler)
 
         assert broadcaster._client_adaptive == {}
         assert _drain_codecs(handler) == [AUDIO_CODEC_PCM16]
@@ -412,7 +430,7 @@ class TestAdaptiveExemptions:
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
         await _degrade_to_opus(handler, clock)
         opus_payload = b"\x42" * 120
-        await _inject(bus, opus_payload)
+        await _inject(bus, handler, opus_payload)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_OPUS
@@ -427,15 +445,15 @@ class TestFlagOff:
         storm changes nothing, and no controller state exists."""
         radio, bus = _make_radio()
         broadcaster = AudioBroadcaster(radio)
-        clock = _FakeClock()
+        clock = VirtualClock(start=1000.0)
         broadcaster._adaptive_monotonic = clock
         ws = _make_ws()
         handler = AudioHandler(ws, radio, broadcaster)
         with patch(_TRANSCODER_PATCH, return_value=_FakeTranscoder()):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-            await _inject(bus)
+            await _inject(bus, handler)
             await _degrade_to_opus(handler, clock)
-            await _inject(bus)
+            await _inject(bus, handler)
 
         assert _drain_codecs(handler) == [AUDIO_CODEC_OPUS, AUDIO_CODEC_OPUS]
         assert broadcaster._client_adaptive == {}
@@ -446,14 +464,14 @@ class TestFlagOff:
     async def test_flag_off_pcm16_client_never_switches(self) -> None:
         radio, bus = _make_radio()
         broadcaster = AudioBroadcaster(radio)
-        clock = _FakeClock()
+        clock = VirtualClock(start=1000.0)
         broadcaster._adaptive_monotonic = clock
         broadcaster.HIGH_WATERMARK = 2
         handler = AudioHandler(_make_ws(), radio, broadcaster)
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_PCM16)
         await _degrade_to_opus(handler, clock)
         for _ in range(8):  # server-side congestion signal too
-            await _inject(bus)
+            await _inject(bus, handler)
             clock.advance(1.0)
 
         assert set(_drain_codecs(handler)) == {AUDIO_CODEC_PCM16}
