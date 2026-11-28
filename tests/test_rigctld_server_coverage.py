@@ -29,6 +29,7 @@ from rigplane.testing.timing import VirtualClock, await_until
 # ---------------------------------------------------------------------------
 
 _FREQ_CMD = RigctldCommand(short_cmd="f", long_cmd="get_freq", is_set=False)
+_QUIT_CMD = RigctldCommand(short_cmd="q", long_cmd="quit", is_set=False)
 _FREQ_RESP = RigctldResponse(values=["14074000"], error=0)
 _RESPONSE_BYTES = b"14074000\nRPRT 0\n"
 _ERROR_BYTES_ENIMPL = b"RPRT -4\n"
@@ -55,6 +56,27 @@ async def _close(writer: asyncio.StreamWriter) -> None:
         await writer.wait_closed()
     except Exception:
         pass
+
+
+async def _read_bounded(
+    reader: asyncio.StreamReader, nbytes: int, description: str
+) -> bytes:
+    """Read a server response, failing (not hanging) when none arrives.
+
+    The response is a real socket event, so the wait uses a real deadline
+    via :func:`await_until`: a suppressed response fails the test within the
+    bound instead of parking it until an external watchdog fires.
+    """
+    task = asyncio.ensure_future(reader.read(nbytes))
+    try:
+        assert await await_until(
+            lambda: task.done(), timeout=5.0, description=description
+        )
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.wait({task})
 
 
 def _make_proto(
@@ -186,6 +208,9 @@ async def test_quit_command_closes_connection(
     server: RigctldServer, virtual_clock: VirtualClock
 ) -> None:
     """Sending 'q\\n' must close the connection cleanly."""
+    # The shared fixture's parser answers every line as a frequency read;
+    # route this test's line to the real quit branch instead.
+    server._protocol.parse_line.return_value = _QUIT_CMD
     reader, writer = await _connect(server)
     try:
         writer.write(b"q\n")
@@ -229,11 +254,15 @@ async def test_rate_limited_client_receives_eio(
         # First command — allowed
         writer.write(b"f\n")
         await writer.drain()
-        assert b"RPRT 0" in await reader.read(256)
+        assert b"RPRT 0" in await _read_bounded(
+            reader, 256, "the allowed command response"
+        )
         # Second command immediately — rate limited
         writer.write(b"f\n")
         await writer.drain()
-        assert b"RPRT -6" in await reader.read(256)
+        assert b"RPRT -6" in await _read_bounded(
+            reader, 256, "the rate-limited response"
+        )
     finally:
         await _close(writer)
         await srv.stop()
@@ -277,7 +306,9 @@ async def test_command_timeout_returns_etimeout(
             lambda: started.is_set(), timeout=5.0, description="the slow command start"
         )
         await virtual_clock.elapse(0.2)
-        assert b"RPRT -5" in await reader.read(256)
+        assert b"RPRT -5" in await _read_bounded(
+            reader, 256, "the command-timeout response"
+        )
     finally:
         await _close(writer)
         await srv.stop()
@@ -300,7 +331,9 @@ async def test_generic_parse_error_returns_eproto(
         reader, writer = await _connect(srv)
         writer.write(b"f\n")
         await writer.drain()
-        assert b"RPRT -8" in await reader.read(256)  # EPROTO
+        assert b"RPRT -8" in await _read_bounded(  # EPROTO
+            reader, 256, "the parse-error response"
+        )
     finally:
         await _close(writer)
         await srv.stop()
@@ -324,7 +357,9 @@ async def test_handler_exception_returns_eio(
         reader, writer = await _connect(srv)
         writer.write(b"f\n")
         await writer.drain()
-        assert b"RPRT -6" in await reader.read(256)  # EIO
+        assert b"RPRT -6" in await _read_bounded(  # EIO
+            reader, 256, "the handler-error response"
+        )
     finally:
         await _close(writer)
         await srv.stop()
