@@ -5,11 +5,13 @@ of the rule that used to live in ``WebServer._bridge_tx_gate_open`` (MOR-2863):
 open only while the managed TX intent is keyed or a fresh observed PTT is
 exactly ON. Everything else — unknown or stale observation, no authority, a
 snapshot that cannot be read, a remote controller — closes the gate.
+
+Observation time comes from the shared virtual clock (MOR-4075): each store's
+freshness seam starts at the virtual now, so snapshot ages are exact with no
+wall-clock read.
 """
 
 from __future__ import annotations
-
-import time
 
 from test_managed_tx_web_projection import _gate_authority
 
@@ -17,23 +19,32 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.state_store import FreshnessClock, StateSnapshot, StateStore
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.runtime.controller_authority import ControllerAuthority
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
 from rigplane.runtime.tx_gate import tx_gate_open
+from rigplane.testing.timing import VirtualClock
 
 _SOURCE = SourceMetadata(source="test", provider="tests")
 
 
-def _store(value: object, *, age_seconds: float = 0.0) -> StateStore:
-    store = StateStore()
+def _store(
+    value: object, clock: VirtualClock, *, age_seconds: float = 0.0
+) -> StateStore:
+    """A store whose freshness seam starts at the virtual now (MOR-4075).
+
+    The observation is stamped ``age_seconds`` before that same instant, so
+    the snapshot age is exactly ``age_seconds`` with no wall-clock read.
+    """
+    store_clock = FreshnessClock(start=clock.now)
+    store = StateStore(freshness_clock=store_clock)
     store.apply_current(
         Observation(
             path=OBSERVED_PTT_PATH,
             value=value,
             source=_SOURCE,
-            timestamp_monotonic=time.monotonic() - age_seconds,
+            timestamp_monotonic=store_clock.now() - age_seconds,
             max_age=60.0,
         )
     )
@@ -57,47 +68,14 @@ class _ExplodingAuthority:
         raise RuntimeError("projection unreadable")
 
 
-async def test_gate_is_closed_when_unkeyed() -> None:
-    managed = _gate_authority()
-    try:
-        assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is False
-        )
-    finally:
-        await managed.close()
-
-
-async def test_gate_opens_while_the_managed_intent_is_keyed() -> None:
-    managed = _gate_authority()
-    try:
-        await managed.ptt_down("web")
-        assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is True
-        )
-        await managed.ptt_up("web")
-        assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is False
-        )
-    finally:
-        await managed.close()
-
-
-async def test_gate_opens_on_fresh_observed_ptt_on() -> None:
-    managed = _gate_authority()
-    try:
-        assert (
-            await tx_gate_open(managed, _store(ObservedPtt.ON), _controller()) is True
-        )
-    finally:
-        await managed.close()
-
-
-async def test_gate_is_closed_when_observation_is_stale() -> None:
+async def test_gate_is_closed_when_unkeyed(
+    virtual_clock: VirtualClock,
+) -> None:
     managed = _gate_authority()
     try:
         assert (
             await tx_gate_open(
-                managed, _store(ObservedPtt.ON, age_seconds=3600.0), _controller()
+                managed, _store(ObservedPtt.OFF, virtual_clock), _controller()
             )
             is False
         )
@@ -105,28 +83,96 @@ async def test_gate_is_closed_when_observation_is_stale() -> None:
         await managed.close()
 
 
-async def test_gate_is_closed_when_observation_is_unknown() -> None:
+async def test_gate_opens_while_the_managed_intent_is_keyed(
+    virtual_clock: VirtualClock,
+) -> None:
     managed = _gate_authority()
     try:
+        await managed.ptt_down("web")
         assert (
-            await tx_gate_open(managed, _store(ObservedPtt.UNKNOWN), _controller())
+            await tx_gate_open(
+                managed, _store(ObservedPtt.OFF, virtual_clock), _controller()
+            )
+            is True
+        )
+        await managed.ptt_up("web")
+        assert (
+            await tx_gate_open(
+                managed, _store(ObservedPtt.OFF, virtual_clock), _controller()
+            )
             is False
         )
     finally:
         await managed.close()
 
 
-async def test_gate_is_closed_without_an_authority() -> None:
-    assert await tx_gate_open(None, _store(ObservedPtt.ON), _controller()) is False
+async def test_gate_opens_on_fresh_observed_ptt_on(
+    virtual_clock: VirtualClock,
+) -> None:
+    managed = _gate_authority()
+    try:
+        assert (
+            await tx_gate_open(
+                managed, _store(ObservedPtt.ON, virtual_clock), _controller()
+            )
+            is True
+        )
+    finally:
+        await managed.close()
 
 
-async def test_gate_is_closed_when_the_remote_controller_holds() -> None:
+async def test_gate_is_closed_when_observation_is_stale(
+    virtual_clock: VirtualClock,
+) -> None:
+    managed = _gate_authority()
+    try:
+        assert (
+            await tx_gate_open(
+                managed,
+                _store(ObservedPtt.ON, virtual_clock, age_seconds=3600.0),
+                _controller(),
+            )
+            is False
+        )
+    finally:
+        await managed.close()
+
+
+async def test_gate_is_closed_when_observation_is_unknown(
+    virtual_clock: VirtualClock,
+) -> None:
+    managed = _gate_authority()
+    try:
+        assert (
+            await tx_gate_open(
+                managed, _store(ObservedPtt.UNKNOWN, virtual_clock), _controller()
+            )
+            is False
+        )
+    finally:
+        await managed.close()
+
+
+async def test_gate_is_closed_without_an_authority(
+    virtual_clock: VirtualClock,
+) -> None:
+    assert (
+        await tx_gate_open(None, _store(ObservedPtt.ON, virtual_clock), _controller())
+        is False
+    )
+
+
+async def test_gate_is_closed_when_the_remote_controller_holds(
+    virtual_clock: VirtualClock,
+) -> None:
     managed = _gate_authority()
     try:
         await managed.ptt_down("web")
         assert (
             await tx_gate_open(
-                managed, _store(ObservedPtt.OFF), _controller(remote=True)
+                managed,
+                _store(ObservedPtt.OFF, virtual_clock),
+                _controller(remote=True),
             )
             is False
         )
@@ -135,11 +181,13 @@ async def test_gate_is_closed_when_the_remote_controller_holds() -> None:
         await managed.close()
 
 
-async def test_gate_is_closed_when_the_projection_cannot_be_read() -> None:
+async def test_gate_is_closed_when_the_projection_cannot_be_read(
+    virtual_clock: VirtualClock,
+) -> None:
     assert (
         await tx_gate_open(
             _ExplodingAuthority(),
-            _store(ObservedPtt.ON),
+            _store(ObservedPtt.ON, virtual_clock),
             _controller(),
         )
         is False
