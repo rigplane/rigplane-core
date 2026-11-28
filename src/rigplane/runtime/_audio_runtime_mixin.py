@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress as _suppress
+from functools import cached_property
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -42,7 +43,6 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     # -- type stubs for attributes defined in CoreRadio.__init__ ---------
     _audio_transport: IcomTransport | None
     _audio_ensure_lock: asyncio.Lock
-    _audio_tx_admission_lock: asyncio.Lock
     _audio_stream: AudioStream | None
     _pcm_transcoder: PcmOpusTranscoder | None
     _pcm_transcoder_fmt: tuple[int, int, int] | None
@@ -61,6 +61,10 @@ class AudioRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _pcm_ingress_transcoder: PcmOpusTranscoder
     _pcm_ingress_transcoder_fmt: tuple[int, int, int]
     _pcm_ingress_opus_dead: bool
+
+    @cached_property
+    def _audio_tx_admission_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Neutral AudioTransport surface (MOR-532 epic, MOR-539)

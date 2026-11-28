@@ -2500,9 +2500,11 @@ class TestCivPacingIsSendToSend:
         original_send = mock_transport.send_tracked
         first_released = asyncio.Event()
 
-        async def gated_send(data: bytes) -> None:
+        async def gated_send(
+            data: bytes, *, is_current: Callable[[], bool] | None = None
+        ) -> None:
             starts.append(len(mock_transport.sent_packets))
-            await original_send(data)
+            await original_send(data, is_current=is_current)
             first_released.set()
 
         monkeypatch.setattr(mock_transport, "send_tracked", gated_send)
