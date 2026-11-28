@@ -227,34 +227,54 @@ class TestReconnect:
         assert radio._reconnect_task.done()
 
     @pytest.mark.asyncio
-    async def test_reconnect_increments_delay(self, radio: IcomRadio) -> None:
+    async def test_reconnect_increments_delay(
+        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Reconnect should use exponential backoff."""
-        # The reconnect will fail (no real radio), but we verify it tries:
-        # the first attempt's status is emitted before any network I/O, so
-        # waiting for it costs no wall time and proves the loop is trying.
+        from rigplane.runtime import radio_reconnect
+
+        # Backoff sleeps live in the reconnect module: point them at the
+        # shared virtual clock so repeated retries cost no wall time, and
+        # fail connect() deterministically so no real socket is touched.
+        clock = VirtualClock(start=1000.0)
+        clock.scope_to(monkeypatch, radio_reconnect)
         statuses: list[dict[str, Any]] = []
         radio.set_reconnect_status_callback(statuses.append)
         radio._connected = False
         radio._intentional_disconnect = False
-        radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
-        await await_until(
-            lambda: len(statuses) >= 1,
-            timeout=5.0,
-            description="reconnect loop emits its first attempt",
-        )
-        # Should still be trying (not connected, not intentional)
-        task = radio._reconnect_task
-        assert task is not None
-        assert not task.done()
-        assert statuses[0]["state"] == "reconnecting"
-        assert statuses[0]["attempt"] == 1
-        radio._intentional_disconnect = True
-        radio._control_phase._stop_reconnect()
-        await await_until(
-            task.done,
-            timeout=5.0,
-            description="reconnect task ends after the intentional stop",
-        )
+        with patch.object(
+            radio, "connect", new_callable=AsyncMock, side_effect=OSError("no radio")
+        ) as mock_connect:
+            radio._reconnect_task = asyncio.create_task(radio._reconnect_loop())
+            await await_until(
+                lambda: mock_connect.await_count >= 5,
+                timeout=5.0,
+                description="reconnect loop retries with backoff",
+            )
+            # Should still be trying (not connected, not intentional)
+            task = radio._reconnect_task
+            assert task is not None
+            assert not task.done()
+            assert statuses[0]["state"] == "reconnecting"
+            assert statuses[0]["attempt"] == 1
+            assert [s["attempt"] for s in statuses[:5]] == [1, 2, 3, 4, 5]
+            assert all(s["state"] == "reconnecting" for s in statuses[:5])
+            # Backoff grows exponentially (0.1 -> 0.2 -> 0.4) then pins at
+            # the radio's reconnect_max_delay cap (0.5).
+            assert clock.sleeps[0] == pytest.approx(radio._reconnect_delay)
+            assert clock.sleeps[1] == pytest.approx(radio._reconnect_delay * 2)
+            assert clock.sleeps[2] == pytest.approx(radio._reconnect_delay * 4)
+            assert clock.sleeps[1] > clock.sleeps[0]
+            assert clock.sleeps[2] > clock.sleeps[1]
+            assert clock.sleeps[3] == pytest.approx(radio._reconnect_max_delay)
+            assert all(d <= radio._reconnect_max_delay for d in clock.sleeps)
+            radio._intentional_disconnect = True
+            radio._control_phase._stop_reconnect()
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="reconnect task ends after the intentional stop",
+            )
 
 
 class TestReconnectLifecycleRelease:
