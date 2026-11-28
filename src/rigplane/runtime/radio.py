@@ -817,7 +817,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # within one attempt.  A second 45/60 s lifecycle backoff per attempt
             # would double-count that wait and stall the fast-recovery poller /
             # direct ``soft_reconnect()`` callers.  The lifecycle still owns the
-            # attempt COUNT + exhaustion → CLOSING + release (single owner); only
+            # attempt COUNT + exhaustion → full LAN login (single owner); only
             # the inter-attempt sleep is collapsed.  The longer-lived Pro service
             # constructs the lifecycle with the default ``_RECONNECT_BACKOFF``.
             recovery_backoff_s=(0.0, 0.0, 0.0),
@@ -2084,7 +2084,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         owner of recovery policy: the per-attempt primitive
         (``soft_reconnect_once`` = control + token reused; raises on failure),
         the N-attempt count (``_MAX_RECONNECTS``), the backoff
-        (``_RECONNECT_BACKOFF``), and exhaustion → CLOSING + full release.
+        (``_RECONNECT_BACKOFF``), and escalation to a fresh LAN login.
 
         The CI-V data watchdog (``_civ_rx.py``) remains the stall DETECTOR: it
         watches CI-V data flow, sends patient OpenClose nudges, and on patience

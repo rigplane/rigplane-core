@@ -598,21 +598,13 @@ async def test_recovery_exhaustion_closes_and_releases() -> None:
 
 
 # ---------------------------------------------------------------------------
-# MOR-3350 P1 — a preempted recovery tail must not cancel unrelated waiters
+# MOR-3350 / MOR-4930 — preserve coalesced callers through recovery
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("superseded", [True, False])
 async def test_coalesced_waiters_on_a_cancelled_recovery(superseded: bool) -> None:
-    """MOR-3350 P1: callers coalesced onto a cancelled recovery run.
-
-    Two callers share one ``_run_recover`` run. When a preempting replacement
-    supersedes it (``supersede_recovery``), neither caller was cancelled, so
-    both get ``RigplaneConnectionError("session recovery was superseded")``
-    rather than a foreign ``CancelledError`` that reads as their own
-    cancellation. A plain cancel of the shared run (the teardown path) is not
-    marked: callers keep ``CancelledError``.
-    """
+    """Both callers wait through queued FULL or observe an owner cancellation."""
     lc, mech, _events = make_lifecycle()
     mech.queue_ok()
     await lc.connect()
@@ -634,14 +626,28 @@ async def test_coalesced_waiters_on_a_cancelled_recovery(superseded: bool) -> No
         assert len(lc._recovery_waiters) == 2
 
         if superseded:
-            lc.supersede_recovery()
-            expected: type[BaseException] = ConnectionError
+            owner = lc._recover_task
+            entered_full = asyncio.Event()
+            finish_full = asyncio.Event()
+
+            async def full() -> bool:
+                assert asyncio.current_task() is owner
+                entered_full.set()
+                await finish_full.wait()
+                return True
+
+            lc._full_reconnect_once = full
+            assert lc.request_full_recovery()
+            release.set()
+            await entered_full.wait()
+            assert not first.done() and not second.done()
+            finish_full.set()
+            await asyncio.gather(first, second)
         else:
             lc._recover_task.cancel()
-            expected = asyncio.CancelledError
-        for caller in (first, second):
-            with pytest.raises(expected):
-                await caller
+            for caller in (first, second):
+                with pytest.raises(asyncio.CancelledError):
+                    await caller
     finally:
         release.set()
         await asyncio.gather(first, second, return_exceptions=True)

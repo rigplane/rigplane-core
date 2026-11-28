@@ -26,7 +26,8 @@ class _Transport:
             self.events.append("token-remove")
 
     async def disconnect(self) -> None:
-        self.events.append(f"{self.label}-close")
+        if self._udp_transport is not None:
+            self.events.append(f"{self.label}-close")
         self._udp_transport = None
 
 
@@ -38,6 +39,13 @@ def _radio(events: list[str]) -> CoreRadio:
     radio._token = 1
     radio._session_lifecycle._max_recovery_attempts = 1
     radio._session_lifecycle._recovery_backoff_s = (0.0,)
+
+    async def failed_login() -> None:
+        assert radio._ctrl_transport._udp_transport is None
+        assert radio._ctrl_transport.remote_id == 0
+        raise ConnectionError("injected FULL login failure")
+
+    radio._control_phase._connect_once = failed_login
     return radio
 
 
@@ -100,7 +108,7 @@ async def test_previous_waiter_cleanup_preserves_the_next_recovery(
 
 
 @pytest.mark.timeout(10)
-async def test_exhaustion_cancels_watchdog_that_has_not_joined_recovery(
+async def test_full_escalation_cancels_watchdog_that_has_not_joined_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     radio = _radio([])
@@ -118,36 +126,37 @@ async def test_exhaustion_cancels_watchdog_that_has_not_joined_recovery(
             await exhaust.wait()
             raise ConnectionError("injected recovery exhaustion")
 
-    real_cleanup = radio._force_cleanup_civ
+    real_recover = radio.soft_reconnect
 
     async def pause_before_join() -> None:
-        await real_cleanup()
         cleanup_paused.set()
         await resume_cleanup.wait()
+        await real_recover()
 
     async def parked_watchdog() -> None:
         await asyncio.Event().wait()
 
     monkeypatch.setattr(lifecycle._mech, "soft_reconnect_once", fail_first_attempt)
-    monkeypatch.setattr(radio, "_force_cleanup_civ", pause_before_join)
     monkeypatch.setattr(radio._civ_runtime, "_civ_data_watchdog_loop", parked_watchdog)
     direct = asyncio.create_task(radio.soft_reconnect())
     await entered.wait()
+    monkeypatch.setattr(radio, "soft_reconnect", pause_before_join)
     watchdog = asyncio.create_task(radio._civ_runtime._watchdog_recover())
     radio._civ_runtime._reconnect_task = watchdog
     try:
         await cleanup_paused.wait()
         exhaust.set()
-        with pytest.raises(ConnectionError, match="Soft reconnect exhausted"):
+        with pytest.raises(ConnectionError, match="injected FULL login failure"):
             await direct
         resume_cleanup.set()
         with suppress(asyncio.CancelledError):
             await watchdog
         assert watchdog.cancelled()
         assert len(attempts) == 1
-        assert lifecycle.state is LifecycleState.DISCONNECTED
+        assert lifecycle.state is LifecycleState.RECOVERING
         assert radio._civ_runtime._reconnect_task is None
-        assert radio._civ_data_watchdog_task is None
+        assert radio._civ_data_watchdog_task is not None
+        assert not radio._civ_data_watchdog_task.done()
         assert lifecycle._recovery_waiters == {}
     finally:
         for task in (direct, watchdog):
@@ -218,7 +227,7 @@ async def test_watchdog_joining_existing_recovery_finishes_release(
         assert outcomes[1] is None
         assert attempts == [shared_recovery]
         assert events == ["civ-close", "token-remove", "control-close"]
-        assert lifecycle.state is LifecycleState.DISCONNECTED
+        assert lifecycle.state is LifecycleState.RECOVERING
         assert watchdog.done() and not watchdog.cancelled()
         assert radio._civ_runtime._reconnect_task is None
         assert lifecycle._recover_task is None
@@ -291,8 +300,8 @@ async def test_registered_watchdog_exhaustion_finishes_release(
             await task
         assert violations == []
         assert events == ["civ-close", "token-remove", "control-close"]
-        assert lifecycle.state is LifecycleState.DISCONNECTED
-        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        assert lifecycle.state is LifecycleState.RECOVERING
+        assert radio._conn_state is RadioConnectionState.RECONNECTING
         assert task.done() and not task.cancelled()
         assert radio._civ_runtime._reconnect_task is None
         assert lifecycle._recover_task is None

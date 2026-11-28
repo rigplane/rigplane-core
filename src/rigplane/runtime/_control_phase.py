@@ -22,6 +22,7 @@ from ._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError, ConnectionError, TimeoutError
 from ._audio_recovery import AudioRecoveryState
 from .startup_checks import wait_for_radio_startup_ready
+from .session_lifecycle import LifecycleState
 from rigplane.core.transport import ConnectionState, IcomTransport
 from rigplane.core.types import AudioCodec
 from rigplane.audio.route import AudioConfigSource
@@ -533,6 +534,8 @@ class ControlPhaseRuntime:
         civ_rt = getattr(h, "_civ_runtime", None)
         if civ_rt is not None:
             civ_rt.advance_generation("connect")
+            if h._session_lifecycle.state is LifecycleState.RECOVERING:
+                civ_rt._soft_recovery_epoch = h._civ_epoch
         else:
             h._advance_civ_generation("connect")
         h._civ_last_waiter_gc_monotonic = time.monotonic()
@@ -951,7 +954,8 @@ class ControlPhaseRuntime:
                 with _suppress(Exception):
                     await h._ctrl_transport.disconnect()
             await self._connect_once()
-            await self._after_reconnect_parts(audio_runtime, audio_snapshot)
+            if not h._session_lifecycle.full_recovery_pending:
+                await self._after_reconnect_parts(audio_runtime, audio_snapshot)
             return
 
         h._conn_state = RadioConnectionState.CONNECTING
@@ -1643,19 +1647,22 @@ class ControlPhaseSessionMechanism:
     async def full_reconnect_once(self) -> bool:
         """Renew the LAN login without releasing the managed-TX supervisor."""
         h = self._cp._host
+        audio = getattr(h, "_audio_runtime", None)
+        snapshot = audio.capture_snapshot() if audio is not None else None
         h._conn_state = RadioConnectionState.RECONNECTING
         h._ctrl_transport._conninfo_notice_callback = None
         await self._cp.release()
-        h._ctrl_transport.remote_id = 0
+        h._token = h._ctrl_transport.remote_id = 0
         try:
-            await self._cp.soft_reconnect()
+            await self._cp._connect_once()
+            await self._cp._after_reconnect_parts(audio, snapshot)
         except Exception:
             await self._cp.release()
+            h._token = 0
             h._conn_state = RadioConnectionState.RECONNECTING
             h._civ_runtime.start_data_watchdog()
+            logger.exception("LAN full recovery failed; CI-V watchdog will retry")
             raise
-        if not h._civ_stream_ready:
-            h._civ_runtime._soft_recovery_epoch = h._civ_epoch
         return h.radio_ready
 
     async def soft_reconnect_once(self) -> None:

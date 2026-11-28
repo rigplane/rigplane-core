@@ -1556,8 +1556,7 @@ class CivRuntime:
         The retry/backoff/exhaustion LADDER no longer lives here: it moved to
         the unified lifecycle RECOVERING loop
         (``CoreRadioSessionLifecycle._run_recover``), which owns the attempt
-        count (``_MAX_RECONNECTS``), the backoff (``_RECONNECT_BACKOFF``), and
-        exhaustion → CLOSING + full release. The detached handoff drives
+        count, backoff and escalation to a full LAN login. The detached handoff drives
         ``host.soft_reconnect()`` (now routed to that lifecycle loop) ONCE per
         detected stall episode and then unconditionally re-arms this watchdog in
         ``finally`` so a later stall is detected again (#1217).
@@ -1599,13 +1598,17 @@ class CivRuntime:
                     else _CIV_DATA_WATCHDOG_TIMEOUT / 2
                 )
 
+                lifecycle = self._host._session_lifecycle
                 if (
+                    lifecycle.full_recovery_pending
+                    and lifecycle.state is LifecycleState.CONNECTED
+                ) or (
                     self._host._conn_state is RadioConnectionState.RECONNECTING
-                    and self._host._session_lifecycle.state is LifecycleState.RECOVERING
+                    and lifecycle.state is LifecycleState.RECOVERING
                     and self._host._ctrl_transport._udp_transport is None
-                    and self.request_recovery_now("retry after full reconnect failure")
                 ):
-                    return
+                    if self.request_recovery_now("full recovery still pending"):
+                        return
 
                 now = time.monotonic()
                 if last_rx_advance is None:
@@ -1665,7 +1668,11 @@ class CivRuntime:
                         logged_rx = rx_count if rx_count is not None else -1
                         q_size = civ_t._packet_queue.qsize() if civ_t else -1
                         evidence = (
-                            "port silent" if port_silent else "queries unanswered"
+                            "readiness unrestored"
+                            if unfinished
+                            else (
+                                "port silent" if port_silent else "queries unanswered"
+                            )
                         )
                         logger.warning(
                             "civ-data-watchdog: no CI-V data for %.1fs, "
@@ -1789,11 +1796,10 @@ class CivRuntime:
     def request_recovery_now(self, reason: str) -> bool:
         """Record FULL even while SOFT is running or the detector is nudging."""
         host = self._host
-        state = host._conn_state
-        if state not in (
-            RadioConnectionState.CONNECTED,
-            RadioConnectionState.CONNECTING,
-            RadioConnectionState.RECONNECTING,
+        state = host._session_lifecycle.state
+        if state is LifecycleState.CLOSING or (
+            host._conn_state is not RadioConnectionState.CONNECTED
+            and state is not LifecycleState.RECOVERING
         ):
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): state=%s", reason, state
@@ -1809,7 +1815,6 @@ class CivRuntime:
     async def _watchdog_recover(self) -> None:
         """Hand the detected stall to the session's recovery owner."""
         escalate = self._soft_recovery_epoch == self._host._civ_epoch
-        self._soft_recovery_epoch = None
         cancelled = False
         try:
             if escalate:
@@ -1848,9 +1853,8 @@ class CivRuntime:
         try:
             self.start_data_watchdog()
         except Exception:
-            logger.debug(
+            logger.exception(
                 "civ-data-watchdog: re-arm after recovery failed",
-                exc_info=True,
             )
 
     def _ensure_civ_runtime(self) -> None:
@@ -1955,9 +1959,13 @@ class CivRuntime:
                             continue
                     now = time.monotonic()
                     if (
-                        frames
-                        and source_generation == self._host._civ_epoch
+                        source_generation == self._host._civ_epoch
                         and receiving_transport is self._host._civ_transport
+                        and any(
+                            frame.from_addr == self._host._radio_addr
+                            and frame.to_addr in (CONTROLLER_ADDR, 0)
+                            for _, frame in frames
+                        )
                     ):
                         self._host._last_civ_data_received = now
                         self._soft_recovery_epoch = None

@@ -27,6 +27,7 @@ from rigplane.runtime import (
     _control_phase,
     managed_radio_runtime,
     radio as radio_module,
+    session_lifecycle,
 )
 from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.session_lifecycle import LifecycleState
@@ -122,7 +123,9 @@ class Link:
             radio._civ_data_watchdog_task,
         )
         covered = any(task is not None and not task.done() for task in tasks)
-        if stopped or not covered:
+        if stopped:
+            assert not covered
+        if stopped or not covered or radio.radio_ready:
             assert not radio._civ_recovering
         if not stopped:
             assert covered, "recovery exited with neither a live owner nor a watchdog"
@@ -160,7 +163,7 @@ class Civ(ConnectMockTransport):
                 transport._raw_send = lambda _: self.link.soft_discoveries.append(
                     (self.link.clock.now, asyncio.current_task())
                 )
-                await transport._discover(**kwargs)
+                await transport._discover()
         elif isinstance(sock, _FakeSocket):
             sock.close()
         await super().connect(host, port, local_host=local_host, local_port=local_port)
@@ -201,7 +204,13 @@ async def link(
     monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> AsyncIterator[Link]:
     clock = virtual_clock
-    for module in (_civ_rx, _control_phase, radio_module, managed_radio_runtime):
+    for module in (
+        _civ_rx,
+        _control_phase,
+        radio_module,
+        managed_radio_runtime,
+        session_lifecycle,
+    ):
         clock.scope_to(monkeypatch, module)
         monkeypatch.setattr(module, "asyncio", asyncio)
     monkeypatch.setattr(
@@ -303,29 +312,6 @@ async def test_session_free_during_join_restores_readiness(
         await asyncio.gather(soft, return_exceptions=True)
 
 
-async def test_full_request_tightens_soft_deadline_and_reuses_owner(link: Link) -> None:
-    link.stale = True
-    await link.clock.elapse(5.1)
-    soft = asyncio.create_task(link.radio.soft_reconnect())
-    try:
-        await link.clock.elapse(0.25)
-        assert link.soft_discoveries
-        owner = link.soft_discoveries[0][1]
-        request_at = link.clock.now
-        link.control.notice()
-        await link.clock.elapse(2.01)
-        assert link.control.logins == [owner]
-        assert all(t < request_at + 2 for t, _ in link.soft_discoveries)
-        await link.clock.elapse(2)
-        assert soft.done() and not soft.cancelled()
-        soft.result()
-        link.assert_recovery_exit()
-    finally:
-        if not soft.done():
-            soft.cancel()
-        await asyncio.gather(soft, return_exceptions=True)
-
-
 async def test_reboot_hold_writes_ptt_off_within_14_seconds_of_reboot(
     link: Link,
 ) -> None:
@@ -346,15 +332,23 @@ async def test_reboot_hold_writes_ptt_off_within_14_seconds_of_reboot(
     try:
         await link.clock.elapse(0.2)
         assert link.soft_discoveries
+        owner = link.soft_discoveries[0][1]
+        assert owner is radio._session_lifecycle._recover_task
         link.control.notice()
         link.control.down = True
         await link.clock.elapse(1.5)
+        assert not repair.done() and not link.control.logins
+        assert radio._session_lifecycle._recover_task is owner
         link.control.down = False
         answers_at = link.clock.now
         await link.clock.elapse(14.0)
+        assert link.control.logins == [owner]
+        assert repair.done() and not repair.cancelled()
+        repair.result()
         assert radio._managed_tx_runtime is tx
         off_writes = [t for t, on in link.ptt_writes if not on and t >= answers_at]
         assert off_writes and off_writes[0] - answers_at <= 14.0
+        await link.clock.elapse(2)
         assert tx.tx_snapshot.radio_tx is RadioTx.OFF
         link.assert_recovery_exit()
     finally:
@@ -384,7 +378,7 @@ async def test_recipient_zero_during_full_tail_rechecks_readiness(
 
 
 @pytest.mark.parametrize("stop", ["disconnect", "shutdown"])
-@pytest.mark.parametrize("outcome", ["success", "error", "deadline"])
+@pytest.mark.parametrize("outcome", ["success", "error"])
 async def test_owner_stop_releases_tx_debt_and_closes_transports(
     link: Link, monkeypatch: pytest.MonkeyPatch, stop: str, outcome: str
 ) -> None:
@@ -392,14 +386,17 @@ async def test_owner_stop_releases_tx_debt_and_closes_transports(
     await link.complete(radio.rearm_managed_tx())
     tx = radio._managed_tx_runtime
     assert tx is not None
+    outcome_on = await link.complete(tx.request_on(TxOwner(TxSource.WEBSOCKET, stop)))
+    assert outcome_on.outcome is TxOutcome.ACCEPTED and link.ptt
+    lease = tx.tx_snapshot.lease_id
+    assert lease is not None
     release = AsyncMock(wraps=tx.shutdown)
     monkeypatch.setattr(tx, "shutdown", release)
     lifecycle._max_recovery_attempts = 1
     link.control.down = outcome == "error"
-    link.stale = outcome == "deadline"
     radio._civ_stream_ready = False
-    if outcome in ("deadline", "success"):
-        link.pause_soft = outcome == "success"
+    if outcome == "success":
+        link.pause_soft = True
         await link.clock.elapse(5.1)
         repair = asyncio.create_task(radio.soft_reconnect())
         await link.clock.elapse(0.25)
@@ -411,7 +408,13 @@ async def test_owner_stop_releases_tx_debt_and_closes_transports(
         release.assert_not_awaited()
         assert radio._managed_tx_runtime is tx
         if outcome != "error":
-            assert len(link.control.logins) == 1
+            assert link.control.logins == [link.soft_discoveries[0][1]]
+            assert repair is not None and repair.done()
+            repair.result()
+            assert any(not on for _, on in link.ptt_writes)
+        else:
+            assert link.ptt
+            assert tx.tx_snapshot.lease_id == lease or tx.tx_snapshot.release_reason
         link.assert_recovery_exit()
         operation = (
             radio.disconnect if stop == "disconnect" else lifecycle.request_shutdown

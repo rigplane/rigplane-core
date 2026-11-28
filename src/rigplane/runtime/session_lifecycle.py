@@ -1233,6 +1233,8 @@ class CoreRadioSessionLifecycle:
         await self._teardown(reason=LifecycleErrorReason.CANCELLED, shutdown=True)
 
     async def _teardown(self, *, reason: LifecycleErrorReason, shutdown: bool) -> None:
+        if self._state is not LifecycleState.DISCONNECTED or self._claimed:
+            self._emit(LifecycleState.CLOSING, reason=reason)
         self._full_recovery_requested = False
         # Cancel any in-flight resident runner / recovery task first so their
         # own ``finally`` release does not race ours.
@@ -1248,7 +1250,6 @@ class CoreRadioSessionLifecycle:
             # Idempotent no-op: nothing claimed, nothing to release.
             return
 
-        self._emit(LifecycleState.CLOSING, reason=reason)
         try:
             await self._mech.release()
         except Exception:  # noqa: BLE001 — release must not raise out of teardown
@@ -1283,6 +1284,8 @@ class CoreRadioSessionLifecycle:
         return self._recover_task is not None and not self._recover_task.done()
 
     async def soft_reconnect(self) -> None:
+        if self._state is LifecycleState.CLOSING:
+            raise RigplaneConnectionError("Session is closing")
         # Coalesce concurrent recovery onto the in-flight one.
         recovery = self._recover_task
         if recovery is None or recovery.done():
@@ -1345,9 +1348,6 @@ class CoreRadioSessionLifecycle:
                     ready = await self._full_reconnect_once()
                     if ready or not self._full_recovery_requested:
                         break
-            except Exception:
-                _logger.warning("lifecycle.full_reconnect.failed", exc_info=True)
-                raise
             finally:
                 self._full_recovery_requested = False
                 self._recovery_attempt = None

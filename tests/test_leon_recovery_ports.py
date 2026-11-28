@@ -54,7 +54,8 @@ class _Transport:
             self.peer.events.append("token-remove")
 
     async def disconnect(self) -> None:
-        self.peer.events.append("control-close")
+        if self._udp_transport is not None:
+            self.peer.events.append("control-close")
         self._udp_transport = None
 
     def start_ping_loop(self) -> None:
@@ -85,6 +86,12 @@ async def _prepare(monkeypatch: pytest.MonkeyPatch, peer: _PortPeer) -> CoreRadi
     return radio
 
 
+def _fail_next_login(monkeypatch: pytest.MonkeyPatch, radio: CoreRadio) -> AsyncMock:
+    failure = AsyncMock(side_effect=ConnectionError("injected FULL login failure"))
+    monkeypatch.setattr(radio._control_phase, "_connect_once", failure)
+    return failure
+
+
 @pytest.mark.timeout(10)
 async def test_transient_collision_retries_the_advertised_port(
     monkeypatch: pytest.MonkeyPatch,
@@ -109,12 +116,14 @@ async def test_persistent_collision_exhausts_and_releases_without_port_change(
 ) -> None:
     peer = _PortPeer(collisions=2)
     radio = await _prepare(monkeypatch, peer)
+    login = _fail_next_login(monkeypatch, radio)
     try:
-        with pytest.raises(ConnectionError, match="Soft reconnect exhausted"):
+        with pytest.raises(ConnectionError, match="injected FULL login failure"):
             await radio.soft_reconnect()
+        login.assert_awaited_once()
         assert peer.binds == [peer.advertised_port, peer.advertised_port]
         assert peer.events == ["token-remove", "control-close"]
-        assert radio._session_lifecycle.state is LifecycleState.DISCONNECTED
+        assert radio._session_lifecycle.state is LifecycleState.RECOVERING
         assert radio._civ_transport is None
         radio._control_phase._after_reconnect_parts.assert_not_awaited()
     finally:
@@ -128,12 +137,14 @@ async def test_registered_watchdog_port_collision_completes_release(
 ) -> None:
     peer = _PortPeer(collisions=2)
     radio = await _prepare(monkeypatch, peer)
+    login = _fail_next_login(monkeypatch, radio)
     task = asyncio.create_task(radio._civ_runtime._watchdog_recover())
     radio._civ_runtime._reconnect_task = task
     await task
+    login.assert_awaited_once()
     assert peer.binds == [peer.advertised_port, peer.advertised_port]
     assert peer.events == ["token-remove", "control-close"]
-    assert radio._session_lifecycle.state is LifecycleState.DISCONNECTED
+    assert radio._session_lifecycle.state is LifecycleState.RECOVERING
     assert task.done() and not task.cancelled()
     assert radio._civ_runtime._reconnect_task is None
     assert radio._session_lifecycle._recover_task is None

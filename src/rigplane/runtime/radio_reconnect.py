@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError
 from rigplane.core.transport import IcomTransport, RxOrderStats
+from rigplane.runtime.session_lifecycle import LifecycleState
 
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets
@@ -127,6 +128,8 @@ async def watchdog_loop(radio: IcomRadio) -> None:
                 last_health_log = now
 
             if idle > radio._watchdog_timeout:
+                if radio._session_lifecycle.state is LifecycleState.RECOVERING:
+                    continue  # The LAN recovery owner is already repairing this session.
                 logger.warning(
                     "Watchdog: no activity for %.1fs, triggering reconnect",
                     idle,
