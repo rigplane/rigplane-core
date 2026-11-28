@@ -59,6 +59,7 @@ jobs:
           RUNS: ${{ inputs.runs }}
         run: |
           set -u
+          : > "$PTTPROBE_OUT"
           shards=$(grep -m1 -oE 'QUICK_PYTHON_SHARDS: *"?[0-9]+' .github/workflows/quick.yml | grep -oE '[0-9]+$' || echo 4)
           echo "ref ${{ matrix.ref }} head $(git rev-parse HEAD) shards $shards arch $(uname -m) nproc $(nproc)"
           for i in $(seq 1 "$RUNS"); do
