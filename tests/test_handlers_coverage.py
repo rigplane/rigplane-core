@@ -4,6 +4,7 @@ import asyncio
 import json
 import struct
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ from rigplane.core.state_store import StateStore
 from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import AudioCodec
 from rigplane.web import server as server_module
 from rigplane.web.handlers import (
@@ -444,6 +446,7 @@ def _control_handler(
     server: object | None = None,
     session_id: str | None = None,
     ptt: bool | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(
@@ -473,6 +476,7 @@ def _control_handler(
         managed_tx_authority=(
             None if server is None else vars(server).get("managed_tx_authority")
         ),
+        clock=clock if clock is not None else time.monotonic,
     )
 
 
@@ -1712,7 +1716,7 @@ async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
     )
     handler._CMD_MIN_INTERVAL = 10.0  # noqa: SLF001
     key = handler._coalesce_key(name, valid_params)  # noqa: SLF001
-    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+    handler._cmd_last[key] = handler._clock()  # noqa: SLF001
 
     valid = {"type": "cmd", "name": name, "id": "valid-pending", "params": valid_params}
     malformed = {
@@ -2273,51 +2277,76 @@ async def test_send_state_snapshot_minimal_fallback_when_server_missing() -> Non
     assert msg["data"] == {"type": "full", "data": {}}
 
 
-async def test_wait_radio_ready_returns_immediately_when_ready() -> None:
+@pytest.mark.timeout(30)
+async def test_wait_radio_ready_returns_immediately_when_ready(
+    virtual_clock: VirtualClock,
+) -> None:
     """Gate returns instantly when radio is already ready."""
     handler = _control_handler(
         radio=SimpleNamespace(connected=True, radio_ready=True),
+        clock=virtual_clock,
     )
-    t0 = asyncio.get_event_loop().time()
+    start = virtual_clock()
     await handler._wait_radio_ready(timeout=2.0)
-    elapsed = asyncio.get_event_loop().time() - t0
-    assert elapsed < 0.05
+    assert virtual_clock() == start
 
 
-async def test_wait_radio_ready_returns_immediately_when_no_radio() -> None:
+@pytest.mark.timeout(30)
+async def test_wait_radio_ready_returns_immediately_when_no_radio(
+    virtual_clock: VirtualClock,
+) -> None:
     """Gate returns instantly when radio is None (offline mode)."""
-    handler = _control_handler(radio=None)
-    t0 = asyncio.get_event_loop().time()
+    handler = _control_handler(radio=None, clock=virtual_clock)
+    start = virtual_clock()
     await handler._wait_radio_ready(timeout=2.0)
-    elapsed = asyncio.get_event_loop().time() - t0
-    assert elapsed < 0.05
+    assert virtual_clock() == start
 
 
-async def test_wait_radio_ready_waits_then_succeeds() -> None:
+@pytest.mark.timeout(30)
+async def test_wait_radio_ready_waits_then_succeeds(
+    virtual_clock: VirtualClock,
+) -> None:
     """Gate waits until radio becomes ready mid-poll."""
     radio = SimpleNamespace(connected=True, radio_ready=False)
-    handler = _control_handler(radio=radio)
+    handler = _control_handler(radio=radio, clock=virtual_clock)
 
-    async def _flip_ready() -> None:
-        await asyncio.sleep(0.25)
+    start = virtual_clock()
+    task = asyncio.ensure_future(handler._wait_radio_ready(timeout=2.0))
+    try:
+        await virtual_clock.elapse(0.25)
+        assert not task.done()
         radio.radio_ready = True
-
-    task = asyncio.create_task(_flip_ready())
-    t0 = asyncio.get_event_loop().time()
-    await handler._wait_radio_ready(timeout=2.0)
-    elapsed = asyncio.get_event_loop().time() - t0
+        await virtual_clock.elapse(0.1)
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    elapsed = virtual_clock() - start
     assert 0.2 < elapsed < 1.0
-    await task
 
 
-async def test_wait_radio_ready_times_out_gracefully() -> None:
+@pytest.mark.timeout(30)
+async def test_wait_radio_ready_times_out_gracefully(
+    virtual_clock: VirtualClock,
+) -> None:
     """Gate gives up after timeout and does not raise."""
     handler = _control_handler(
         radio=SimpleNamespace(connected=True, radio_ready=False),
+        clock=virtual_clock,
     )
-    t0 = asyncio.get_event_loop().time()
-    await handler._wait_radio_ready(timeout=0.3)
-    elapsed = asyncio.get_event_loop().time() - t0
+    start = virtual_clock()
+    task = asyncio.ensure_future(handler._wait_radio_ready(timeout=0.3))
+    try:
+        await virtual_clock.elapse(0.2)
+        assert not task.done()
+        await virtual_clock.elapse(0.2)
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    elapsed = virtual_clock() - start
     assert 0.25 < elapsed < 0.6
 
 
@@ -2429,8 +2458,11 @@ async def test_audio_broadcaster_subscribe_unsubscribe_lifecycle() -> None:
     await broadcaster.unsubscribe(q1)
     radio._stop_rx.assert_not_awaited()
     await broadcaster.unsubscribe(q2)
-    # Give the scheduled stop task a chance to run
-    await asyncio.sleep(0.05)
+    # The bus stop is a scheduled loop task: wait for the real event.
+    await await_until(
+        lambda: radio._stop_rx.await_count == 1,
+        description="the scheduled bus unsubscribe stopping RX",
+    )
     radio._stop_rx.assert_awaited_once()
 
 
@@ -2449,7 +2481,10 @@ async def test_audio_broadcaster_codec_and_frame_metadata() -> None:
     bus._on_opus_packet(None)  # should be skipped
     bus._on_opus_packet(SimpleNamespace(data=b"\xaa\xbb\xcc"))
 
-    await asyncio.sleep(0.1)
+    await await_until(
+        lambda: not queue.empty(),
+        description="the bus delivering the opus packet to the subscriber queue",
+    )
     frame = queue.get_nowait()
     assert frame[1] == AUDIO_CODEC_OPUS
     assert struct.unpack_from("<H", frame, 4)[0] == 960
@@ -2540,7 +2575,11 @@ async def test_audio_broadcaster_subscribe_success_sends_no_error_envelope() -> 
     assert bus.rx_active
     ws.send_text.assert_not_awaited()
     await broadcaster.unsubscribe(queue)
-    await asyncio.sleep(0.05)  # let the scheduled bus unsubscribe complete
+    # The bus stop is a scheduled loop task: wait for the real event.
+    await await_until(
+        lambda: radio._stop_rx.await_count == 1,
+        description="the scheduled bus unsubscribe stopping RX",
+    )
 
 
 async def test_audio_broadcaster_without_radio_noops() -> None:
@@ -3202,7 +3241,10 @@ async def test_failed_rearm_dekeys_prior_lease_less_tx_once(failure: str) -> Non
 
         radio._start_tx.side_effect = hang
         task = asyncio.create_task(handler._handle_control(start))
-        await asyncio.wait_for(entered.wait(), timeout=1)
+        await await_until(
+            entered.is_set,
+            description="the audio start parking in the hung backend",
+        )
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -3449,7 +3491,10 @@ async def test_audio_handler_run_stops_active_pcm_tx_on_cancellation() -> None:
     handler._tx_active = True
     task = asyncio.create_task(handler.run())
 
-    await asyncio.wait_for(ws.recv_started.wait(), timeout=1.0)
+    await await_until(
+        ws.recv_started.is_set,
+        description="the audio run reaching its recv loop",
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -3460,8 +3505,9 @@ async def test_audio_handler_run_stops_active_pcm_tx_on_cancellation() -> None:
     radio._stop_audio_tx_opus.assert_not_awaited()
 
 
+@pytest.mark.timeout(30)
 async def test_audio_handler_run_bounds_active_tx_cleanup_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     async def _hang() -> None:
         await asyncio.Event().wait()
@@ -3481,7 +3527,17 @@ async def test_audio_handler_run_bounds_active_tx_cleanup_timeout(
         0.01,
     )
 
-    await handler.run()
+    # The cleanup bound is loop-time based, so it fires off the virtual clock:
+    # elapse past the 0.01 bound and the hung stop must already have given up.
+    task = asyncio.ensure_future(handler.run())
+    try:
+        await virtual_clock.elapse(0.05)
+        assert task.done()
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     assert handler._done.is_set()
     assert handler._tx_active is False
