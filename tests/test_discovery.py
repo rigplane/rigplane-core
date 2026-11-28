@@ -8,7 +8,6 @@ import json
 import logging
 import socket
 import sys
-import time
 from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 from threading import Event, get_ident
@@ -38,6 +37,7 @@ from rigplane.discovery import (
     probe_serial_yaesu_cat,
     probe_xiegu_model_id,
 )
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.usb_audio_resolve import AudioDeviceMapping
 from rigplane_testkit.icom import MockIcomRadio
 
@@ -1827,7 +1827,10 @@ class TestDiscoverSerialRadiosConcurrent:
     """MOR-3682: candidate ports are probed concurrently, not one after another."""
 
     @pytest.mark.asyncio
-    async def test_silent_ports_are_probed_concurrently(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_silent_ports_are_probed_concurrently(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         ports = [
             _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
             for i in range(4)
@@ -1846,17 +1849,21 @@ class TestDiscoverSerialRadiosConcurrent:
             finally:
                 active -= 1
 
-        loop = asyncio.get_running_loop()
-        start = loop.time()
         with (
             _fast_probes(),
             patch("serial.tools.list_ports.comports", return_value=ports),
         ):
-            results = await discover_serial_radios(
-                _open_serial=_open,
-                _yaesu_transport_factory=_make_yaesu_factory(None),
+            start = virtual_clock()
+            task = asyncio.ensure_future(
+                discover_serial_radios(
+                    _open_serial=_open,
+                    _yaesu_transport_factory=_make_yaesu_factory(None),
+                )
             )
-        elapsed = loop.time() - start
+            while not task.done():
+                await virtual_clock.elapse(per_open)
+            results = await task
+        elapsed = virtual_clock() - start
 
         assert results == []
         assert peak > 1
@@ -1923,7 +1930,10 @@ class TestDiscoverSerialRadiosConcurrent:
         assert cat.profile_id == "yaesu_ftx1"
 
     @pytest.mark.asyncio
-    async def test_failed_probe_cancels_and_awaits_sibling_probes(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_failed_probe_cancels_and_awaits_sibling_probes(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """One port raising must not leave the other probes running on their ports."""
         ports = [
             _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
@@ -2655,24 +2665,27 @@ class TestProbeLanRadioFakeSocket:
     async def test_cancellation_mid_probe_closes_socket(self) -> None:
         # The 300 s window is far beyond the test's lifetime, so only the
         # cancellation stop signal can end the probe loop and close the
-        # socket. The real clock is used on purpose: freezing time.monotonic
-        # also freezes the event loop's clock, and the awaits below would
-        # never fire — the hang this test showed on the CI Mac mini.
+        # socket. The probe runs its blocking-socket loop in a worker
+        # thread, so completion and close are real events: wait for them
+        # with await_until instead of wall-clock sleeps.
         fake = _FakeUdpSocket({})
         with _patched_lan_socket(fake, step=None):
             probe = asyncio.create_task(probe_lan_radio("192.168.1.50", timeout=300.0))
-            await asyncio.sleep(0.15)
+            await await_until(
+                lambda: fake.send_count >= 1,
+                timeout=5.0,
+                description="cancelled probe sent its first datagram",
+            )
             assert not fake.closed
             probe.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await probe
 
-            deadline = time.perf_counter() + 5.0
-            while not fake.closed:
-                assert time.perf_counter() < deadline, (
-                    "probe socket still open after cancellation"
-                )
-                await asyncio.sleep(0.01)
+            await await_until(
+                lambda: fake.closed,
+                timeout=5.0,
+                description="probe socket closed after cancellation",
+            )
 
 
 class TestProbeLanRadioRealSocket:
@@ -2692,7 +2705,10 @@ class TestProbeLanRadioRealSocket:
     async def test_closed_loopback_port_returns_false_within_window(self) -> None:
         # Nothing listens on the port (the ICMP port-unreachable path, or
         # plain silence on platforms that do not report it to unconnected
-        # sockets): the probe ends in False, never an exception.
+        # sockets): the probe ends in False, never an exception. The probe
+        # runs its blocking-socket loop in a worker thread, so its
+        # completion is a real event: await_until bounds it by the same
+        # 1.0 s window + 2.0 s tolerance the wall clock measured before.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.bind(("127.0.0.1", 0))
@@ -2700,28 +2716,41 @@ class TestProbeLanRadioRealSocket:
         finally:
             sock.close()
 
-        t0 = time.monotonic()
-        result = await probe_lan_radio("127.0.0.1", port, timeout=1.0)
-        elapsed = time.monotonic() - t0
+        task = asyncio.ensure_future(
+            probe_lan_radio("127.0.0.1", port, timeout=1.0)
+        )
+        await await_until(
+            lambda: task.done(),
+            timeout=1.0 + 2.0,
+            description="closed-port probe ends within its window",
+        )
 
-        assert result is False
-        assert elapsed <= 1.0 + 2.0
+        assert await task is False
 
     async def test_bound_silent_socket_returns_false_at_window_end(self) -> None:
         # A socket that is bound but never answers is a blackhole: only the
-        # window can end it.
+        # window can end it. The probe runs its blocking-socket loop in a
+        # worker thread (function-local `import time`, unreachable from any
+        # injected clock), so its completion is a real event: await_until
+        # bounds it by the same 3.0 s the wall clock measured before. The
+        # dropped 0.9 s lower bound (no early bail on silence) stays pinned
+        # deterministically by
+        # test_silent_host_returns_false_and_closes_socket (send_count >= 2).
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-            t0 = time.monotonic()
-            result = await probe_lan_radio("127.0.0.1", port, timeout=1.0)
-            elapsed = time.monotonic() - t0
+            task = asyncio.ensure_future(
+                probe_lan_radio("127.0.0.1", port, timeout=1.0)
+            )
+            await await_until(
+                lambda: task.done(),
+                timeout=3.0,
+                description="silent-socket probe ends at its window end",
+            )
+            assert await task is False
         finally:
             sock.close()
-
-        assert result is False
-        assert 0.9 <= elapsed <= 3.0
 
     async def test_unresolvable_host_returns_false(self) -> None:
         # ".invalid" can never resolve (RFC 6761): the name-resolution
@@ -3188,7 +3217,10 @@ class TestCivProbeFraming:
         assert _parse_probe_response("fake", 115200, data) is None
 
     @pytest.mark.asyncio
-    async def test_repeated_non_id_chunks_share_one_read_deadline(self, monkeypatch):
+    @pytest.mark.timeout(30)
+    async def test_repeated_non_id_chunks_share_one_read_deadline(
+        self, monkeypatch, virtual_clock: VirtualClock
+    ):
         original_wait_for = asyncio.wait_for
         deadlines, budgets = [], []
 
@@ -3200,18 +3232,25 @@ class TestCivProbeFraming:
         class Reader(_FakeReader):
             async def read(self, size):
                 if not self._queue.empty():
-                    await asyncio.sleep(0.005)
+                    # Model the 5 ms a chunk spends on the wire as elapsed
+                    # virtual time. A nested-class sleep would not count as
+                    # virtual for the realtime guard, and nothing here needs
+                    # a timer to fire: the queued chunk is returned at once.
+                    virtual_clock.advance(0.005)
                 return await super().read(size)
 
         unrelated = b"\xfe\xfe\xe0\x94\x03\x00\x00\xfd"
         reader, writer = Reader([unrelated, unrelated]), _FakeWriter()
         monkeypatch.setattr(asyncio, "wait_for", recording_wait_for)
-        assert (
-            await probe_serial_civ(
+        task = asyncio.ensure_future(
+            probe_serial_civ(
                 "fake", [115200], 0.03, _open_serial=_make_open(reader, writer)
             )
-            is None
         )
+        # One elapse covers both inter-chunk waits and the final read
+        # deadline: every timer the probe sets fires on the way.
+        await virtual_clock.elapse(0.1)
+        assert await task is None
         assert len(budgets) == 3
         assert max(deadlines) - min(deadlines) < 0.004
         assert budgets[-1] < budgets[0] - 0.005
