@@ -4,6 +4,7 @@ import { parseCurrentScopeFrame, parseScopeGranted, type ScopeFrame } from '../.
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { loadScopeWireGolden, scopeWire } from '../../../src/lib/runtime/__tests__/scope-wire-fixture';
 import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
+import { awaitRenderPipeline, clickPanorama, openPanorama } from './panorama-ready';
 
 /**
  * Operator journey against the real WebServer with the in-memory IC-7610
@@ -703,11 +704,14 @@ test('MOR-4273 panorama witness accepts producer frames and requests both receiv
 });
 
 const panoramaTest = test.extend({
-  launchOptions: {
-    ...(process.env.RIGPLANE_JOURNEY_CHROMIUM
-      ? { executablePath: process.env.RIGPLANE_JOURNEY_CHROMIUM }
-      : {}),
-    args: ['--mute-audio'],
+  launchOptions: async ({ launchOptions }, use) => {
+    await use({
+      ...launchOptions,
+      ...(process.env.RIGPLANE_JOURNEY_CHROMIUM
+        ? { executablePath: process.env.RIGPLANE_JOURNEY_CHROMIUM }
+        : {}),
+      args: [...(launchOptions.args ?? []), '--mute-audio'],
+    });
   },
 });
 
@@ -723,14 +727,15 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
     try {
       await installWebSocketInterceptor(page);
       await installPanoramaWitness(page);
-      await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+      await openPanorama(page, '/?ui=v2');
       await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
       await expect.poll(async () => (await page.request.get('/api/v1/state')).json()).toMatchObject({ active: 'MAIN' });
-      await page.getByTestId('rx-audio-monitor-live').click();
+      await clickPanorama(page, page.getByTestId('rx-audio-monitor-live'));
       await expect.poll(async () => (await panoramaWitness(page)).main).toBeGreaterThan(3);
       await expect.poll(async () => (await panoramaWitness(page)).sub).toBeGreaterThan(3);
       await expect.poll(async () => (await panoramaWitness(page)).pcmBuffers).toBeGreaterThan(5);
       await expect.poll(async () => (await panoramaWitness(page)).audioWire).toBeGreaterThan(5);
+      await awaitRenderPipeline(page);
       await page.evaluate(() => { (window as Window & { __PANORAMA__?: PanoramaWitness }).__PANORAMA__!.active = true; });
       const before = await panoramaWitness(page);
       expect(before.pcm.at(-1)?.state).toBe('running');
@@ -741,12 +746,12 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       await expect.poll(async () => (await panoramaWitness(page)).pinned).toBe(true);
       const requestsBefore = (await panoramaWitness(page)).requests.length;
       const refusalsBefore = (await panoramaWitness(page)).refusals.length;
-      await modeKey.click();
+      await clickPanorama(page, modeKey);
       // A pinned (absolute-bounds) view is the negotiation the radio can
       // refuse: ZOOM follows the VFO as a client crop (MOR-4387, covered by
       // panorama-zoom-fix.spec.ts) and is always granted, so the band preset
       // is the operator gesture that still asks the radio for fixed edges.
-      await page.locator('[data-testid="scope-zoom-band"]:visible').click();
+      await clickPanorama(page, page.locator('[data-testid="scope-zoom-band"]:visible'));
       await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
         .some(request => 'startHz' in request.view)).toBe(true);
       await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);

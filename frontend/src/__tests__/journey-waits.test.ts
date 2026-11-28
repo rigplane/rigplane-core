@@ -11,7 +11,7 @@ const legacy: Record<string, number> = {
   "tests/e2e/journey/dual-rx-reconnect.spec.ts": 2,
   "tests/e2e/journey/link-loss-veil.spec.ts": 6,
   "tests/e2e/journey/memory-store-clear.spec.ts": 24,
-  "tests/e2e/journey/operator-journey.spec.ts": 7,
+  "tests/e2e/journey/operator-journey.spec.ts": 4,
   "tests/e2e/journey/panorama-follow-request.spec.ts": 7,
   "tests/e2e/journey/panorama-passband-hold.spec.ts": 6,
   "tests/e2e/journey/panorama-scroll-c-geometry.spec.ts": 7,

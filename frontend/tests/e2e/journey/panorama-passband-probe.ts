@@ -81,23 +81,26 @@ interface Gap {
 }
 
 /** A DOM recovery does not close a painted setup outage; require the target mode on both. */
-export function passbandProbeReady(samples: PassbandSample[], frameMode: number): boolean {
+export function passbandProbeReady(
+  samples: PassbandSample[], frameMode: number, view?: { startHz: number; endHz: number },
+): boolean {
   const ready = (sample: PassbandSample | undefined) => sample?.overlay === true
     && sample.gates?.tupleState === 'current'
     && (frameMode === 0 || sample.gates.proportional === true)
-    && sample.gates.tupleFrameMode === frameMode;
+    && sample.gates.tupleFrameMode === frameMode
+    && (view === undefined || (sample.gates.viewStartHz === view.startHz && sample.gates.viewEndHz === view.endHz));
   return ready(samples.at(-1)) && ready(samples.filter(sample => sample.kind === 'frame').at(-1));
 }
 
 export async function expectPassbandProbeReady(
-  page: import('@playwright/test').Page, frameMode: number,
+  page: import('@playwright/test').Page, frameMode: number, view?: { startHz: number; endHz: number },
 ): Promise<void> {
   await awaitRenderPipeline(page);
   await expect.poll(async () => passbandProbeReady(await page.evaluate(() => {
     const painted = window.passbandSamples.filter(sample => sample.kind === 'frame').at(-1);
     const latest = window.passbandSamples.at(-1);
     return [painted, latest].filter(sample => sample !== undefined);
-  }), frameMode), { timeout: 30_000 }).toBe(true);
+  }), frameMode, view), { timeout: 30_000 }).toBe(true);
 }
 
 /** The last sample before the window describes its initial state until the next sample. */

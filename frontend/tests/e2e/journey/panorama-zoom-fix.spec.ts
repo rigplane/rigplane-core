@@ -345,7 +345,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
       await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
       await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
-      await expectPassbandProbeReady(page, 1);
+      await expectPassbandProbeReady(page, 1, { startHz: 14_200_000, endHz: 14_300_000 });
       const writesBefore = (await scopeWriteReceipts(evidence)).length;
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
@@ -394,6 +394,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await check();
       await expectPassbandProbeReady(page, 1);
       await observePanorama(page, 1000);
+      await page.waitForFunction(fromT => window.passbandSamples.filter(sample => sample.t >= fromT).length > 20,
+        fromT, { timeout: 30_000 });
       const toT = await page.evaluate(() => performance.now());
       const samples = await page.evaluate(() => window.passbandSamples);
       const gaps = passbandGaps(samples, fromT, toT);
