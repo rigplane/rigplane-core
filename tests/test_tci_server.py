@@ -8,17 +8,19 @@ conformance live in ``test_tci_server_sockets.py`` and
 
 import asyncio
 import struct
-import time
 from collections.abc import Awaitable, Callable, Sequence
 
 import pytest
 
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import (
+    CLOSE_TIMEOUT_S,
     COALESCE_WINDOW_S,
     DEADLINE_S,
     MAX_QUEUED_OUTBOUND,
     PING_INTERVAL_S,
+    STOP_TIMEOUT_S,
     TciServer,
 )
 from rigplane.ws import (
@@ -31,19 +33,6 @@ from rigplane.ws import (
 )
 
 BURST = ["protocol:tciserver,1;", "device:rigplane;", "receive_only:false;", "ready;"]
-
-
-class FakeClock:
-    """Injectable monotonic clock."""
-
-    def __init__(self, now: float = 1000.0) -> None:
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
 
 
 class FakeTransport:
@@ -124,12 +113,14 @@ def parse_server_frames(buffer: bytes) -> list[tuple[int, bytes]]:
 
 
 async def wait_for_frames(
-    writer: FakeWriter, count: int, timeout: float = 2.0
+    writer: FakeWriter, count: int, timeout: float = 10.0
 ) -> list[tuple[int, bytes]]:
-    """Wait for at least *count* frames (deadline, never a bare sleep)."""
-    async with asyncio.timeout(timeout):
-        while len(parse_server_frames(writer.buffer)) < count:
-            await asyncio.sleep(0.005)
+    """Wait for at least *count* frames (a real event, never a bare sleep)."""
+    await await_until(
+        lambda: len(parse_server_frames(writer.buffer)) >= count,
+        timeout=timeout,
+        description=f"at least {count} TCI frames",
+    )
     return parse_server_frames(writer.buffer)
 
 
@@ -176,7 +167,7 @@ class FakeHandler:
 
 def make_server(
     handler: FakeHandler,
-    clock: FakeClock,
+    clock: VirtualClock,
     allow: AllowHeaders | None = None,
     **kwargs: object,
 ) -> TciServer:
@@ -200,10 +191,9 @@ async def open_session(
     return session, session_writer, reader
 
 
-async def test_init_burst_sent_in_order() -> None:
-    clock = FakeClock()
+async def test_init_burst_sent_in_order(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, _reader = await open_session(server, handler)
     try:
         frames = await wait_for_frames(writer, len(BURST))
@@ -214,13 +204,12 @@ async def test_init_burst_sent_in_order() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_command_routing_sender_and_others() -> None:
-    clock = FakeClock()
+async def test_command_routing_sender_and_others(virtual_clock: VirtualClock) -> None:
     outcome = CommandOutcome(
         to_sender=["vfo:0,0,14074000;"], to_others=["vfo:0,0,14074000;"]
     )
     handler = FakeHandler(replies={"vfo": outcome})
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session_a, writer_a, reader_a = await open_session(server, handler)
     session_b, writer_b, _reader_b = await open_session(server, handler)
     try:
@@ -239,10 +228,9 @@ async def test_command_routing_sender_and_others() -> None:
         await session_b.finish()
 
 
-async def test_refusal_reaches_sender_only() -> None:
-    clock = FakeClock()
+async def test_refusal_reaches_sender_only(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler(replies={"trx": CommandOutcome(to_sender=["trx:0,false;"])})
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session_a, writer_a, reader_a = await open_session(server, handler)
     session_b, writer_b, _reader_b = await open_session(server, handler)
     try:
@@ -252,25 +240,28 @@ async def test_refusal_reaches_sender_only() -> None:
         reader_a.feed_data(client_frame(WS_OP_TEXT, b"trx:0,true;"))
         frames_a = await wait_for_frames(writer_a, len(BURST) + 1)
         assert frames_a[-1] == (WS_OP_TEXT, b"trx:0,false;")
-        await asyncio.sleep(0.05)
+        # Give B every chance to receive (past the coalescing window), then
+        # assert the refusal stayed sender-only.
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.02)
         assert len(parse_server_frames(writer_b.buffer)) == before_b
     finally:
         await session_a.finish()
         await session_b.finish()
 
 
-async def test_binary_both_ways() -> None:
-    clock = FakeClock()
+async def test_binary_both_ways(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session_a, _writer_a, reader_a = await open_session(server, handler)
     session_b, writer_b, _reader_b = await open_session(server, handler)
     try:
         payload = b"\x00\x01\x02\x03" * 64
         reader_a.feed_data(client_frame(WS_OP_BINARY, payload))
-        async with asyncio.timeout(2.0):
-            while not handler.binaries:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: handler.binaries,
+            timeout=10.0,
+            description="binary echo from peer",
+        )
         assert handler.binaries == [payload]
         server.broadcast_binary(b"\x09" * 16)
         frames_b = await wait_for_frames(writer_b, len(BURST) + 1)
@@ -280,87 +271,96 @@ async def test_binary_both_ways() -> None:
         await session_b.finish()
 
 
-async def test_close_frame_disconnects_once() -> None:
-    clock = FakeClock()
+async def test_close_frame_disconnects_once(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     await wait_for_frames(writer, len(BURST))
     reader.feed_data(client_frame(WS_OP_CLOSE, struct.pack("!H", 1000)))
-    async with asyncio.timeout(2.0):
-        while handler.disconnect_calls == 0:
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: handler.disconnect_calls > 0,
+        timeout=10.0,
+        description="disconnect after close frame",
+    )
     await session.finish()
     assert handler.disconnect_calls == 1
 
 
-async def test_close_frame_releases_transport() -> None:
+async def test_close_frame_releases_transport(virtual_clock: VirtualClock) -> None:
     """The close-frame path must still close the transport (regression pin).
 
     ``recv()`` marks the connection closed when a close frame arrives;
     ``finish()`` used to skip ``close()`` then, leaking the transport, so
     the listener's ``wait_closed()`` never returned.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     await wait_for_frames(writer, len(BURST))
     reader.feed_data(client_frame(WS_OP_CLOSE, struct.pack("!H", 1000)))
-    async with asyncio.timeout(2.0):
-        while handler.disconnect_calls == 0:
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: handler.disconnect_calls > 0,
+        timeout=10.0,
+        description="disconnect after close frame",
+    )
     await session.finish()
     assert writer.is_closing()
 
 
-async def test_protocol_violation_ends_session_cleanly() -> None:
+async def test_protocol_violation_ends_session_cleanly(
+    virtual_clock: VirtualClock,
+) -> None:
     """A compression bit without a negotiated deflate ends the session.
 
     The violation must run the normal teardown (disconnect once, transport
     closed), not kill the reader task with an unretrieved exception while
     the session leaks.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     await wait_for_frames(writer, len(BURST))
     frame = bytearray(client_frame(WS_OP_TEXT, b"vfo:0,0,14074000;"))
     frame[0] |= 0x40
     reader.feed_data(bytes(frame))
-    async with asyncio.timeout(2.0):
-        while handler.disconnect_calls == 0:
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: handler.disconnect_calls > 0,
+        timeout=10.0,
+        description="disconnect after protocol violation",
+    )
     await session.finish()
     assert handler.disconnect_calls == 1
     assert writer.is_closing()
 
 
-async def test_reset_disconnects_once() -> None:
-    clock = FakeClock()
+async def test_reset_disconnects_once(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     await wait_for_frames(writer, len(BURST))
     reader.feed_eof()
-    async with asyncio.timeout(2.0):
-        while handler.disconnect_calls == 0:
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: handler.disconnect_calls > 0,
+        timeout=10.0,
+        description="disconnect after reset",
+    )
     await session.finish()
     assert handler.disconnect_calls == 1
 
 
-async def test_invalid_utf8_ends_session_without_reply() -> None:
-    clock = FakeClock()
+async def test_invalid_utf8_ends_session_without_reply(
+    virtual_clock: VirtualClock,
+) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     await wait_for_frames(writer, len(BURST))
     reader.feed_data(client_frame(WS_OP_TEXT, b"\xff\xfe not utf-8"))
-    async with asyncio.timeout(2.0):
-        while handler.disconnect_calls == 0:
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: handler.disconnect_calls > 0,
+        timeout=10.0,
+        description="disconnect after invalid utf-8",
+    )
     await session.finish()
     assert handler.disconnect_calls == 1
     assert handler.commands == []
@@ -369,16 +369,19 @@ async def test_invalid_utf8_ends_session_without_reply() -> None:
     assert frames[len(BURST)][0] == WS_OP_CLOSE
 
 
-async def test_failing_command_keeps_session_alive() -> None:
-    clock = FakeClock()
+async def test_failing_command_keeps_session_alive(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler(replies={"ok": CommandOutcome(to_sender=["ok:1;"])})
     handler.fail_commands.add("boom")
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_TEXT, b"boom:1;"))
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: handler.commands == [("boom", ("1",))],
+            timeout=10.0,
+            description="failing command dispatched",
+        )
         assert handler.commands == [("boom", ("1",))]
         reader.feed_data(client_frame(WS_OP_TEXT, b"ok;"))
         frames = await wait_for_frames(writer, len(BURST) + 1)
@@ -388,15 +391,14 @@ async def test_failing_command_keeps_session_alive() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_multi_command_frame_in_order() -> None:
-    clock = FakeClock()
+async def test_multi_command_frame_in_order(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler(
         replies={
             "a": CommandOutcome(to_sender=["a:1;"]),
             "b": CommandOutcome(to_sender=["b:2;"]),
         }
     )
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
@@ -408,99 +410,116 @@ async def test_multi_command_frame_in_order() -> None:
         await session.finish()
 
 
-async def test_silence_for_empty_input() -> None:
-    clock = FakeClock()
+async def test_silence_for_empty_input(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
+        virtual_clock.advance(1.0)
+        mark = session._conn.last_activity
         reader.feed_data(client_frame(WS_OP_TEXT, b";;;"))
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: session._conn.last_activity > mark,
+            timeout=10.0,
+            description="empty input consumed",
+        )
         assert handler.commands == []
         assert len(parse_server_frames(writer.buffer)) == len(BURST)
     finally:
         await session.finish()
 
 
-async def test_watchdog_fresh_session_survives() -> None:
-    clock = FakeClock()
+async def test_watchdog_fresh_session_survives(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
     try:
-        clock.advance(DEADLINE_S - 1.0)
-        assert await session.check_deadline(clock()) is False
+        virtual_clock.advance(DEADLINE_S - 1.0)
+        assert await session.check_deadline(virtual_clock()) is False
         assert handler.disconnect_calls == 0
     finally:
         await session.finish()
 
 
-async def test_watchdog_stale_session_aborts_once() -> None:
-    clock = FakeClock()
+async def test_watchdog_stale_session_aborts_once(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, _reader = await open_session(server, handler)
     try:
-        clock.advance(DEADLINE_S + 0.1)
-        assert await session.check_deadline(clock()) is True
+        virtual_clock.advance(DEADLINE_S + 0.1)
+        stale = asyncio.create_task(session.check_deadline(virtual_clock()))
+        await virtual_clock.elapse(CLOSE_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: stale.done(),
+            timeout=10.0,
+            description="watchdog teardown finishes with blocked drain",
+        )
+        assert await stale is True
         assert writer.transport.aborted
         assert handler.disconnect_calls == 1
-        assert await session.check_deadline(clock()) is False
+        assert await session.check_deadline(virtual_clock()) is False
         assert handler.disconnect_calls == 1
     finally:
         await session.finish()
 
 
-async def test_inbound_ping_renews_liveness() -> None:
-    clock = FakeClock()
+async def test_inbound_ping_renews_liveness(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, reader = await open_session(server, handler)
     try:
-        clock.advance(DEADLINE_S - 1.0)
+        virtual_clock.advance(DEADLINE_S - 1.0)
+        mark = session._conn.last_activity
         reader.feed_data(client_frame(WS_OP_PING, b""))
-        await asyncio.sleep(0.05)
-        clock.advance(2.0)
-        assert await session.check_deadline(clock()) is False
+        await await_until(
+            lambda: session._conn.last_activity > mark,
+            timeout=10.0,
+            description="inbound ping consumed",
+        )
+        virtual_clock.advance(2.0)
+        assert await session.check_deadline(virtual_clock()) is False
         assert handler.disconnect_calls == 0
     finally:
         await session.finish()
 
 
-async def test_blocked_drain_still_releases() -> None:
-    clock = FakeClock()
+async def test_blocked_drain_still_releases(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer = FakeWriter()
     writer.block_drain()
     session, _w, _reader = await open_session(server, handler, writer)
     try:
-        clock.advance(DEADLINE_S + 0.1)
-        assert await session.check_deadline(clock()) is True
+        virtual_clock.advance(DEADLINE_S + 0.1)
+        assert await session.check_deadline(virtual_clock()) is True
         assert writer.transport.aborted
         assert handler.disconnect_calls == 1
     finally:
         await session.finish()
 
 
-async def test_ping_task_sends_pings() -> None:
-    clock = FakeClock()
+async def test_ping_task_sends_pings(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock, ping_interval=0.02)
+    server = make_server(handler, virtual_clock, ping_interval=0.02)
     session, writer, _reader = await open_session(server, handler)
     try:
-        frames = await wait_for_frames(writer, len(BURST) + 1)
-        pings = [f for f in frames if f[0] == WS_OP_PING]
+        # The heartbeat runs on the virtual loop: move time past one
+        # interval so the ping is actually sent, then read the wire.
+        await virtual_clock.elapse(server._ping_interval + 0.01)
+        pings = [
+            frame
+            for frame in parse_server_frames(writer.buffer)
+            if frame[0] == WS_OP_PING
+        ]
         assert pings != []
     finally:
         await session.finish()
 
 
-async def test_broadcast_coalesces_within_window() -> None:
-    clock = FakeClock()
+async def test_broadcast_coalesces_within_window(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, _reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
@@ -509,6 +528,7 @@ async def test_broadcast_coalesces_within_window() -> None:
         # Held, not flushed: pending grows synchronously, nothing on the wire.
         assert session._pending == ["vfo:0,0,14074000;", "modulation:0,USB;"]
         assert len(parse_server_frames(writer.buffer)) == base
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.01)
         frames = await wait_for_frames(writer, base + 2)
         assert [payload for _, payload in frames[base:]] == [
             b"vfo:0,0,14074000;",
@@ -518,8 +538,7 @@ async def test_broadcast_coalesces_within_window() -> None:
         await session.finish()
 
 
-async def test_disconnect_survives_handler_error() -> None:
-    clock = FakeClock()
+async def test_disconnect_survives_handler_error(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
 
     async def _boom() -> None:
@@ -527,19 +546,20 @@ async def test_disconnect_survives_handler_error() -> None:
         raise RuntimeError("release failed")
 
     handler.on_disconnect = _boom  # type: ignore[method-assign]
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
     await session.finish()
     assert handler.disconnect_calls == 1
 
 
-async def test_disconnect_survives_one_cancellation() -> None:
-    clock = FakeClock()
+async def test_disconnect_survives_one_cancellation(
+    virtual_clock: VirtualClock,
+) -> None:
     handler = FakeHandler()
     gate = asyncio.Event()
     entered = asyncio.Event()
     handler.disconnect_gate = gate
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
 
     async def _guarded() -> None:
@@ -547,7 +567,7 @@ async def test_disconnect_survives_one_cancellation() -> None:
         await session._teardown()
 
     task = asyncio.create_task(_guarded())
-    await entered.wait()
+    await await_until(entered.is_set, timeout=10.0, description="teardown entered")
     await asyncio.sleep(0)
     task.cancel()
     gate.set()
@@ -555,7 +575,9 @@ async def test_disconnect_survives_one_cancellation() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
+async def test_disconnect_cancel_then_timeout_still_finalizes(
+    virtual_clock: VirtualClock,
+) -> None:
     """Cancel followed by a re-wait timeout must still finalize the callback.
 
     The disconnect task is cancelled after the handler entered, then the
@@ -585,12 +607,18 @@ async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
         _run_guarded_disconnect(handler, "s1", set())  # type: ignore[arg-type]
     )
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="disconnect entered"
+        )
         await asyncio.sleep(0)
         task.cancel()
-        async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 2 + 5.0):
-            await task
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S * 2 + 1.0)
+        await await_until(
+            lambda: task.done(),
+            timeout=10.0,
+            description="guarded disconnect settles after cancel",
+        )
+        await task
         assert finalized.is_set()
         assert handler.calls == 1
     finally:
@@ -603,7 +631,9 @@ async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
                 pass
 
 
-async def test_cancelled_finish_with_blocked_callback_retains_and_releases() -> None:
+async def test_cancelled_finish_with_blocked_callback_retains_and_releases(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-3932: cancel during ``on_disconnect`` plus a timeout must not escape.
 
     ``finish()`` is cancelled after ``on_disconnect`` entered and the callback
@@ -614,7 +644,6 @@ async def test_cancelled_finish_with_blocked_callback_retains_and_releases() -> 
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     gate = asyncio.Event()
     completed = asyncio.Event()
@@ -634,18 +663,22 @@ async def test_cancelled_finish_with_blocked_callback_retains_and_releases() -> 
 
     handler = FakeHandler()
     handler.on_disconnect = _gated_disconnect  # type: ignore[method-assign]
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
     task = asyncio.create_task(session.finish())
-    async with asyncio.timeout(2.0):
-        await entered.wait()
+    await await_until(entered.is_set, timeout=10.0, description="disconnect entered")
     await asyncio.sleep(0)
     task.cancel()
     # The callback stays blocked past both bounded waits: the finish must
     # still complete (a TimeoutError escaping here is the MOR-3932 defect)
     # with the unfinished callback retained, not dropped.
-    async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 2 + 10.0):
-        await task
+    await virtual_clock.elapse(TEARDOWN_TIMEOUT_S * 2 + 1.0)
+    await await_until(
+        lambda: task.done(),
+        timeout=10.0,
+        description="finish completes with blocked disconnect",
+    )
+    await task
     assert calls == 1
     assert not completed.is_set()
     assert session not in server.sessions
@@ -653,18 +686,25 @@ async def test_cancelled_finish_with_blocked_callback_retains_and_releases() -> 
     retained = [item for item in server._unsettled if not item.done()]
     assert len(retained) == 1
     gate.set()
-    async with asyncio.timeout(5.0):
-        await completed.wait()
-        while server._unsettled:
-            await asyncio.sleep(0.005)
+    await await_until(
+        completed.is_set,
+        timeout=10.0,
+        description="retained disconnect completes after gate",
+    )
+    await await_until(
+        lambda: not server._unsettled,
+        timeout=10.0,
+        description="unsettled registry reaped",
+    )
     assert calls == 1
 
 
-async def test_connect_failure_closes_and_releases_once() -> None:
-    clock = FakeClock()
+async def test_connect_failure_closes_and_releases_once(
+    virtual_clock: VirtualClock,
+) -> None:
     handler = FakeHandler()
     handler.fail_connect = RuntimeError("nope")
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     assert await server._open_session(reader, writer, handler) is None
@@ -672,10 +712,9 @@ async def test_connect_failure_closes_and_releases_once() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_accept_good_request_upgrades() -> None:
-    clock = FakeClock()
+async def test_accept_good_request_upgrades(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     reader.feed_data(
@@ -692,29 +731,26 @@ async def test_accept_good_request_upgrades() -> None:
     assert len(server.sessions) == 1
     head_end = bytes(writer.buffer).index(b"\r\n\r\n") + 4
     try:
-
-        async def _tail_frames() -> list[tuple[int, bytes]]:
-            return parse_server_frames(writer.buffer[head_end:])
-
-        async with asyncio.timeout(2.0):
-            while len(await _tail_frames()) < len(BURST):
-                await asyncio.sleep(0.005)
-        frames = await _tail_frames()
+        await await_until(
+            lambda: len(parse_server_frames(writer.buffer[head_end:])) >= len(BURST),
+            timeout=10.0,
+            description="init burst after upgrade",
+        )
+        frames = parse_server_frames(writer.buffer[head_end:])
         assert [payload for _, payload in frames] == [line.encode() for line in BURST]
     finally:
         await server.stop()
     assert handler.disconnect_calls == 1
 
 
-async def test_accept_refused_predicate() -> None:
+async def test_accept_refused_predicate(virtual_clock: VirtualClock) -> None:
     def _refuse(headers: object) -> object:
         from rigplane.ws import UpgradeDecline
 
         return UpgradeDecline(403, "Forbidden", b"nope")
 
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock, allow=_refuse)  # type: ignore[arg-type]
+    server = make_server(handler, virtual_clock, allow=_refuse)  # type: ignore[arg-type]
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     reader.feed_data(
@@ -798,7 +834,9 @@ async def test_accept_refused_predicate() -> None:
         ),
     ],
 )
-async def test_accept_malformed_handshake_refused(raw: bytes, status: bytes) -> None:
+async def test_accept_malformed_handshake_refused(
+    virtual_clock: VirtualClock, raw: bytes, status: bytes
+) -> None:
     """Malformed upgrades never reach the handler or the registry.
 
     Each bad handshake is refused with its status, and nothing is
@@ -806,7 +844,6 @@ async def test_accept_malformed_handshake_refused(raw: bytes, status: bytes) -> 
     """
     from rigplane.tci.server import TciServer
 
-    clock = FakeClock()
     handler = FakeHandler()
     factory_calls = 0
 
@@ -820,7 +857,7 @@ async def test_accept_malformed_handshake_refused(raw: bytes, status: bytes) -> 
         host="127.0.0.1",
         port=0,
         allow=lambda headers: None,
-        clock=clock,
+        clock=virtual_clock,
     )
     reader = asyncio.StreamReader()
     writer = FakeWriter()
@@ -832,10 +869,9 @@ async def test_accept_malformed_handshake_refused(raw: bytes, status: bytes) -> 
     assert server.sessions == ()
 
 
-async def test_accept_missing_key_is_400() -> None:
-    clock = FakeClock()
+async def test_accept_missing_key_is_400(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     reader.feed_data(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -844,10 +880,9 @@ async def test_accept_missing_key_is_400() -> None:
     assert server.sessions == ()
 
 
-async def test_accept_garbage_is_400() -> None:
-    clock = FakeClock()
+async def test_accept_garbage_is_400(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     reader.feed_data(b"HELLO\r\n\r\n")
@@ -856,8 +891,8 @@ async def test_accept_garbage_is_400() -> None:
     assert server.sessions == ()
 
 
-async def test_stop_without_start_is_clean() -> None:
-    server = make_server(FakeHandler(), FakeClock())
+async def test_stop_without_start_is_clean(virtual_clock: VirtualClock) -> None:
+    server = make_server(FakeHandler(), virtual_clock)
     await server.stop()
     await server.stop()
     assert server.sessions == ()
@@ -885,6 +920,7 @@ class _FakeListener:
 
 
 async def test_stop_during_bind_closes_orphan(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bind outlived by a concurrent stop is closed, never installed.
@@ -893,9 +929,8 @@ async def test_stop_during_bind_closes_orphan(
     bind completes, the orphan is closed and ``start()`` reports the
     invalidation instead of installing a listener after shutdown.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     entered = asyncio.Event()
     gate = asyncio.Event()
     created: list[_FakeListener] = []
@@ -910,13 +945,16 @@ async def test_stop_during_bind_closes_orphan(
     monkeypatch.setattr(asyncio, "start_server", _gated_start)
     start_task = asyncio.create_task(server.start())
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(entered.is_set, timeout=10.0, description="bind entered")
         await server.stop()
         gate.set()
         try:
-            async with asyncio.timeout(10.0):
-                await start_task
+            await await_until(
+                lambda: start_task.done(),
+                timeout=10.0,
+                description="invalidated start settles",
+            )
+            await start_task
         except RuntimeError:
             pass
         else:
@@ -938,6 +976,7 @@ async def test_stop_during_bind_closes_orphan(
 
 
 async def test_replacement_start_survives_completed_predecessor(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A completed orphan must not clear its replacement's ownership.
@@ -947,9 +986,8 @@ async def test_replacement_start_survives_completed_predecessor(
     invalidation but leaves B's ``_starting`` alone, so B installs and
     serves when its own bind completes.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     entered_a = asyncio.Event()
     gate_a = asyncio.Event()
     entered_b = asyncio.Event()
@@ -974,16 +1012,22 @@ async def test_replacement_start_survives_completed_predecessor(
     task_a = asyncio.create_task(server.start())
     task_b: asyncio.Task[None] | None = None
     try:
-        async with asyncio.timeout(2.0):
-            await entered_a.wait()
+        await await_until(
+            entered_a.is_set, timeout=10.0, description="first bind entered"
+        )
         await server.stop()
         task_b = asyncio.create_task(server.start())
-        async with asyncio.timeout(2.0):
-            await entered_b.wait()
+        await await_until(
+            entered_b.is_set, timeout=10.0, description="replacement bind entered"
+        )
         gate_a.set()
         try:
-            async with asyncio.timeout(10.0):
-                await task_a
+            await await_until(
+                lambda: task_a.done(),
+                timeout=10.0,
+                description="invalidated start settles",
+            )
+            await task_a
         except RuntimeError:
             pass
         else:
@@ -992,7 +1036,12 @@ async def test_replacement_start_survives_completed_predecessor(
         assert created[0].closed
         assert server._starting is True
         gate_b.set()
-        async with asyncio.timeout(10.0):
+        await await_until(
+            lambda: task_b.done() if task_b is not None else True,
+            timeout=10.0,
+            description="replacement start installs",
+        )
+        if task_b is not None:
             await task_b
         assert server._listener is created[1]
         assert not created[1].closed
@@ -1013,6 +1062,7 @@ async def test_replacement_start_survives_completed_predecessor(
 
 
 async def test_replacement_start_survives_failing_predecessor(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed orphan must not clear its replacement's ownership.
@@ -1021,9 +1071,8 @@ async def test_replacement_start_survives_failing_predecessor(
     original error propagates from A, B's ``_starting`` stays set, and
     B installs when its own bind completes.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     entered_a = asyncio.Event()
     gate_a = asyncio.Event()
     entered_b = asyncio.Event()
@@ -1048,16 +1097,22 @@ async def test_replacement_start_survives_failing_predecessor(
     task_a = asyncio.create_task(server.start())
     task_b: asyncio.Task[None] | None = None
     try:
-        async with asyncio.timeout(2.0):
-            await entered_a.wait()
+        await await_until(
+            entered_a.is_set, timeout=10.0, description="first bind entered"
+        )
         await server.stop()
         task_b = asyncio.create_task(server.start())
-        async with asyncio.timeout(2.0):
-            await entered_b.wait()
+        await await_until(
+            entered_b.is_set, timeout=10.0, description="replacement bind entered"
+        )
         gate_a.set()
         try:
-            async with asyncio.timeout(10.0):
-                await task_a
+            await await_until(
+                lambda: task_a.done(),
+                timeout=10.0,
+                description="failed bind settles",
+            )
+            await task_a
         except OSError:
             pass
         else:
@@ -1065,7 +1120,12 @@ async def test_replacement_start_survives_failing_predecessor(
         assert server._listener is None
         assert server._starting is True
         gate_b.set()
-        async with asyncio.timeout(10.0):
+        await await_until(
+            lambda: task_b.done() if task_b is not None else True,
+            timeout=10.0,
+            description="replacement start installs",
+        )
+        if task_b is not None:
             await task_b
         assert server._listener is created[0]
         assert not created[0].closed
@@ -1086,12 +1146,12 @@ async def test_replacement_start_survives_failing_predecessor(
 
 
 async def test_concurrent_starts_reject_overlap(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two overlapping ``start()`` calls never bind twice."""
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     entered = asyncio.Event()
     gate = asyncio.Event()
     created: list[_FakeListener] = []
@@ -1106,20 +1166,20 @@ async def test_concurrent_starts_reject_overlap(
     monkeypatch.setattr(asyncio, "start_server", _gated_start)
     first = asyncio.create_task(server.start())
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(entered.is_set, timeout=10.0, description="bind entered")
         try:
-            async with asyncio.timeout(2.0):
-                await server.start()
+            await server.start()
         except RuntimeError:
             pass
-        except TimeoutError:
-            raise AssertionError("overlapping start() was not rejected") from None
         else:
             raise AssertionError("overlapping start() was not rejected")
         gate.set()
-        async with asyncio.timeout(10.0):
-            await first
+        await await_until(
+            lambda: first.done(),
+            timeout=10.0,
+            description="first start installs",
+        )
+        await first
         assert len(created) == 1
     finally:
         gate.set()
@@ -1134,14 +1194,14 @@ async def test_concurrent_starts_reject_overlap(
         await server.stop()
 
 
-async def test_server_defaults_use_leaf_constants() -> None:
-    server = make_server(FakeHandler(), FakeClock())
+async def test_server_defaults_use_leaf_constants(virtual_clock: VirtualClock) -> None:
+    server = make_server(FakeHandler(), virtual_clock)
     assert server._ping_interval == PING_INTERVAL_S
     assert server._coalesce_window == COALESCE_WINDOW_S
     assert server._deadline == DEADLINE_S
 
 
-async def test_stalled_sender_bounded_outbox() -> None:
+async def test_stalled_sender_bounded_outbox(virtual_clock: VirtualClock) -> None:
     """A stalled writer that keeps inbound alive cannot grow memory.
 
     Session A blocks in ``drain`` while inbound commands keep arriving
@@ -1150,9 +1210,8 @@ async def test_stalled_sender_bounded_outbox() -> None:
     from the registry), and healthy session B still receives a later
     broadcast.
     """
-    clock = FakeClock()
     handler = FakeHandler(replies={"echo": CommandOutcome(to_sender=["echo:1;"])})
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer_a = FakeWriter()
     writer_a.block_drain()
     session_a, _writer, reader_a = await open_session(server, handler, writer_a)
@@ -1161,15 +1220,21 @@ async def test_stalled_sender_bounded_outbox() -> None:
         await wait_for_frames(writer_b, len(BURST))
         for _ in range(MAX_QUEUED_OUTBOUND + 50):
             reader_a.feed_data(client_frame(WS_OP_TEXT, b"echo:1;"))
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        # The graceful close parks on the blocked drain: move virtual time
+        # past its bound so the abort and teardown run.
+        await virtual_clock.elapse(CLOSE_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=10.0,
+            description="stalled sender aborted",
+        )
         assert handler.disconnect_calls == 1
         assert session_a not in server.sessions
         assert session_a._done
         assert session_a._outbox.qsize() <= MAX_QUEUED_OUTBOUND
         assert len(session_a._pending) <= MAX_QUEUED_OUTBOUND
         server.broadcast(["ok:1;"])
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.02)
         frames_b = await wait_for_frames(writer_b, len(BURST) + 1)
         assert frames_b[-1] == (WS_OP_TEXT, b"ok:1;")
     finally:
@@ -1178,7 +1243,7 @@ async def test_stalled_sender_bounded_outbox() -> None:
     assert handler.disconnect_calls == 2
 
 
-async def test_finish_completes_with_blocked_drain() -> None:
+async def test_finish_completes_with_blocked_drain(virtual_clock: VirtualClock) -> None:
     """``finish()`` bounds the graceful close and falls back to abort.
 
     With ``drain`` blocked forever the close frame can never flush:
@@ -1186,16 +1251,21 @@ async def test_finish_completes_with_blocked_drain() -> None:
     once, release the transport, drop the session, and stay harmless
     when called again.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer = FakeWriter()
     writer.block_drain()
     session, _writer, _reader = await open_session(server, handler, writer)
-    started = time.monotonic()
-    async with asyncio.timeout(10.0):
-        await session.finish()
-    assert time.monotonic() - started < 10.0
+    task = asyncio.create_task(session.finish())
+    # The graceful close parks on the blocked drain: move virtual time past
+    # its bound so finish still completes through the abort fallback.
+    await virtual_clock.elapse(CLOSE_TIMEOUT_S + 1.0)
+    await await_until(
+        lambda: task.done(),
+        timeout=10.0,
+        description="finish completes with blocked drain",
+    )
+    await task
     assert handler.disconnect_calls == 1
     assert session not in server.sessions
     assert writer.transport.aborted
@@ -1203,41 +1273,45 @@ async def test_finish_completes_with_blocked_drain() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_cancelled_finish_still_releases() -> None:
+async def test_cancelled_finish_still_releases(virtual_clock: VirtualClock) -> None:
     """Cancelling ``finish()`` mid-close still releases everything.
 
     The abort fires, the disconnect runs exactly once, the session
     leaves the registry, and latecomers observe completion.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer = FakeWriter()
     writer.block_drain()
     session, _writer, _reader = await open_session(server, handler, writer)
     task = asyncio.create_task(session.finish())
-    async with asyncio.timeout(2.0):
-        while not session._done:
-            await asyncio.sleep(0.005)
-    await asyncio.sleep(0.05)
+    await await_until(
+        lambda: session._done,
+        timeout=10.0,
+        description="finish marks session done",
+    )
+    await virtual_clock.elapse(0.05)
     task.cancel()
-    async with asyncio.timeout(10.0):
-        while not task.done():
-            await asyncio.sleep(0.005)
+    await await_until(
+        lambda: task.done(),
+        timeout=10.0,
+        description="cancelled finish releases",
+    )
     assert handler.disconnect_calls == 1
     assert session not in server.sessions
     await session.finish()
     assert handler.disconnect_calls == 1
 
 
-async def test_disconnect_reawaited_after_first_cancel() -> None:
+async def test_disconnect_reawaited_after_first_cancel(
+    virtual_clock: VirtualClock,
+) -> None:
     """A cancelled disconnect wait is retained and re-awaited.
 
     Cancelling ``finish()`` while ``on_disconnect`` is blocked must not
     complete the finish or drop the session: the callback task is kept
     and waited on again, and only its completion releases the session.
     """
-    clock = FakeClock()
     handler = FakeHandler()
     entered = asyncio.Event()
     completed = asyncio.Event()
@@ -1250,25 +1324,30 @@ async def test_disconnect_reawaited_after_first_cancel() -> None:
         completed.set()
 
     handler.on_disconnect = _gated_disconnect  # type: ignore[method-assign]
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
     task = asyncio.create_task(session.finish())
-    async with asyncio.timeout(2.0):
-        await entered.wait()
+    await await_until(entered.is_set, timeout=10.0, description="disconnect entered")
     task.cancel()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     assert not task.done()
     assert not completed.is_set()
     assert session in server.sessions
     gate.set()
-    async with asyncio.timeout(5.0):
-        await task
+    await await_until(
+        lambda: task.done(),
+        timeout=10.0,
+        description="finish completes after gate",
+    )
+    await task
     assert completed.is_set()
     assert handler.disconnect_calls == 1
     assert session not in server.sessions
 
 
-async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
+async def test_bounded_join_runs_disconnect_before_gated_cleanup(
+    virtual_clock: VirtualClock,
+) -> None:
     """A gated cancellation cleanup must not wedge the disconnect.
 
     The handler's ``on_command`` catches its cancellation and parks in a
@@ -1277,7 +1356,6 @@ async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     cleanup_entered = asyncio.Event()
     gate = asyncio.Event()
@@ -1294,25 +1372,31 @@ async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
             raise AssertionError("unreachable")
 
     handler = _GatedHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, reader = await open_session(server, handler)
     task: asyncio.Task[None] | None = None
     try:
         reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated command entered"
+        )
         # The finish starts only once the handler is parked inside the
         # command: the cancel must land mid-callback, not mid-read.
         task = asyncio.create_task(session.finish())
-        async with asyncio.timeout(2.0):
-            await cleanup_entered.wait()
-        try:
-            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
-                await task
-        except TimeoutError:
-            raise AssertionError(
-                "finish() did not complete before the gate was released"
-            ) from None
+        await await_until(
+            cleanup_entered.is_set,
+            timeout=10.0,
+            description="gated cleanup entered",
+        )
+        # The join's bounded wait runs on virtual time: move past it so
+        # finish completes (retaining the gated cleanup) before the gate.
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: task.done(),
+            timeout=10.0,
+            description="finish() completes before the gate was released",
+        )
+        await task
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
     finally:
@@ -1320,44 +1404,58 @@ async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
         if task is not None:
             if not task.done():
                 task.cancel()
-            try:
-                async with asyncio.timeout(10.0):
-                    await task
-            except (asyncio.CancelledError, TimeoutError):
-                pass
-        await session.finish()
+            await await_until(
+                lambda: task.done(),
+                timeout=10.0,
+                description="finish task settles",
+            )
+        try:
+            await session.finish()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
 
 
-async def test_hung_disconnect_is_abandoned_bounded() -> None:
+async def test_hung_disconnect_is_abandoned_bounded(
+    virtual_clock: VirtualClock,
+) -> None:
     """A disconnect that never settles is abandoned, not hung on.
 
     Each wait on the callback is bounded (two waits, like the managed
     handback): finish still completes, drops the session, and marks
     completion even when the handler never returns.
     """
-    clock = FakeClock()
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
     handler = FakeHandler()
     handler.disconnect_gate = asyncio.Event()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, _writer, _reader = await open_session(server, handler)
-    started = time.monotonic()
-    async with asyncio.timeout(15.0):
-        await session.finish()
-    assert time.monotonic() - started < 15.0
+    task = asyncio.create_task(session.finish())
+    # Every wait on the never-settling callback is virtual: move past all
+    # three bounds so finish still completes and abandons the callback.
+    await virtual_clock.elapse(TEARDOWN_TIMEOUT_S * 3 + 1.0)
+    await await_until(
+        lambda: task.done(),
+        timeout=10.0,
+        description="abandoned disconnect finishes bounded",
+    )
+    await task
     assert session not in server.sessions
 
 
-async def test_reply_ordered_behind_pending_broadcast() -> None:
+async def test_reply_ordered_behind_pending_broadcast(
+    virtual_clock: VirtualClock,
+) -> None:
     """An immediate reply never jumps ahead of a held broadcast."""
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, _reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
         server.broadcast(["vfo:0,0,111;"])
         assert session._pending == ["vfo:0,0,111;"]
         session._send_now("vfo:0,0,222;")
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.01)
         frames = await wait_for_frames(writer, len(BURST) + 2)
         assert [payload for _, payload in frames[-2:]] == [
             b"vfo:0,0,111;",
@@ -1367,7 +1465,9 @@ async def test_reply_ordered_behind_pending_broadcast() -> None:
         await session.finish()
 
 
-async def test_close_with_blocked_echo_watchdog_aborts() -> None:
+async def test_close_with_blocked_echo_watchdog_aborts(
+    virtual_clock: VirtualClock,
+) -> None:
     """A received CLOSE with a saturated echo drain still dies on watchdog.
 
     The close path marks the connection closed and parks in the echo
@@ -1376,21 +1476,30 @@ async def test_close_with_blocked_echo_watchdog_aborts() -> None:
     run the disconnect exactly once, drop the session, and finish
     bounded.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer = FakeWriter()
     writer.block_drain()
     session, _writer, reader = await open_session(server, handler, writer)
     try:
         await wait_for_frames(writer, 1)
         reader.feed_data(client_frame(WS_OP_CLOSE, b"\x03\xe8"))
-        async with asyncio.timeout(5.0):
-            while not session._conn.closed:
-                await asyncio.sleep(0.005)
-        clock.advance(DEADLINE_S + 1.0)
-        async with asyncio.timeout(10.0):
-            assert await session.check_deadline(clock()) is True
+        await await_until(
+            lambda: session._conn.closed,
+            timeout=10.0,
+            description="close frame marks connection closed",
+        )
+        virtual_clock.advance(DEADLINE_S + 1.0)
+        stale = asyncio.create_task(session.check_deadline(virtual_clock()))
+        # The close parks on the blocked echo drain: move virtual time past
+        # its bound so the watchdog teardown reaches the real transport.
+        await virtual_clock.elapse(CLOSE_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: stale.done(),
+            timeout=10.0,
+            description="watchdog teardown finishes with blocked echo drain",
+        )
+        assert await stale is True
         assert writer.transport.aborted
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
@@ -1399,49 +1508,52 @@ async def test_close_with_blocked_echo_watchdog_aborts() -> None:
     assert handler.disconnect_calls == 1
 
 
-async def test_ping_loop_recovers_after_stalled_write() -> None:
+async def test_ping_loop_recovers_after_stalled_write(
+    virtual_clock: VirtualClock,
+) -> None:
     """A stalled ping write must not kill the heartbeat forever.
 
     The drain blocks past one bounded write (timeout), then recovers:
     subsequent pings must still go out while the session is live.
     """
-    clock = FakeClock()
     handler = FakeHandler()
-    server = make_server(handler, clock, ping_interval=0.05)
+    server = make_server(handler, virtual_clock, ping_interval=0.05)
     session, writer, _reader = await open_session(server, handler)
     try:
 
-        async def _ping_count() -> int:
+        def _ping_count() -> int:
             return sum(
                 1
                 for opcode, _ in parse_server_frames(writer.buffer)
                 if opcode == WS_OP_PING
             )
 
-        async def _wait_pings(count: int, timeout: float = 5.0) -> None:
-            async with asyncio.timeout(timeout):
-                while await _ping_count() < count:
-                    await asyncio.sleep(0.005)
+        async def _wait_pings(count: int) -> None:
+            await await_until(
+                lambda: _ping_count() >= count,
+                timeout=10.0,
+                description=f"at least {count} pings",
+            )
 
+        # The heartbeat runs on virtual time: elapse past intervals instead
+        # of sleeping through them.
+        await virtual_clock.elapse(server._ping_interval + 0.01)
         await _wait_pings(1)
         writer.block_drain()
-        await asyncio.sleep(0.2)
-        stalled = await _ping_count()
+        await virtual_clock.elapse(server._ping_interval * 4)
+        stalled = _ping_count()
         writer._drain = None
-        try:
-            await _wait_pings(stalled + 2)
-        except TimeoutError:
-            raise AssertionError("ping loop died after one stalled write") from None
-        assert await _ping_count() >= stalled + 2
+        await virtual_clock.elapse(server._ping_interval * 4)
+        await _wait_pings(stalled + 2)
+        assert _ping_count() >= stalled + 2
         assert session in server.sessions
     finally:
         await session.finish()
 
 
-async def test_pong_answers_ping() -> None:
-    clock = FakeClock()
+async def test_pong_answers_ping(virtual_clock: VirtualClock) -> None:
     handler = FakeHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
@@ -1452,7 +1564,9 @@ async def test_pong_answers_ping() -> None:
         await session.finish()
 
 
-async def test_gated_finalizer_does_not_wedge_finish() -> None:
+async def test_gated_finalizer_does_not_wedge_finish(
+    virtual_clock: VirtualClock,
+) -> None:
     """A disconnect parked in an async finalizer must not wedge ``finish()``.
 
     The callback is cancelled after entry and parks in a gated
@@ -1462,7 +1576,6 @@ async def test_gated_finalizer_does_not_wedge_finish() -> None:
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     finalizing = asyncio.Event()
     finalized = asyncio.Event()
@@ -1480,28 +1593,33 @@ async def test_gated_finalizer_does_not_wedge_finish() -> None:
                 finalized.set()
 
     handler = _FinalizingHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, _reader = await open_session(server, handler)
     task = asyncio.create_task(session.finish())
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
-        try:
-            async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 3 + 5.0):
-                await task
-        except TimeoutError:
-            raise AssertionError(
-                "finish() wedged on a gated disconnect finalizer"
-            ) from None
+        await await_until(
+            entered.is_set, timeout=10.0, description="disconnect entered"
+        )
+        # The two bounded waits plus the settle run on virtual time: move
+        # past all three so finish completes (retaining the finalizer).
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S * 3 + 1.0)
+        await await_until(
+            lambda: task.done(),
+            timeout=10.0,
+            description="finish() wedged on a gated disconnect finalizer",
+        )
+        await task
         assert finalizing.is_set()
         assert not finalized.is_set()
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert writer.is_closing()
         cleanup_gate.set()
-        async with asyncio.timeout(5.0):
-            while not finalized.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            finalized.is_set,
+            timeout=10.0,
+            description="gated finalizer completes after gate",
+        )
         assert handler.disconnect_calls == 1
     finally:
         cleanup_gate.set()
@@ -1514,7 +1632,9 @@ async def test_gated_finalizer_does_not_wedge_finish() -> None:
         await session.finish()
 
 
-async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
+async def test_stop_returns_while_disconnect_finalizer_gated(
+    virtual_clock: VirtualClock,
+) -> None:
     """``stop()`` must return bounded with a gated disconnect finalizer.
 
     The session teardown parks in an async ``finally`` behind the two
@@ -1522,7 +1642,8 @@ async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
     its own budget, and opening the gate completes the disconnect
     exactly once.
     """
-    clock = FakeClock()
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
     entered = asyncio.Event()
     finalized = asyncio.Event()
     cleanup_gate = asyncio.Event()
@@ -1538,25 +1659,30 @@ async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
                 finalized.set()
 
     handler = _FinalizingHandler()
-    server = make_server(handler, clock, stop_timeout=10.0)
+    server = make_server(handler, virtual_clock, stop_timeout=10.0)
     session, _writer, _reader = await open_session(server, handler)
     task = asyncio.create_task(server.stop())
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
-        try:
-            async with asyncio.timeout(15.0):
-                await task
-        except TimeoutError:
-            raise AssertionError(
-                "stop() wedged on a gated disconnect finalizer"
-            ) from None
+        await await_until(
+            entered.is_set, timeout=10.0, description="disconnect entered"
+        )
+        # The session teardown's bounded waits run on virtual time: move
+        # past them so the aggregate stop wait returns within its budget.
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S * 3 + 1.0)
+        await await_until(
+            lambda: task.done(),
+            timeout=10.0,
+            description="stop() wedged on a gated disconnect finalizer",
+        )
+        await task
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         cleanup_gate.set()
-        async with asyncio.timeout(5.0):
-            while not finalized.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            finalized.is_set,
+            timeout=10.0,
+            description="gated finalizer completes after gate",
+        )
         assert handler.disconnect_calls == 1
     finally:
         cleanup_gate.set()
@@ -1569,7 +1695,9 @@ async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
         await server.stop()
 
 
-async def test_gated_command_pong_keeps_session_alive() -> None:
+async def test_gated_command_pong_keeps_session_alive(
+    virtual_clock: VirtualClock,
+) -> None:
     """A pong received while a command runs must still renew liveness.
 
     The reader keeps consuming inbound frames while the command
@@ -1577,7 +1705,6 @@ async def test_gated_command_pong_keeps_session_alive() -> None:
     command arrived, a pong still releases the session instead of the
     watchdog aborting a responsive peer.
     """
-    clock = FakeClock()
     gate = asyncio.Event()
     entered = asyncio.Event()
 
@@ -1588,24 +1715,22 @@ async def test_gated_command_pong_keeps_session_alive() -> None:
             return CommandOutcome(to_sender=["done:1;"])
 
     handler = _GatedHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
-        clock.advance(DEADLINE_S + 1.0)
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated command entered"
+        )
+        virtual_clock.advance(DEADLINE_S + 1.0)
         reader.feed_data(client_frame(WS_OP_PONG, b""))
-        try:
-            async with asyncio.timeout(2.0):
-                while session._conn.last_activity < clock():
-                    await asyncio.sleep(0.005)
-        except TimeoutError:
-            raise AssertionError(
-                "reader stalled behind a gated command; pong unread"
-            ) from None
-        assert await session.check_deadline(clock()) is False
+        await await_until(
+            lambda: session._conn.last_activity >= virtual_clock(),
+            timeout=10.0,
+            description="reader stalled behind a gated command; pong unread",
+        )
+        assert await session.check_deadline(virtual_clock()) is False
         assert handler.disconnect_calls == 0
         gate.set()
         frames = await wait_for_frames(writer, len(BURST) + 1)
@@ -1616,13 +1741,14 @@ async def test_gated_command_pong_keeps_session_alive() -> None:
         await session.finish()
 
 
-async def test_gated_binary_pong_keeps_session_alive() -> None:
+async def test_gated_binary_pong_keeps_session_alive(
+    virtual_clock: VirtualClock,
+) -> None:
     """A pong received while binary handling runs must still renew liveness.
 
     Binary callbacks run on the same dispatch path as commands: a
     parked ``on_binary`` must not stall the reader either.
     """
-    clock = FakeClock()
     gate = asyncio.Event()
     entered = asyncio.Event()
 
@@ -1633,29 +1759,29 @@ async def test_gated_binary_pong_keeps_session_alive() -> None:
             await super().on_binary(payload)
 
     handler = _GatedHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_BINARY, b"\x01\x02\x03"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
-        clock.advance(DEADLINE_S + 1.0)
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated binary entered"
+        )
+        virtual_clock.advance(DEADLINE_S + 1.0)
         reader.feed_data(client_frame(WS_OP_PONG, b""))
-        try:
-            async with asyncio.timeout(2.0):
-                while session._conn.last_activity < clock():
-                    await asyncio.sleep(0.005)
-        except TimeoutError:
-            raise AssertionError(
-                "reader stalled behind gated binary; pong unread"
-            ) from None
-        assert await session.check_deadline(clock()) is False
+        await await_until(
+            lambda: session._conn.last_activity >= virtual_clock(),
+            timeout=10.0,
+            description="reader stalled behind gated binary; pong unread",
+        )
+        assert await session.check_deadline(virtual_clock()) is False
         assert handler.disconnect_calls == 0
         gate.set()
-        async with asyncio.timeout(2.0):
-            while not handler.binaries:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: handler.binaries,
+            timeout=10.0,
+            description="gated binary delivered after gate",
+        )
         assert handler.binaries == [b"\x01\x02\x03"]
         assert handler.disconnect_calls == 0
     finally:
@@ -1663,7 +1789,9 @@ async def test_gated_binary_pong_keeps_session_alive() -> None:
         await session.finish()
 
 
-async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
+async def test_join_observed_before_gate_with_repeated_cancel_command(
+    virtual_clock: VirtualClock,
+) -> None:
     """A command cleanup surviving repeated cancel must not wedge ``finish()``.
 
     The dispatch callback parks in a gated ``finally`` that ignores
@@ -1674,7 +1802,6 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleaned = asyncio.Event()
@@ -1699,23 +1826,31 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
                 return CommandOutcome()
 
     handler = _RepeatCancelHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     task: asyncio.Task[None] | None = None
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_TEXT, b"gated;second;"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated command entered"
+        )
         task = asyncio.create_task(session.finish())
-        async with asyncio.timeout(2.0):
-            await cleaning.wait()
-        # Observe with ``wait`` (never ``await`` the task under a timeout:
-        # cancelling the waiter would propagate into the join under test
-        # and mask the wedge). ``wait`` returns bounded either way.
-        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
-        if pending_wait:
-            raise AssertionError("finish() wedged on a repeat-cancel command cleanup")
+        await await_until(
+            cleaning.is_set,
+            timeout=10.0,
+            description="repeat-cancel cleanup entered",
+        )
+        # Observe with a real-event wait, never by awaiting the task under
+        # a timeout: cancelling the waiter would propagate into the join
+        # under test and mask the wedge. The join's bound runs on virtual
+        # time, so elapse past it first.
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: task.done() if task is not None else True,
+            timeout=10.0,
+            description="finish() wedged on a repeat-cancel command cleanup",
+        )
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert writer.is_closing()
@@ -1725,33 +1860,39 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
         pending = [t for t in list(session._tasks) if not t.done()]
         for t in pending:
             t.cancel()
-        await asyncio.sleep(0.05)
+        await virtual_clock.elapse(0.05)
         assert not cleaned.is_set()
         assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         gate.set()
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            cleaned.is_set,
+            timeout=10.0,
+            description="retained command cleanup completes after gate",
+        )
         assert handler.disconnect_calls == 1
         assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
     finally:
         gate.set()
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.wait([task], timeout=10.0)
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await await_until(
+                lambda: task.done(),
+                timeout=10.0,
+                description="finish task settles",
+            )
         for pending_task in list(session._tasks):
             if not pending_task.done():
                 pending_task.cancel()
         try:
-            async with asyncio.timeout(5.0):
-                await session.finish()
+            await session.finish()
         except (asyncio.CancelledError, TimeoutError):
             pass
 
 
-async def test_second_command_never_dispatched_when_first_raises_after_teardown() -> (
-    None
-):
+async def test_second_command_never_dispatched_when_first_raises_after_teardown(
+    virtual_clock: VirtualClock,
+) -> None:
     """A raising first command must not leak the second one past teardown.
 
     Same shape as the repeat-cancel join test, but the gated cleanup
@@ -1761,7 +1902,6 @@ async def test_second_command_never_dispatched_when_first_raises_after_teardown(
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleaned = asyncio.Event()
@@ -1787,47 +1927,65 @@ async def test_second_command_never_dispatched_when_first_raises_after_teardown(
                 raise RuntimeError("boom-after-teardown")
 
     handler = _RaisingRepeatCancelHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     task: asyncio.Task[None] | None = None
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_TEXT, b"gated;second;"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated command entered"
+        )
         task = asyncio.create_task(session.finish())
-        async with asyncio.timeout(2.0):
-            await cleaning.wait()
-        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
-        if pending_wait:
-            raise AssertionError("finish() wedged on a raising repeat-cancel cleanup")
+        await await_until(
+            cleaning.is_set,
+            timeout=10.0,
+            description="repeat-cancel cleanup entered",
+        )
+        # The join's bound runs on virtual time: elapse past it first, then
+        # observe with a real-event wait (never await the task under a
+        # timeout: that would cancel the join under test and mask the wedge).
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: task.done() if task is not None else True,
+            timeout=10.0,
+            description="finish() wedged on a raising repeat-cancel cleanup",
+        )
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert writer.is_closing()
         assert not cleaned.is_set()
         assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         gate.set()
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            cleaned.is_set,
+            timeout=10.0,
+            description="retained command cleanup completes after gate",
+        )
         assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         assert handler.disconnect_calls == 1
     finally:
         gate.set()
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.wait([task], timeout=10.0)
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await await_until(
+                lambda: task.done(),
+                timeout=10.0,
+                description="finish task settles",
+            )
         for pending_task in list(session._tasks):
             if not pending_task.done():
                 pending_task.cancel()
         try:
-            async with asyncio.timeout(5.0):
-                await session.finish()
+            await session.finish()
         except (asyncio.CancelledError, TimeoutError):
             pass
 
 
-async def test_stop_closes_pending_setup_transport_before_gate_release() -> None:
+async def test_stop_closes_pending_setup_transport_before_gate_release(
+    virtual_clock: VirtualClock,
+) -> None:
     """``stop()`` releases the accepted socket even when setup never returns.
 
     A cancellation-resistant ``on_connect`` (repeated-cancel shape):
@@ -1837,7 +1995,6 @@ async def test_stop_closes_pending_setup_transport_before_gate_release() -> None
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleaned = asyncio.Event()
@@ -1860,30 +2017,46 @@ async def test_stop_closes_pending_setup_transport_before_gate_release() -> None
             return list(BURST)
 
     handler = _RepeatCancelConnectHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     setup_task = asyncio.create_task(server._open_session(reader, writer, handler))
     server._setup_tasks.add(setup_task)
     stop_task: asyncio.Task[None] | None = None
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="on_connect entered"
+        )
         stop_task = asyncio.create_task(server.stop())
-        async with asyncio.timeout(2.0):
-            await cleaning.wait()
-        _, pending_wait = await asyncio.wait([stop_task], timeout=10.0)
-        if pending_wait:
-            raise AssertionError("stop() wedged on a repeat-cancel on_connect cleanup")
+        await await_until(
+            cleaning.is_set,
+            timeout=10.0,
+            description="repeat-cancel cleanup entered",
+        )
+        # The aggregate stop wait runs on virtual time: elapse past its
+        # bound first, then observe with a real-event wait (never await
+        # the task under a timeout: that would cancel the join under test
+        # and mask the wedge).
+        await virtual_clock.elapse(STOP_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: stop_task.done() if stop_task is not None else True,
+            timeout=10.0,
+            description="stop() wedged on a repeat-cancel on_connect cleanup",
+        )
         assert writer.is_closing(), "pending setup transport still open after stop()"
         assert not cleaned.is_set()
         assert server.sessions == ()
         gate.set()
-        _, pending_setup = await asyncio.wait([setup_task], timeout=5.0)
-        assert not pending_setup, "setup did not complete after the gate opened"
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: setup_task.done(),
+            timeout=10.0,
+            description="setup did not complete after the gate opened",
+        )
+        await await_until(
+            cleaned.is_set,
+            timeout=10.0,
+            description="retained setup completes after gate",
+        )
         assert handler.disconnect_calls == 1
         assert server.sessions == ()
     finally:
@@ -1891,19 +2064,29 @@ async def test_stop_closes_pending_setup_transport_before_gate_release() -> None
         server._setup_tasks.discard(setup_task)
         if not setup_task.done():
             setup_task.cancel()
-            await asyncio.wait([setup_task], timeout=5.0)
-        if stop_task is not None and not stop_task.done():
-            stop_task.cancel()
-            await asyncio.wait([stop_task], timeout=5.0)
+        await await_until(
+            lambda: setup_task.done(),
+            timeout=10.0,
+            description="setup task settles",
+        )
+        if stop_task is not None:
+            if not stop_task.done():
+                stop_task.cancel()
+            await await_until(
+                lambda: stop_task.done(),
+                timeout=10.0,
+                description="stop task settles",
+            )
         try:
-            async with asyncio.timeout(10.0):
-                await server.stop()
+            await server.stop()
         except (asyncio.CancelledError, TimeoutError):
             pass
         assert TEARDOWN_TIMEOUT_S > 0
 
 
-async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
+async def test_join_observed_before_gate_with_repeated_cancel_binary(
+    virtual_clock: VirtualClock,
+) -> None:
     """A binary cleanup surviving repeated cancel must not wedge ``finish()``.
 
     Same join as the command path (the dispatch task runs both
@@ -1912,7 +2095,6 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
     """
     from rigplane.tci.server import TEARDOWN_TIMEOUT_S
 
-    clock = FakeClock()
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleaned = asyncio.Event()
@@ -1934,58 +2116,74 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
                 cleaned.set()
 
     handler = _RepeatCancelBinaryHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     session, writer, reader = await open_session(server, handler)
     task: asyncio.Task[None] | None = None
     try:
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_BINARY, b"\x01\x02"))
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="gated binary entered"
+        )
         task = asyncio.create_task(session.finish())
-        async with asyncio.timeout(2.0):
-            await cleaning.wait()
-        # Observe with ``wait``: awaiting under a timeout would cancel
-        # the join under test and mask the wedge.
-        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
-        if pending_wait:
-            raise AssertionError("finish() wedged on a repeat-cancel binary cleanup")
+        await await_until(
+            cleaning.is_set,
+            timeout=10.0,
+            description="repeat-cancel cleanup entered",
+        )
+        # Observe with a real-event wait, never by awaiting the task under
+        # a timeout: cancelling the waiter would propagate into the join
+        # under test and mask the wedge. The join's bound runs on virtual
+        # time, so elapse past it first.
+        await virtual_clock.elapse(TEARDOWN_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: task.done() if task is not None else True,
+            timeout=10.0,
+            description="finish() wedged on a repeat-cancel binary cleanup",
+        )
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert not cleaned.is_set()
         pending = [t for t in list(session._tasks) if not t.done()]
         for t in pending:
             t.cancel()
-        await asyncio.sleep(0.05)
+        await virtual_clock.elapse(0.05)
         assert not cleaned.is_set()
         gate.set()
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            cleaned.is_set,
+            timeout=10.0,
+            description="retained binary cleanup completes after gate",
+        )
         assert handler.binaries == [b"\x01\x02"]
     finally:
         gate.set()
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.wait([task], timeout=10.0)
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await await_until(
+                lambda: task.done(),
+                timeout=10.0,
+                description="finish task settles",
+            )
         for pending_task in list(session._tasks):
             if not pending_task.done():
                 pending_task.cancel()
         try:
-            async with asyncio.timeout(5.0):
-                await session.finish()
+            await session.finish()
         except (asyncio.CancelledError, TimeoutError):
             pass
 
 
-async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
+async def test_stop_observed_before_gate_with_repeated_cancel_connect(
+    virtual_clock: VirtualClock,
+) -> None:
     """An ``on_connect`` cleanup surviving repeated cancel must not wedge ``stop()``.
 
     The pending setup parks in a gated ``finally`` that ignores further
     cancellation: ``stop()`` still returns bounded before the gate
     opens; the retained setup completes after.
     """
-    clock = FakeClock()
     entered = asyncio.Event()
     cleaning = asyncio.Event()
     cleaned = asyncio.Event()
@@ -2008,52 +2206,76 @@ async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
             return list(BURST)
 
     handler = _RepeatCancelConnectHandler()
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     setup_task = asyncio.create_task(server._open_session(reader, writer, handler))
     server._setup_tasks.add(setup_task)
     stop_task: asyncio.Task[None] | None = None
     try:
-        async with asyncio.timeout(2.0):
-            await entered.wait()
+        await await_until(
+            entered.is_set, timeout=10.0, description="on_connect entered"
+        )
         stop_task = asyncio.create_task(server.stop())
-        async with asyncio.timeout(2.0):
-            await cleaning.wait()
-        # Observe with ``wait``: awaiting under a timeout would cancel
-        # the join under test and mask the wedge.
-        _, pending_wait = await asyncio.wait([stop_task], timeout=10.0)
-        if pending_wait:
-            raise AssertionError("stop() wedged on a repeat-cancel on_connect cleanup")
+        await await_until(
+            cleaning.is_set,
+            timeout=10.0,
+            description="repeat-cancel cleanup entered",
+        )
+        # Observe with a real-event wait, never by awaiting the task under
+        # a timeout: cancelling the waiter would propagate into the join
+        # under test and mask the wedge. The aggregate stop wait runs on
+        # virtual time, so elapse past its bound first.
+        await virtual_clock.elapse(STOP_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: stop_task.done() if stop_task is not None else True,
+            timeout=10.0,
+            description="stop() wedged on a repeat-cancel on_connect cleanup",
+        )
         assert not cleaned.is_set()
         assert not setup_task.done()
         setup_task.cancel()
-        await asyncio.sleep(0.05)
+        await virtual_clock.elapse(0.05)
         assert not cleaned.is_set()
         gate.set()
-        _, pending_setup = await asyncio.wait([setup_task], timeout=5.0)
-        assert not pending_setup, "setup did not complete after the gate opened"
-        async with asyncio.timeout(5.0):
-            while not cleaned.is_set():
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: setup_task.done(),
+            timeout=10.0,
+            description="setup did not complete after the gate opened",
+        )
+        await await_until(
+            cleaned.is_set,
+            timeout=10.0,
+            description="retained setup completes after gate",
+        )
         assert handler.disconnect_calls == 1
     finally:
         gate.set()
         server._setup_tasks.discard(setup_task)
         if not setup_task.done():
             setup_task.cancel()
-            await asyncio.wait([setup_task], timeout=5.0)
-        if stop_task is not None and not stop_task.done():
-            stop_task.cancel()
-            await asyncio.wait([stop_task], timeout=5.0)
+        await await_until(
+            lambda: setup_task.done(),
+            timeout=10.0,
+            description="setup task settles",
+        )
+        if stop_task is not None:
+            if not stop_task.done():
+                stop_task.cancel()
+            await await_until(
+                lambda: stop_task.done(),
+                timeout=10.0,
+                description="stop task settles",
+            )
         try:
-            async with asyncio.timeout(10.0):
-                await server.stop()
+            await server.stop()
         except (asyncio.CancelledError, TimeoutError):
             pass
 
 
-async def test_overflowed_sender_observers_still_updated() -> None:
+async def test_overflowed_sender_observers_still_updated(
+    virtual_clock: VirtualClock,
+) -> None:
     """An accepted change reaches observers even when the sender overflows.
 
     Session A stalls (blocked drain) while inbound stays alive; the
@@ -2061,14 +2283,13 @@ async def test_overflowed_sender_observers_still_updated() -> None:
     accepted ``to_others`` change out to healthy session B, and A must
     then disconnect exactly once.
     """
-    clock = FakeClock()
     handler = FakeHandler(
         replies={
             "fill": CommandOutcome(to_sender=["x;"]),
             "f": CommandOutcome(to_sender=["s:1;"], to_others=["o:F2;"]),
         }
     )
-    server = make_server(handler, clock)
+    server = make_server(handler, virtual_clock)
     writer_a = FakeWriter()
     writer_a.block_drain()
     session_a, writer_a2, reader_a = await open_session(server, handler, writer_a)
@@ -2085,19 +2306,27 @@ async def test_overflowed_sender_observers_still_updated() -> None:
         # stopping exactly at capacity: no overflow yet.
         for _ in range(MAX_QUEUED_OUTBOUND - (len(BURST) - 1)):
             reader_a.feed_data(client_frame(WS_OP_TEXT, b"fill;"))
-        async with asyncio.timeout(5.0):
-            while len(handler.commands) < MAX_QUEUED_OUTBOUND - (len(BURST) - 1):
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: len(handler.commands) >= MAX_QUEUED_OUTBOUND - (len(BURST) - 1),
+            timeout=10.0,
+            description="fill commands dispatched",
+        )
         assert session_a._outbox.qsize() == MAX_QUEUED_OUTBOUND
         assert handler.disconnect_calls == 0
         # The accepted write overflows A's own reply queue: its
         # observer update must still reach healthy B, then A goes.
         reader_a.feed_data(client_frame(WS_OP_TEXT, b"f:1;"))
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        # The graceful close parks on the blocked drain: move virtual time
+        # past its bound so the abort and teardown run.
+        await virtual_clock.elapse(CLOSE_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: handler.disconnect_calls > 0,
+            timeout=10.0,
+            description="overflowed sender aborted",
+        )
         assert handler.disconnect_calls == 1
         assert session_a not in server.sessions
+        await virtual_clock.elapse(COALESCE_WINDOW_S + 0.02)
         frames_b = await wait_for_frames(writer_b, len(BURST) + 1)
         assert frames_b[-1] == (WS_OP_TEXT, b"o:F2;")
     finally:
