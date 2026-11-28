@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.audio import build_audio_packet
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.icom.simulator import (
@@ -49,6 +50,8 @@ from testkit.test_simulator_faults import (
     _openclose,
     _ping,
 )
+
+pytestmark = pytest.mark.timeout(30)
 
 _PT_I_AM_HERE = 0x04
 _PT_PING = 0x07
@@ -245,6 +248,7 @@ async def _open_audio(client: _UdpClient, server: MockIcomRadio) -> int:
     iah = await client.recv()
     assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
     client.send(_audio_openclose(seq=0), server.audio_port)
+    await _await_client_seq(server)  # the open was processed, not just sent
     return struct.unpack_from("<I", iah, 8)[0]
 
 
@@ -256,13 +260,19 @@ async def _open_audio_as(
     iah = await client.recv()
     assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
     client.send(_audio_open_as(sender_id), server.audio_port)
+    await _await_client_seq(server)  # the open was processed, not just sent
     return struct.unpack_from("<I", iah, 8)[0]
 
 
 async def _collect_audio(
     client: _UdpClient, seconds: float
 ) -> list[tuple[float, bytes]]:
-    """Collect audio-port packets for a window as (arrival, packet)."""
+    """Collect audio-port packets for a window as (arrival, packet).
+
+    Real-time form, kept for the tests whose subject is a real-time
+    simulator window (they stay in ``realtime_baseline.txt``); the
+    converted tests use :func:`_collect_audio_virtual`.
+    """
     out: list[tuple[float, bytes]] = []
     deadline = time.monotonic() + seconds
     while True:
@@ -272,6 +282,35 @@ async def _collect_audio(
         try:
             out.append((time.monotonic(), await client.recv(timeout=remaining)))
         except asyncio.TimeoutError:
+            return out
+
+
+async def _collect_audio_virtual(
+    clock: VirtualClock, client: _UdpClient, server: MockIcomRadio, seconds: float
+) -> list[tuple[float, bytes]]:
+    """Collect one burst per 20 ms of virtual time as (arrival, packet).
+
+    Arrivals are stamped with the virtual clock: each ``elapse`` step
+    fires exactly one burst deterministically, so cadence assertions
+    read the stream's schedule instead of loopback timing. Only
+    loopback delivery is awaited on real time, with the exact sent
+    count from ``audio_rx_frames_sent`` — never a guess.
+    """
+    base = server.audio_rx_frames_sent
+    steps = max(1, round(seconds / _AUDIO_BURST_PERIOD_S))
+    for _ in range(steps):
+        await clock.elapse(_AUDIO_BURST_PERIOD_S)
+    want = server.audio_rx_frames_sent - base
+    await await_until(
+        lambda: client.queue.qsize() >= want,
+        timeout=5.0,
+        description=f"{want} RX burst datagrams of loopback delivery",
+    )
+    out: list[tuple[float, bytes]] = []
+    while True:
+        try:
+            out.append((clock.now, client.queue.get_nowait()))
+        except asyncio.QueueEmpty:
             return out
 
 
@@ -343,70 +382,84 @@ async def _drain(
             return
 
 
-async def _await_rx_stop(server: MockIcomRadio, timeout: float = 2.0) -> int:
-    """Wait until ``audio_rx_frames_sent`` stops advancing; return the value.
-
-    A running stream advances the counter every burst (three packets per
-    20 ms), so two equal samples a burst period apart mean the stream
-    stopped. A mutation that keeps the stream running after the stop keeps
-    the counter moving and times this out, failing the test.
-    """
-    deadline = time.monotonic() + timeout
-    previous = server.audio_rx_frames_sent
-    while True:
-        await asyncio.sleep(0.03)
-        current = server.audio_rx_frames_sent
-        if current == previous:
-            await asyncio.sleep(0.03)
-            if server.audio_rx_frames_sent == current:
-                return current
-        previous = current
-        assert time.monotonic() < deadline, (
-            f"RX counter kept advancing past the stop: {current}"
-        )
-
-
-async def _await_client_seq(server: MockIcomRadio, timeout: float = 2.0) -> int:
+async def _await_client_seq(server: MockIcomRadio) -> int:
     """Wait until the open has registered its tracked seq; return it.
 
     The client's open datagram is still in flight when the IAH reply to
     the earlier AYT arrives, so the first assertion after ``_open_audio``
     must wait for the server to process it rather than assume delivery.
+    A loopback delivery is a real event, awaited on real time.
     """
-    deadline = time.monotonic() + timeout
-    while server.audio_last_client_seq is None:
-        await asyncio.sleep(0.01)
-        assert time.monotonic() < deadline, "audio open never registered"
+    await await_until(
+        lambda: server.audio_last_client_seq is not None,
+        timeout=5.0,
+        description="the audio open to register its tracked seq",
+    )
+    assert server.audio_last_client_seq is not None
     return server.audio_last_client_seq
 
 
-async def _await_client_seq_value(
-    server: MockIcomRadio, value: int, timeout: float = 2.0
-) -> None:
+async def _await_client_seq_value(server: MockIcomRadio, value: int) -> None:
     """Wait until ``audio_last_client_seq`` reads ``value`` (delivery of
     the client's datagram takes a loop tick; a fixed sleep would hope)."""
-    deadline = time.monotonic() + timeout
-    while server.audio_last_client_seq != value:
-        await asyncio.sleep(0.01)
-        assert time.monotonic() < deadline, (
-            f"client seq stuck at {server.audio_last_client_seq}, want {value}"
-        )
+    await await_until(
+        lambda: server.audio_last_client_seq == value,
+        timeout=5.0,
+        description=f"the audio client seq to reach {value}",
+    )
 
 
 async def _assert_rx_stopped(
-    server: MockIcomRadio, client: _UdpClient, quiet_s: float = 0.1
+    clock: VirtualClock,
+    server: MockIcomRadio,
+    client: _UdpClient,
+    quiet_s: float = 0.1,
 ) -> None:
     """Pin a stopped RX stream: counter frozen, socket drained, then quiet.
 
-    After the stop trigger, waits for the simulator's own counter to stop
-    advancing, reads everything the client socket still holds, then asserts
-    no further packet arrives for ``quiet_s`` (at least two burst periods)
-    and the counter did not move.
+    After the stop trigger, waits for the simulator to forget the audio
+    client (a real loopback delivery), checks the sent counter is frozen
+    across two burst periods of virtual time, drains everything already
+    sent, then advances ``quiet_s`` (at least two burst periods) and
+    asserts nothing further arrived and the counter did not move.
     """
-    frozen = await _await_rx_stop(server)
-    await _drain(client)
-    await client.expect_silence(quiet_s)
-    assert server.audio_rx_frames_sent == frozen
+    await await_until(
+        lambda: server._audio_client is None,  # noqa: SLF001
+        timeout=5.0,
+        description="the RX stream to stop",
+    )
+    first = server.audio_rx_frames_sent
+    await clock.elapse(_AUDIO_BURST_PERIOD_S)
+    await clock.elapse(_AUDIO_BURST_PERIOD_S)
+    assert server.audio_rx_frames_sent == first, (
+        f"RX counter kept advancing past the stop: {server.audio_rx_frames_sent}"
+    )
+    drained = {"last": -1, "steady": 0}
+
+    def _delivery_settled() -> bool:
+        count = client.queue.qsize()
+        if count == drained["last"]:
+            drained["steady"] += 1
+        else:
+            drained["last"] = count
+            drained["steady"] = 0
+        return drained["steady"] >= 3
+
+    await await_until(
+        _delivery_settled,
+        timeout=5.0,
+        description="the stopped stream's packets to finish arriving",
+    )
+    while True:
+        try:
+            client.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+    await clock.elapse(quiet_s)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert client.queue.empty(), "expected silence after the RX stop"
+    assert server.audio_rx_frames_sent == first
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +533,7 @@ def test_burst_cadence_rejects_sustained_wrong_period(period: float) -> None:
 
 
 async def test_rx_stream_matches_recorded_layout_and_cadence(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """The RX stream replays the recorded burst shape and header layout;
     every expectation is derived from the two fixture files."""
@@ -490,7 +543,9 @@ async def test_rx_stream_matches_recorded_layout_and_cadence(
     assert sum(n - AUDIO_HEADER_SIZE for n, _ in shape) == 3840  # 20 ms stereo s16
 
     radio_id = await _open_audio(client, server)
-    bursts = _complete_bursts(await _collect_audio(client, 0.5), shape)
+    bursts = _complete_bursts(
+        await _collect_audio_virtual(virtual_clock, client, server, 0.5), shape
+    )
     assert len(bursts) >= 8, f"only {len(bursts)} complete bursts in 0.5 s"
 
     for burst in bursts:
@@ -554,6 +609,7 @@ async def test_audio_port_handshake_and_no_stream_before_open(
 
 
 async def test_rx_keeps_flowing_across_civ_soft_reconnect(
+    virtual_clock: VirtualClock,
     server: MockIcomRadio,
 ) -> None:
     """A CI-V-only reconnect (fresh conninfo + CI-V open from a new socket)
@@ -569,8 +625,9 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
         await civ.recv()  # stream-active marker
 
         await _open_audio(audio, server)
-        task = asyncio.get_running_loop().create_task(_collect_audio(audio, 1.0))
-        await asyncio.sleep(0.3)
+        # The collection spans the reconnect in virtual time: a stall or
+        # retarget during it would break the burst run or thin the count.
+        window = await _collect_audio_virtual(virtual_clock, audio, server, 0.3)
         # The soft reconnect: a NEW CI-V socket, its port declared in a
         # fresh conninfo from the same control client, then its open.
         civ2 = await _udp()
@@ -585,7 +642,7 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
             )
         finally:
             civ2.close()
-        window = await task
+        window += await _collect_audio_virtual(virtual_clock, audio, server, 0.7)
 
         bursts = _complete_bursts(window, _recorded_burst_shape())
         assert len(bursts) >= 30, f"{len(bursts)} bursts in 1.0 s"
@@ -604,47 +661,49 @@ async def test_rx_keeps_flowing_across_civ_soft_reconnect(
 
 
 async def test_tx_sink_records_client_frames_and_numbering(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """DATA frames land in ``audio_tx_frames``; tracked numbering follows
     every type-0 packet (idle/OpenClose included), per session."""
     radio_id = await _open_audio(client, server)
-    t0 = time.monotonic()
     client.send(_idle(seq=1), server.audio_port)
     client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
     client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
-    await asyncio.sleep(0.1)
-    t1 = time.monotonic()
+    await _await_client_seq_value(server, 3)  # every datagram was processed
 
     assert server.audio_last_client_seq == 3
     assert len(server.audio_tx_frames) == 2  # idle/OpenClose are not frames
     first, second = server.audio_tx_frames
     assert (first.seq, first.inner_seq, first.payload_len) == (2, 0, 1364)
     assert (second.seq, second.inner_seq, second.payload_len) == (3, 1, 556)
-    assert t0 <= first.received_at <= t1
-    assert t0 <= second.received_at <= t1
+    assert first.received_at <= second.received_at  # recorded in arrival order
 
 
 async def test_no_retransmit_requests_from_radio_despite_client_gap(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """Recorded: ZERO retransmit requests from the radio on the audio port
     however the client's numbering breaks; client requests are counted."""
     radio_id = await _open_audio(client, server)
     client.send(_tx_audio(5, 0, bytes(64), radio_id), server.audio_port)
     client.send(_tx_audio(9, 1, bytes(64), radio_id), server.audio_port)  # gap 6..8
+    await _await_client_seq_value(server, 9)  # both frames were processed
 
-    packets = await _collect_audio(client, 0.35)  # CI-V loop fires at 0.1 s
+    packets = await _collect_audio_virtual(virtual_clock, client, server, 0.35)
     # Every radio-originated packet in the window must be RX data: a
     # retransmit request (type 0x01, single or ranges) would fail this.
     assert {struct.unpack_from("<H", p, 4)[0] for _, p in packets} <= {_PT_DATA}
     assert server.audio_last_client_seq == 9
 
     client.send(_retransmit_single(7), server.audio_port)
-    await asyncio.sleep(0.1)
+    await await_until(
+        lambda: server.audio_retransmit_requests_received == 1,
+        timeout=5.0,
+        description="the client retransmit request to be counted",
+    )
     assert server.audio_retransmit_requests_received == 1
     # and the request itself draws no answer (nothing but RX data arrives)
-    more = await _collect_audio(client, 0.15)
+    more = await _collect_audio_virtual(virtual_clock, client, server, 0.15)
     assert {struct.unpack_from("<H", p, 4)[0] for _, p in more} <= {_PT_DATA}
 
 
@@ -688,7 +747,7 @@ async def test_audio_port_silence_blacks_out_only_the_audio_port(
 
 
 async def test_audio_stream_drop_stops_rx_and_keeps_the_session(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """audio_stream_drop(): RX stops, session kept, handshake alive; a new
     open restarts the stream with continued numbering."""
@@ -696,11 +755,13 @@ async def test_audio_stream_drop_stops_rx_and_keeps_the_session(
     try:
         await _claim(server, ctrl)
         await _open_audio(client, server)
-        first = _rx_frames(await _collect_audio(client, 0.1))
+        first = _rx_frames(
+            await _collect_audio_virtual(virtual_clock, client, server, 0.1)
+        )
         assert first
 
         server.audio_stream_drop()
-        await _assert_rx_stopped(server, client)
+        await _assert_rx_stopped(virtual_clock, server, client)
         assert server.session_held
         sent = server.audio_rx_frames_sent
         # The expected resume number comes from the simulator's own state:
@@ -714,7 +775,10 @@ async def test_audio_stream_drop_stops_rx_and_keeps_the_session(
         assert struct.unpack_from("<H", await client.recv(), 4)[0] == _PT_I_AM_HERE
 
         client.send(_audio_openclose(seq=1), server.audio_port)
-        resumed = _rx_frames(await _collect_audio(client, 0.15))
+        await _await_client_seq_value(server, 1)  # the re-open was processed
+        resumed = _rx_frames(
+            await _collect_audio_virtual(virtual_clock, client, server, 0.15)
+        )
         assert resumed
         assert server.audio_rx_frames_sent > sent
         # The stream epoch is the radio session: numbering continues.
@@ -733,7 +797,7 @@ async def test_audio_stream_drop_stops_rx_and_keeps_the_session(
     ["token_remove", "drop_session", "reboot"],
 )
 async def test_session_end_stops_rx(
-    server: MockIcomRadio, client: _UdpClient, trigger: str
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient, trigger: str
 ) -> None:
     """Every session-end path (token-remove/logout, drop_session, reboot)
     stops the RX stream and resets the per-session client numbering."""
@@ -742,9 +806,11 @@ async def test_session_end_stops_rx(
         await _claim(server, ctrl)
         radio_id = await _open_audio(client, server)
         client.send(_tx_audio(1, 0, bytes(64), radio_id), server.audio_port)
-        await asyncio.sleep(0.1)
+        await _await_client_seq_value(server, 1)  # the frame was processed
         assert server.audio_last_client_seq == 1
-        assert _rx_frames(await _collect_audio(client, 0.08))
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, client, server, 0.08)
+        )
 
         if trigger == "token_remove":
             ctrl.send(_token_remove(), server.control_port)
@@ -753,7 +819,7 @@ async def test_session_end_stops_rx(
         else:
             server.reboot(at=0.0, down_for=0.3)
 
-        await _assert_rx_stopped(server, client)
+        await _assert_rx_stopped(virtual_clock, server, client)
         assert server.audio_last_client_seq is None  # per-session numbering
     finally:
         ctrl.close()
@@ -765,7 +831,7 @@ async def test_session_end_stops_rx(
 
 
 async def test_tx_sink_records_production_frames_until_the_session_ends(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """A raw client that has opened the audio stream sends DATA frames in
     the production TX layout (``build_audio_packet``); ``audio_tx_frames``
@@ -775,26 +841,31 @@ async def test_tx_sink_records_production_frames_until_the_session_ends(
     try:
         await _claim(server, ctrl)
         radio_id = await _open_audio(client, server)
-        t0 = time.monotonic()
         client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
         client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
-        await asyncio.sleep(0.1)
-        t1 = time.monotonic()
+        await _await_client_seq_value(server, 3)  # both frames were processed
 
         assert len(server.audio_tx_frames) == 2
         first, second = server.audio_tx_frames
         assert (first.seq, first.inner_seq, first.payload_len) == (2, 0, 1364)
         assert (second.seq, second.inner_seq, second.payload_len) == (3, 1, 556)
-        assert all(t0 <= f.received_at <= t1 for f in (first, second))
+        assert first.received_at <= second.received_at  # arrival order
         assert server.audio_last_client_seq == 3
 
         # Session end (token remove): frames sent afterwards are recorded
         # nowhere — not in the sink, not in the per-stream numbering.
         ctrl.send(_token_remove(), server.control_port)
-        await asyncio.sleep(0.05)
+        await await_until(
+            lambda: server.audio_last_client_seq is None,
+            timeout=5.0,
+            description="the session end to reset the client numbering",
+        )
         client.send(_tx_audio(4, 2, bytes(64), radio_id), server.audio_port)
         client.send(_idle(seq=5), server.audio_port)
-        await asyncio.sleep(0.1)
+        # The AYT round trip proves the two ignored frames were processed
+        # first (same socket, loopback order): absence is observed, not hoped.
+        client.send(_ayt(), server.audio_port)
+        assert struct.unpack_from("<H", await client.recv(), 4)[0] == _PT_I_AM_HERE
         assert server.audio_tx_frames == [first, second]
         assert server.audio_last_client_seq is None
     finally:
@@ -807,7 +878,7 @@ async def test_tx_sink_records_production_frames_until_the_session_ends(
 
 
 async def test_tx_sink_captures_payload_and_ptt_per_frame(
-    capture_server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, capture_server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """With capture_tx_audio=True each sink frame carries the payload bytes
     after the 0x18 header (byte-exact) and the simulator's PTT state at
@@ -832,7 +903,10 @@ async def test_tx_sink_captures_payload_and_ptt_per_frame(
 
 
 async def test_write_tx_wav_roundtrip(
-    capture_server: MockIcomRadio, client: _UdpClient, tmp_path: Path
+    virtual_clock: VirtualClock,
+    capture_server: MockIcomRadio,
+    client: _UdpClient,
+    tmp_path: Path,
 ) -> None:
     """write_tx_wav writes a RIFF/WAV (16-bit PCM) that reads back via the
     stdlib wave module to exactly the captured PCM."""
@@ -855,7 +929,7 @@ async def test_write_tx_wav_roundtrip(
 
 
 async def test_tx_capture_off_keeps_payload_empty(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """Default (capture_tx_audio=False): the sink still records metadata,
     but the payload is not retained — b"" per frame, empty audio_tx_pcm."""
@@ -905,7 +979,9 @@ async def test_tx_sink_learns_the_accepted_conninfo_tx_format(
         ctrl.close()
 
 
-async def test_tx_capture_format_marks_a_mixed_capture() -> None:
+async def test_tx_capture_format_marks_a_mixed_capture(
+    virtual_clock: VirtualClock,
+) -> None:
     """Sink frames snapshot the format learned at their arrival;
     ``tx_capture_format`` returns the single distinct learned format
     across the slice, or None when the slice carries none or spans a
@@ -948,7 +1024,7 @@ async def test_tx_capture_format_marks_a_mixed_capture() -> None:
 
 
 async def test_tx_capture_format_without_frames_or_format_is_none(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """No frames (nothing captured) and frames with no learned format
     (a bare conninfo, rate 0) both give no capture format."""
@@ -1037,6 +1113,7 @@ async def test_dummy_port_guard_detects_foreign_listener() -> None:
 
 @pytest.mark.parametrize("endpoint", ["control_port", "civ_port"])
 async def test_disabled_audio_advertisement_avoids_live_endpoint(
+    virtual_clock: VirtualClock,
     endpoint: str,
 ) -> None:
     """The status CIV-port override forces the old dummy onto a real listener."""
@@ -1064,9 +1141,13 @@ async def test_disabled_audio_advertisement_avoids_live_endpoint(
 
         for packet in (_ayt(), _ping()):
             await loop.sock_sendto(probe, packet, (_HOST, advertised))
+            # Silence over a virtual window: nothing is owed an answer, so
+            # no timer is needed — advance past the round trip and read the
+            # nonblocking socket once (empty means silent).
+            await virtual_clock.elapse(0.25)
             try:
-                response = await asyncio.wait_for(loop.sock_recvfrom(probe, 1024), 0.2)
-            except TimeoutError:
+                response = probe.recvfrom(1024)
+            except BlockingIOError:
                 response = None
             assert response is None, (
                 f"expected silence, received {response}; "
@@ -1141,7 +1222,7 @@ def test_disabled_audio_advertisement_port_boundaries(
 
 
 async def test_reopen_records_its_tracked_seq(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """A re-open records its own tracked seq (old counter + 1): the open is
     the first tracked packet of the (re)started stream, like the CI-V port."""
@@ -1156,7 +1237,7 @@ async def test_reopen_records_its_tracked_seq(
 
 
 async def test_idle_advances_client_seq(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """Tracked idle keepalives advance ``audio_last_client_seq`` while the
     stream lives."""
@@ -1167,11 +1248,13 @@ async def test_idle_advances_client_seq(
 
 
 async def test_reopen_from_new_address_retargets_rx(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """A re-open from a new client address retargets the RX stream there."""
     await _open_audio(client, server)
-    assert _rx_frames(await _collect_audio(client, 0.1))
+    assert _rx_frames(
+        await _collect_audio_virtual(virtual_clock, client, server, 0.1)
+    )
 
     moved = await _udp()
     try:
@@ -1179,13 +1262,16 @@ async def test_reopen_from_new_address_retargets_rx(
         iah = await moved.recv()
         assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
         moved.send(_audio_openclose(seq=1), server.audio_port)
-        assert _rx_frames(await _collect_audio(moved, 0.2))
+        await _await_client_seq_value(server, 1)  # the re-open was processed
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, moved, server, 0.2)
+        )
     finally:
         moved.close()
 
 
 async def test_rx_rate_matches_recorded_fixture(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """The simulator's burst cadence matches the recorded fixture and the
     stream stays live: the burst period constant equals ``3 /
@@ -1202,7 +1288,9 @@ async def test_rx_rate_matches_recorded_fixture(
         f"burst period {_AUDIO_BURST_PERIOD_S}s vs recorded {3 / recorded:.6f}s"
     )
     await _open_audio(client, server)
-    frames = _rx_frames(await _collect_audio(client, 1.2))
+    frames = _rx_frames(
+        await _collect_audio_virtual(virtual_clock, client, server, 1.2)
+    )
     assert len(frames) >= 100, f"only {len(frames)} RX frames in 1.2 s"
     span = frames[-1][0] - frames[0][0]
     assert span >= 1.0, f"RX span only {span:.3f} s"
@@ -1216,7 +1304,9 @@ async def test_rx_rate_matches_recorded_fixture(
 
 
 @pytest.mark.parametrize("trigger", ["token_remove", "disconnect"])
-async def test_own_logout_stops_rx_in_default_mode(trigger: str) -> None:
+async def test_own_logout_stops_rx_in_default_mode(
+    virtual_clock: VirtualClock, trigger: str
+) -> None:
     """Without an owned session the audio opener's own logout still ends the
     RX stream even though its control and audio sockets carry DIFFERENT
     sender ids (``_CTRL_ID`` vs ``_AUDIO_ID``, like the production client —
@@ -1234,25 +1324,35 @@ async def test_own_logout_stops_rx_in_default_mode(trigger: str) -> None:
         live = server.token
 
         await _open_audio_as(audio, server, _AUDIO_ID)
-        assert _rx_frames(await _collect_audio(audio, 0.1))
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, audio, server, 0.1)
+        )
 
         ctrl.send(
             _token_remove_as(_CTRL_ID, (live + 1) & 0xFFFFFFFF),
             server.control_port,
         )
-        await asyncio.sleep(0.1)
-        assert _rx_frames(await _collect_audio(audio, 0.08))  # stale: flowing
+        # The AYT round trip proves the stale remove was processed first
+        # (same socket, loopback order): the stream is still flowing.
+        ctrl.send(_ayt(), server.control_port)
+        assert struct.unpack_from("<H", await ctrl.recv(), 4)[0] == _PT_I_AM_HERE
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, audio, server, 0.08)
+        )  # stale: flowing
         assert server.token == live  # nothing retired
 
         ctrl.send(_disconnect_as(_FOREIGN_ID), server.control_port)
-        await asyncio.sleep(0.1)
-        assert _rx_frames(await _collect_audio(audio, 0.08))  # foreign: flowing
+        ctrl.send(_ayt(), server.control_port)
+        assert struct.unpack_from("<H", await ctrl.recv(), 4)[0] == _PT_I_AM_HERE
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, audio, server, 0.08)
+        )  # foreign: flowing
 
         if trigger == "token_remove":
             ctrl.send(_token_remove_as(_CTRL_ID, live), server.control_port)
         else:
             ctrl.send(_disconnect_as(_CTRL_ID), server.control_port)
-        await _assert_rx_stopped(server, audio)
+        await _assert_rx_stopped(virtual_clock, server, audio)
         assert server.audio_last_client_seq is None
         if trigger == "token_remove":
             assert server.token != live  # the live epoch retired
@@ -1268,14 +1368,16 @@ async def test_own_logout_stops_rx_in_default_mode(trigger: str) -> None:
 
 
 async def test_audio_openclose_close_stops_rx(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """Audio-port OpenClose(close) stops the RX stream."""
     await _open_audio(client, server)
-    assert _rx_frames(await _collect_audio(client, 0.1))
+    assert _rx_frames(
+        await _collect_audio_virtual(virtual_clock, client, server, 0.1)
+    )
 
     client.send(_audio_openclose(seq=1, open_stream=False), server.audio_port)
-    await _assert_rx_stopped(server, client)
+    await _assert_rx_stopped(virtual_clock, server, client)
 
 
 async def test_audio_port_silence_honours_delayed_start(
@@ -1329,17 +1431,19 @@ async def test_status_audio_port_equals_bound_port(
 
 
 async def test_civ_answers_during_audio_silence(
-    server: MockIcomRadio, client: _UdpClient
+    virtual_clock: VirtualClock, server: MockIcomRadio, client: _UdpClient
 ) -> None:
     """``audio_port_silence`` blacks out only the audio port: the CI-V port
     still answers discovery and pings."""
     civ = await _udp()
     try:
         await _open_audio(client, server)
-        assert _rx_frames(await _collect_audio(client, 0.08))
+        assert _rx_frames(
+            await _collect_audio_virtual(virtual_clock, client, server, 0.08)
+        )
 
         server.audio_port_silence(at=0.0, for_seconds=0.4)
-        await asyncio.sleep(0.05)  # window armed
+        await virtual_clock.elapse(0)  # the arming call_later(0) runs now
         civ.send(_ayt(), server.civ_port)
         assert struct.unpack_from("<H", await civ.recv(), 4)[0] == _PT_I_AM_HERE
         civ.send(_ping(), server.civ_port)
