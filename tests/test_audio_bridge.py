@@ -50,6 +50,12 @@ _RP_DEVICE = AudioDeviceInfo(
     output_channels=2,
 )
 
+_RP_CAPTURE = AudioDeviceInfo(
+    id=AudioDeviceId(2),
+    name="RigPlane Virtual Cable Input",
+    input_channels=2,
+)
+
 
 class _StateWaiter:
     """Test helper — waits for specific BridgeState transitions via callback."""
@@ -100,6 +106,7 @@ def _bridge_backend(
                 output_channels=2,
             ),
             _RP_DEVICE,
+            _RP_CAPTURE,
         ]
     )
 
@@ -448,6 +455,207 @@ async def test_bridge_auto_mode_starts_rx_and_tx_on_split_cable():
         assert bridge._tx_started
     finally:
         await bridge.stop()
+
+
+@pytest.mark.parametrize("rx_inputs", [0, 2])
+async def test_pinned_cable_output_resolves_other_end_for_tx(rx_inputs):
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(8),
+                name="RigPlane Virtual Cable Output",
+                input_channels=rx_inputs,
+                output_channels=2,
+            ),
+            AudioDeviceInfo(
+                id=AudioDeviceId(9),
+                name="RigPlane Virtual Cable Input",
+                input_channels=2,
+            ),
+        ]
+    )
+    bridge = AudioBridge(
+        _make_radio(), device_name="RigPlane Virtual Cable Output", backend=backend
+    )
+
+    _, rx_id, tx_id = await bridge._resolve_cable_devices()
+
+    assert rx_id == AudioDeviceId(8)
+    assert tx_id == AudioDeviceId(9)
+
+
+@pytest.mark.parametrize("rx_inputs", [0, 2])
+@pytest.mark.parametrize(
+    "tx_name", [None, "RigPlane Virtual Cable Output", "Missing Input"]
+)
+@pytest.mark.parametrize("neutral", [False, True])
+async def test_missing_cable_other_end_bridges_rx_without_arming_tx(
+    rx_inputs, tx_name, neutral
+):
+    from rigplane.testing.timing import await_until
+    from rigplane.web.server import WebServer
+
+    radio = LanLikeRadio() if neutral else _make_radio()
+    backend = FakeAudioBackend(
+        [
+            AudioDeviceInfo(
+                id=AudioDeviceId(8),
+                name="RigPlane Virtual Cable Output",
+                input_channels=rx_inputs,
+                output_channels=2,
+            )
+        ]
+    )
+    bridge = AudioBridge(radio, backend=backend, tx_device_name=tx_name)
+    await bridge.start()
+    try:
+        assert bridge.running
+        assert backend.tx_streams[0].running
+        assert not backend.rx_streams
+        assert not backend.duplex_streams
+        assert not bridge._tx_started
+        assert bridge._tx_lease is None
+        if neutral:
+            assert radio.calls == ["start_rx"]
+        else:
+            radio.start_audio_tx_pcm.assert_not_awaited()
+        frame = b"\x10\x20" * SAMPLES_PER_FRAME
+        radio.audio_bus._on_opus_packet(AudioPacket(ident=0x80, send_seq=1, data=frame))
+        assert await await_until(lambda: bool(backend.tx_streams[0].written_frames))
+        assert backend.tx_streams[0].written_frames == [frame]
+        server = WebServer()
+        server._audio_bridge = bridge
+        status = server.audio_bridge_stats
+        assert status is not None
+        assert status["tx_enabled"] is False
+        assert "RX-only" in status["warning"]
+        assert "RigPlane Virtual Cable Output" in status["warning"]
+        assert "capture" in status["warning"]
+        assert "other end" in status["warning"]
+    finally:
+        await bridge.stop()
+
+
+async def test_missing_capture_end_can_recover_on_bridge_restart():
+    backend = FakeAudioBackend([_RP_DEVICE])
+    bridge = AudioBridge(_make_radio(), backend=backend)
+    await bridge.start()
+    assert not bridge._tx_started
+    assert bridge.stats["warning"] is not None
+    await bridge.stop()
+
+    backend.add_device(_RP_CAPTURE)
+    await bridge.start()
+    try:
+        assert bridge._tx_started
+        assert bridge.stats["tx_enabled"] is True
+        assert bridge.stats["warning"] is None
+    finally:
+        await bridge.stop()
+
+
+@pytest.mark.parametrize("neutral", [False, True])
+async def test_reconnect_setup_missing_capture_end_disarms_previous_tx(neutral):
+    radio = LanLikeRadio() if neutral else _make_radio()
+    backend = FakeAudioBackend([_RP_DEVICE, _RP_CAPTURE])
+    bridge = AudioBridge(radio, backend=backend)
+    await bridge.start()
+    try:
+        assert bridge._tx_started
+        bridge._running = False
+        await bridge._teardown_streams()
+        backend.remove_devices()
+        backend.add_device(_RP_DEVICE)
+        await bridge._setup_streams()
+        bridge._running = True
+
+        assert not bridge._tx_started
+        assert bridge.stats["tx_enabled"] is False
+        assert bridge._tx_stream is None
+        assert bridge._tx_lease is None
+        if neutral:
+            assert radio.state == "receiving"
+        else:
+            radio.stop_audio_tx_pcm.assert_awaited_once()
+    finally:
+        await bridge.stop()
+
+
+async def test_capture_end_lost_during_radio_rescan_releases_tx_lease(monkeypatch):
+    from rigplane.audio import bridge as bridge_module
+    from rigplane.audio.session import AudioSessionState
+
+    radio = LanLikeRadio()
+    backend = FakeAudioBackend([_RP_DEVICE, _RP_CAPTURE])
+    generation = 0
+    monkeypatch.setattr(bridge_module, "device_scan_generation", lambda: generation)
+    original_start = radio.start_rx
+
+    async def rescan_on_start(*args, **kwargs):
+        nonlocal generation
+        await original_start(*args, **kwargs)
+        backend.remove_devices()
+        backend.add_device(_RP_DEVICE)
+        generation += 1
+
+    monkeypatch.setattr(radio, "start_rx", rescan_on_start)
+    bridge = AudioBridge(radio, backend=backend)
+    await bridge.start()
+    try:
+        assert bridge.running
+        assert bridge._tx_lease is None
+        assert not bridge._tx_started
+        assert bridge._session.state is AudioSessionState.RX_ONLY
+        assert radio.state == "receiving"
+        assert backend.tx_streams[0].running
+        assert not backend.rx_streams
+        assert bridge.stats["warning"] is not None
+    finally:
+        await bridge.stop()
+
+
+async def test_real_usb_codec_same_id_full_duplex_is_unchanged():
+    radio = _make_radio()
+    backend = _strict_backend()
+    bridge = AudioBridge(radio, device_name="USB Audio CODEC", backend=backend)
+
+    _, rx_id, tx_id = await bridge._resolve_cable_devices()
+    assert rx_id == tx_id == _CODEC_DEVICE.id
+    await bridge.start()
+    try:
+        assert len(backend.duplex_streams) == 1
+        assert backend.duplex_streams[0].running
+        assert not backend.tx_streams
+        assert not backend.rx_streams
+        radio.start_audio_tx_pcm.assert_awaited_once()
+    finally:
+        await bridge.stop()
+
+
+@pytest.mark.parametrize("split_monitor", [False, True])
+async def test_linux_single_loop_device_id_pairing(split_monitor):
+    devices = [
+        AudioDeviceInfo(
+            id=AudioDeviceId(3),
+            name="PipeWire Loopback",
+            input_channels=0 if split_monitor else 2,
+            output_channels=2,
+        )
+    ]
+    if split_monitor:
+        devices.append(
+            AudioDeviceInfo(
+                id=AudioDeviceId(4),
+                name="Monitor of PipeWire Loopback",
+                input_channels=2,
+            )
+        )
+    bridge = AudioBridge(_make_radio(), backend=FakeAudioBackend(devices))
+
+    _, rx_id, tx_id = await bridge._resolve_cable_devices()
+
+    assert rx_id == AudioDeviceId(3)
+    assert tx_id == (AudioDeviceId(4) if split_monitor else None)
 
 
 # ---------------------------------------------------------------------------

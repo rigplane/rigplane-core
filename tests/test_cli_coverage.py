@@ -1237,6 +1237,46 @@ def _web_cmd_args(*, web_bridge: str | None) -> argparse.Namespace:
     )
 
 
+@pytest.mark.asyncio
+async def test_web_bridge_banner_surfaces_missing_capture_end(capsys):
+    warning = (
+        "TX capture other end missing for 'RigPlane Virtual Cable Output'; "
+        "running RX-only"
+    )
+
+    class FakeWebServer:
+        audio_bridge_stats = {"tx_enabled": False, "warning": warning}
+
+        def __init__(self, _radio, _cfg):
+            pass
+
+        async def start_audio_bridge(self, **_kwargs):
+            pass
+
+        async def serve_forever(self, *, on_started=None):
+            on_started()
+            raise asyncio.CancelledError
+
+    with patch("rigplane.web.server.WebServer", FakeWebServer):
+        assert await _cmd_web(AsyncMock(), _web_cmd_args(web_bridge="auto")) == 0
+
+    output = capsys.readouterr().out
+    assert "auto-enabled (RX only)" in output
+    assert warning in output
+    assert "RX+TX" not in output
+
+
+def test_bridge_help_describes_independent_capture_auto_selection(capsys):
+    with pytest.raises(SystemExit) as result:
+        _build_parser().parse_args(["audio", "bridge", "--help"])
+
+    assert result.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "same as --device" not in help_text
+    assert "--tx-device 'RigPlane Virtual Cable Input'" in help_text
+    assert "auto-detect capture" in help_text
+
+
 def test_web_managed_parser_defaults_without_auth() -> None:
     parser = _build_parser()
 

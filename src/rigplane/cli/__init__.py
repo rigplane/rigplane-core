@@ -1136,7 +1136,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "radio by selecting the virtual device as their sound card.\n\n"
             "Requires: pip install rigplane[bridge]\n"
             "Virtual device: RigPlane Virtual Cable\n\n"
-            "Example: rigplane audio bridge --device 'RigPlane Virtual Cable Output'"
+            "Example: rigplane audio bridge --device 'RigPlane Virtual Cable Output' "
+            "--tx-device 'RigPlane Virtual Cable Input'"
         ),
     )
     audio_bridge_p.add_argument(
@@ -1149,7 +1150,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tx-device",
         type=str,
         default=None,
-        help="Separate TX capture device name (default: same as --device)",
+        help=(
+            "TX capture device name (default: auto-detect capture endpoint for "
+            "virtual cables; same device for real full-duplex CODECs). "
+            "Missing cable capture endpoint leaves the bridge RX-only."
+        ),
     )
     audio_bridge_p.add_argument(
         "--rx-only",
@@ -1567,7 +1572,11 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="web_bridge_tx_device",
         default=None,
         metavar="DEVICE",
-        help="Separate TX device for bridge (e.g. 'RigPlane Virtual Cable Input'). Required for bidirectional audio.",
+        help=(
+            "TX capture device for bridge (e.g. 'RigPlane Virtual Cable Input'). "
+            "Default: auto-detect a separate virtual capture endpoint; "
+            "if missing, keep RX running with an RX-only warning."
+        ),
     )
     web_p.add_argument(
         "--bridge-rx-only",
@@ -4622,8 +4631,13 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    direction = "RX only" if args.rx_only else "RX+TX"
+    bridge_status = bridge.stats
+    direction = (
+        "RX+TX" if bridge_status.get("tx_enabled", not args.rx_only) else "RX only"
+    )
     print(f"Audio bridge running ({direction}). Press Ctrl+C to stop.")
+    if bridge_status.get("warning"):
+        print(f"Warning: {bridge_status['warning']}", file=sys.stderr)
 
     try:
         while True:
@@ -4996,10 +5010,15 @@ async def _cmd_web(
                 max_retries=getattr(args, "web_bridge_max_retries", 5),
                 retry_base_delay=getattr(args, "web_bridge_retry_delay", 1.0),
             )
-            direction = "RX only" if rx_only else "RX+TX"
+            bridge_status = getattr(server, "audio_bridge_stats", None) or {}
+            direction = (
+                "RX+TX" if bridge_status.get("tx_enabled", not rx_only) else "RX only"
+            )
             bridge_info = (
                 f"auto-enabled ({direction})" if is_auto else f"active ({direction})"
             )
+            if bridge_status.get("warning"):
+                bridge_info += f" — Warning: {bridge_status['warning']}"
         except LoopbackNotFoundError as exc:
             if is_auto:
                 # Graceful degrade — keep serving web UI without the bridge.

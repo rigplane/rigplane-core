@@ -1,7 +1,7 @@
 """Audio bridge — bidirectional PCM bridge between radio and a system audio device.
 
 Routes decoded PCM audio from the radio to a virtual audio output device
-and captures PCM from the same device back to the radio for TX.  This
+and captures PCM from a separate cable endpoint back to the radio for TX. This
 allows applications like WSJT-X, fldigi, or JS8Call to use the radio
 without any special configuration — they simply select the virtual audio
 device as their sound card.
@@ -258,6 +258,7 @@ async def _find_device_in_backend(
     name: str | None,
     *,
     direction: str = "playback",
+    exclude_device_id: AudioDeviceId | None = None,
     timeout: float = _BRIDGE_PORTAUDIO_TIMEOUT_S,
 ) -> AudioDeviceInfo | None:
     """Find a virtual loopback device using the backend's device list.
@@ -268,6 +269,7 @@ async def _find_device_in_backend(
         direction: ``"playback"`` (RX leg writes here — needs output
             channels) or ``"capture"`` (TX leg reads here — needs input
             channels).
+        exclude_device_id: Endpoint to omit when finding the cable's other end.
         timeout: Per-call await bound for the enumeration.
 
     The search is direction-aware: an explicit name still resolves to the
@@ -292,6 +294,8 @@ async def _find_device_in_backend(
 
     for search in search_names:
         for dev in devices:
+            if dev.id == exclude_device_id:
+                continue
             if not _candidate_matches(dev.name, search):
                 continue
             if direction == "capture" and dev.input_channels <= 0:
@@ -383,6 +387,7 @@ class AudioBridge:
         )
         self._tx_enabled = tx_enabled
         self._tx_started = False
+        self._tx_warning: str | None = None
         self._backend: AudioBackend = backend or PortAudioBackend()
 
         # State machine
@@ -550,7 +555,11 @@ class AudioBridge:
     @property
     def stats(self) -> dict[str, Any]:
         """Bridge statistics as a dict (backward-compatible)."""
-        return self.metrics.to_dict()
+        return {
+            **self.metrics.to_dict(),
+            "tx_enabled": self._running and self._tx_started,
+            "warning": self._tx_warning,
+        }
 
     # ------------------------------------------------------------------
     # State machine
@@ -589,11 +598,9 @@ class AudioBridge:
 
     async def _resolve_cable_devices(
         self,
-    ) -> tuple[AudioDeviceInfo, AudioDeviceId, AudioDeviceId]:
+    ) -> tuple[AudioDeviceInfo, AudioDeviceId, AudioDeviceId | None]:
         """Resolve the cable's playback device and its TX-capture device id."""
-        # The RigPlane cable is a single loop (Output → Input): resolve the
-        # RX-playback (output) and TX-capture (input) devices separately —
-        # they may be two ends of the same cable.
+        self._tx_warning = None
         dev = await _find_device_in_backend(
             self._backend,
             self._device_name,
@@ -615,11 +622,13 @@ class AudioBridge:
         dev_id = dev.id
         logger.info("%s: using device %r (id %d)", self._label, dev.name, int(dev_id))
 
-        # Resolve the TX-capture device up front: an explicit TX device
-        # name wins; otherwise the capture leg reuses the RX-playback
-        # device when it serves input, or resolves the same name/
-        # candidate list for the input direction (the cable's other end).
-        tx_dev_id = dev_id
+        if not self._tx_enabled:
+            return dev, dev_id, None
+
+        virtual = _is_virtual_loopback_device(dev)
+        # Real CODECs retain same-device duplex (MOR-531). A virtual
+        # playback endpoint must never also serve as the TX capture endpoint.
+        tx_dev_id: AudioDeviceId | None = None if virtual else dev_id
         if self._tx_device_name:
             explicit = await _find_device_in_backend(
                 self._backend,
@@ -628,22 +637,35 @@ class AudioBridge:
                 timeout=self._portaudio_timeout,
             )
             if explicit is None:
-                logger.warning(
-                    "%s: TX device %r not found, using RX device",
-                    self._label,
-                    self._tx_device_name,
-                )
+                if not virtual:
+                    logger.warning(
+                        "%s: TX device %r not found, using RX device",
+                        self._label,
+                        self._tx_device_name,
+                    )
             else:
                 tx_dev_id = explicit.id
-        elif dev.input_channels <= 0:
+        elif virtual or dev.input_channels <= 0:
             auto_tx = await _find_device_in_backend(
                 self._backend,
-                self._device_name,
+                None if virtual else self._device_name,
                 direction="capture",
+                exclude_device_id=dev_id if virtual else None,
                 timeout=self._portaudio_timeout,
             )
             if auto_tx is not None:
                 tx_dev_id = auto_tx.id
+
+        if virtual and (tx_dev_id is None or tx_dev_id == dev_id):
+            tx_dev_id = None
+            requested = (
+                f" (requested {self._tx_device_name!r})" if self._tx_device_name else ""
+            )
+            self._tx_warning = (
+                f"TX capture other end missing for {dev.name!r}{requested}: "
+                "a different capture endpoint is required; running RX-only"
+            )
+            logger.warning("%s: %s", self._label, self._tx_warning)
 
         return dev, dev_id, tx_dev_id
 
@@ -724,7 +746,7 @@ class AudioBridge:
             )
             self._session = session
 
-        if self._tx_enabled:
+        if self._tx_enabled and tx_dev_id is not None:
             start_tx = getattr(self._radio, "start_tx", None)
             tx_codec = getattr(self._radio, "audio_tx_codec", None)
             if start_tx is not None and tx_codec is not AudioCodec.PCM_1CH_16BIT:
@@ -749,6 +771,16 @@ class AudioBridge:
             # Arming the radio's audio restarted PortAudio to find a returned
             # radio (MOR-4338): device indices chosen above may have moved.
             dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
+            if tx_dev_id is None and self._tx_lease is not None:
+                await self._tx_lease.release()
+                self._tx_lease = None
+
+        if tx_dev_id is None and self._tx_started:
+            # Reconnect may lose just the cable's capture end. The legacy
+            # TX arm survives stream teardown; session-owned leases do not.
+            if getattr(self._radio, "start_tx", None) is None:
+                await self._radio.stop_audio_tx_pcm()
+            self._tx_started = False
 
         # The radio may reject TX (serial backend with no USB-audio TX
         # path): degrade to RX-only and use a plain output stream, never a
@@ -772,7 +804,7 @@ class AudioBridge:
                     "%s: radio rejected TX start; running RX-only",
                     self._label,
                 )
-        elif self._tx_enabled:
+        elif self._tx_enabled and tx_dev_id is not None:
             # Legacy ``*_audio_tx_pcm`` TX path (no neutral AudioTransport
             # surface) — armed directly, outside the session.
             try:
@@ -798,6 +830,7 @@ class AudioBridge:
         # the two-stream path (MOR-531 targets the C-Media same-device case).
         use_duplex = (
             tx_armed
+            and tx_dev_id is not None
             and int(tx_dev_id) == int(dev_id)
             and not _is_virtual_loopback_device(dev)
         )
@@ -836,6 +869,7 @@ class AudioBridge:
 
         # --- TX path: device input → radio (capture) ---
         if tx_armed:
+            assert tx_dev_id is not None
             self._tx_queue = asyncio.Queue(maxsize=64)
             if use_duplex:
                 # The single duplex stream serves BOTH playback (write) and
@@ -1059,7 +1093,7 @@ class AudioBridge:
         self._running = True
         self._set_state(BridgeState.RUNNING, "started")
 
-        direction = "RX+TX" if self._tx_enabled else "RX only"
+        direction = "RX+TX" if self._tx_started else "RX only"
         logger.info(
             "%s: started (%s, %dHz, %dch, %dms frames)",
             self._label,

@@ -433,6 +433,13 @@ The direction matters:
 - `--bridge-tx-device "RigPlane Virtual Cable Input"` is the TX capture end of the cable:
   **WSJT-X Output → RigPlane Virtual Cable Input → rigplane → radio TX**.
 
+When `--bridge-tx-device` (or standalone `audio bridge --tx-device`) is omitted,
+`src/rigplane/audio/bridge.py: AudioBridge._resolve_cable_devices` searches the virtual-device
+candidates for a capture endpoint independently of the RX name. A virtual cable
+requires different RX and TX device IDs. If the other end is missing, RX keeps
+running and the CLI banner and bridge status report an RX-only warning.
+Real full-duplex CODECs can still use one device ID for both directions.
+
 The RigPlane cable is a single loopback: audio played into the Output end
 appears on the Input end. In the web server, captured audio reaches the
 radio only while a managed transmit authority is keyed, or while observed
