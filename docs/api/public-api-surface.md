@@ -375,6 +375,21 @@ without a major version.
   `GET /api/v1/capabilities` (`WebRtcTransportStatus`). Canonical modules
   stay in `rigplane.web.*` (tier 3); import these names from `rigplane`.
   The server parses and builds the same wire bodies through these types.
+  Session-ended observation is opt-in through `WebRtcOffer.correlation_id`:
+  at most 128 characters from `[A-Za-z0-9._:-]`, echoed unchanged and never
+  interpreted; missing/null means no event. `WebRtcSessionEnded` and `WebRtcPath`
+  define the five-field `webrtc_session_ended` event on `/api/v1/ws`'s `events`
+  stream. `ended_at` is integer Unix seconds; `ever_connected` is sticky; the
+  producer currently uses `path="unknown"`. Delivery is best-effort: an event
+  may be dropped when the events queue is full, is never retried, and never
+  blocks teardown; there is no replay or reliable-delivery guarantee. The
+  `WebRtcSessionEndReason` values are stable public API, overriding the
+  provisional naming policy above for these reason strings:
+  `peer_failed` (peer failed), `peer_closed` (peer closed),
+  `negotiation_failed` (SDP negotiation failed), `close_requested` (single-session
+  close requested), and `all_sessions_closed` (close-all requested). Receivers
+  retain unknown future reason strings. See [the wire contract](web.md#optional-session-ended-observation)
+  and `src/rigplane/web/transport/webrtc_contract.py: WebRtcSessionEnded`.
   Also provisional: TURN selection by transport (`select_turn_url`,
   `UdpReachabilityCache`: a grant's url order carries no meaning, the one
   TURN url aiortc uses is chosen from a cached UDP reachability probe), and

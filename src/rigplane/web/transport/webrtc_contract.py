@@ -11,8 +11,10 @@ from ``rigplane``) speaks exactly what the answerer reads and writes.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Literal, Self, cast, get_args
 
 from ..channel_attach import RIGCTL_VERSIONS  # noqa: TID251
@@ -26,9 +28,14 @@ __all__ = [
     "WebRtcErrorCode",
     "WebRtcIceCandidate",
     "WebRtcOffer",
+    "WebRtcPath",
     "WebRtcRequestError",
+    "WebRtcSessionEnded",
+    "WebRtcSessionEndReason",
     "WebRtcTransportStatus",
 ]
+
+_CORRELATION_ID_RE = re.compile(r"[A-Za-z0-9._:-]{0,128}")
 
 #: Every ``code`` the answerer routes answer an error with.
 WebRtcErrorCode = Literal[
@@ -78,6 +85,7 @@ class WebRtcOffer:
     sdp: str
     type: str = "offer"
     ice_servers: list[IceServer] = field(default_factory=list)
+    correlation_id: str | None = None
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> Self:
@@ -91,10 +99,25 @@ class WebRtcOffer:
         offer_type = payload.get("type", "offer")
         if not isinstance(offer_type, str):
             raise WebRtcRequestError("sdp_error", "Field 'type' must be a string.")
-        return cls(sdp=sdp, type=offer_type, ice_servers=ice_servers)
+        correlation_id = payload.get("correlation_id")
+        if correlation_id is not None and (
+            not isinstance(correlation_id, str)
+            or _CORRELATION_ID_RE.fullmatch(correlation_id) is None
+        ):
+            raise WebRtcRequestError(
+                "sdp_error",
+                "Field 'correlation_id' must be null or a string of at most "
+                "128 characters from [A-Za-z0-9._:-].",
+            )
+        return cls(
+            sdp=sdp,
+            type=offer_type,
+            ice_servers=ice_servers,
+            correlation_id=correlation_id,
+        )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload = {
             "sdp": self.sdp,
             "type": self.type,
             "ice_servers": [
@@ -106,6 +129,75 @@ class WebRtcOffer:
                 for s in self.ice_servers
             ],
         }
+        if self.correlation_id is not None:
+            payload["correlation_id"] = self.correlation_id
+        return payload
+
+
+class WebRtcSessionEndReason(StrEnum):
+    """Stable producer reason names; receivers retain unknown future strings."""
+
+    PEER_FAILED = "peer_failed"  #: Peer connection entered the failed state.
+    PEER_CLOSED = "peer_closed"  #: Peer connection entered the closed state.
+    NEGOTIATION_FAILED = "negotiation_failed"  #: SDP negotiation failed.
+    CLOSE_REQUESTED = "close_requested"  #: A caller requested this session's close.
+    ALL_SESSIONS_CLOSED = "all_sessions_closed"  #: A caller requested close_all.
+
+
+#: Producer vocabulary; received events retain unknown future path strings.
+WebRtcPath = Literal["direct", "relay", "unknown"]
+
+
+@dataclass(frozen=True, slots=True)
+class WebRtcSessionEnded:
+    """Data of a ``webrtc_session_ended`` control-stream event.
+
+    ``ended_at`` is integer Unix seconds after completed peer teardown.
+    Only offers with a non-null ``correlation_id`` emit; Core echoes it unchanged.
+    The producer currently reports ``path="unknown"`` without inspecting private
+    ICE state. Delivery on ``/api/v1/ws``'s ``events`` stream is best-effort: an
+    event may be dropped when the events queue is full, is never retried, and
+    never blocks teardown. There is no replay or reliable-delivery guarantee.
+    """
+
+    correlation_id: str | None
+    ended_at: int
+    reason: str
+    ever_connected: bool
+    path: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "ended_at": self.ended_at,
+            "reason": self.reason,
+            "ever_connected": self.ever_connected,
+            "path": self.path,
+        }
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> Self:
+        correlation_id = payload.get("correlation_id")
+        ended_at = payload.get("ended_at")
+        reason = payload.get("reason")
+        ever_connected = payload.get("ever_connected")
+        path = payload.get("path")
+        if (
+            "correlation_id" not in payload
+            or (correlation_id is not None and not isinstance(correlation_id, str))
+            or type(ended_at) is not int
+            or not isinstance(reason, str)
+            or type(ever_connected) is not bool
+            or not isinstance(path, str)
+        ):
+            raise ValueError(f"not a WebRTC session-ended event: {dict(payload)!r}")
+        return cls(
+            correlation_id=correlation_id,
+            ended_at=ended_at,
+            reason=reason,
+            ever_connected=ever_connected,
+            path=path,
+        )
 
 
 @dataclass(frozen=True, slots=True)
