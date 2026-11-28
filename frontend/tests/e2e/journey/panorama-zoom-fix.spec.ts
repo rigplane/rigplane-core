@@ -37,6 +37,9 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
       await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
       const more = page.getByRole('button', { name: 'More scope controls' }).first();
       await clickPanorama(page, more);
+      await expect(page.getByTestId('scope-more-panel')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('scope-more-backdrop')).toBeHidden();
       for (let i = 0; i < 3; i++) await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
       for (let i = 0; i < 2; i++) await clickPanorama(page, page.getByTestId('scope-zoom-out').first());
       await page.keyboard.press('Escape');
@@ -50,7 +53,6 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
         await clickPanorama(page, page.getByRole('radio', { name: 'CTR' }).first());
         await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
           (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
-        await clickPanorama(page, more);
         await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
         await page.keyboard.press('Escape');
       }
@@ -86,7 +88,6 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // mode change — the server-side grant semantics are MOR-4385's); the
     // frontend rule under test is that marker, axis and passband are all
     // computed against the DISPLAYED window.
-    await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
     await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await page.keyboard.press('Escape');
     // The CENTER zoom's one radio write is the span preset (0x15), and it
@@ -147,7 +148,6 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // requested width ([14.225, 14.275] — run 44770631929 timed out here).
     // The panel now keys the radio-owned window on the observed readback;
     // this poll asserts the crop actually narrows the displayed window.
-    await clickPanorama(page, page.getByRole('button', { name: 'More scope controls' }).first());
     await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await page.keyboard.press('Escape');
     await expect.poll(windowOf).not.toEqual([start, end]);
@@ -350,7 +350,6 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
       const fromT = await page.evaluate(() => performance.now());
-      await clickPanorama(page, page.getByTestId('scope-more').first());
       for (let i = 0; i < 3; i++) await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
       await page.keyboard.press('Escape');
       const surface = page.locator('.waterfall-content');
@@ -373,21 +372,24 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expectPanoramaFrequency(page, beforeArrowsHz + 12_000);
       await expectPassbandProbeReady(page, 1);
       await check();
-      await awaitRenderPipeline(page);
-      const box = (await surface.boundingBox())!;
+      let box = await awaitRenderPipeline(page);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.7);
       await page.mouse.wheel(0, -120);
       await expect.poll(async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).main.freqHz).toBeGreaterThan(14_262_000);
       await check();
+      box = await awaitRenderPipeline(page);
       await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.7);
       await expectPassbandProbeReady(page, 1);
       await check();
-      await awaitRenderPipeline(page);
+      box = await awaitRenderPipeline(page);
       const beforeDrag = commands.filter(name => name === 'set_freq').length;
       await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.7);
       await page.mouse.down();
-      await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.7, { steps: 6 });
-      await page.mouse.up();
+      try {
+        await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.7, { steps: 6 });
+      } finally {
+        await page.mouse.up();
+      }
       await expect.poll(() => commands.filter(name => name === 'set_freq').length).toBeGreaterThan(beforeDrag);
       await check();
       await expectPassbandProbeReady(page, 1);
@@ -430,7 +432,6 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     await installSampler(page);
     await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await settlePassband(page, port);
-    await clickPanorama(page, page.getByTestId('scope-more').first());
     await clickPanorama(page, page.getByTestId('scope-zoom-in').first());
     await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
     await clickPanorama(page, page.getByTestId('scope-zoom-band').first());

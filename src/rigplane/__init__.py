@@ -151,7 +151,10 @@ if TYPE_CHECKING:
         WebRtcCloseResult,
         WebRtcIceCandidate,
         WebRtcOffer,
+        WebRtcPath,
         WebRtcRequestError,
+        WebRtcSessionEnded,
+        WebRtcSessionEndReason,
         WebRtcTransportStatus,
     )
     from .web.transport.turn_selection import (  # noqa: F401, TID251
@@ -215,6 +218,15 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "apply_ice_gathering_policy",
     ),
     "WebRtcOffer": ("rigplane.web.transport.webrtc_contract", "WebRtcOffer"),
+    "WebRtcPath": ("rigplane.web.transport.webrtc_contract", "WebRtcPath"),
+    "WebRtcSessionEnded": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcSessionEnded",
+    ),
+    "WebRtcSessionEndReason": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcSessionEndReason",
+    ),
     "WebRtcAnswer": ("rigplane.web.transport.webrtc_contract", "WebRtcAnswer"),
     "WebRtcClose": ("rigplane.web.transport.webrtc_contract", "WebRtcClose"),
     "WebRtcCloseResult": (
@@ -522,6 +534,9 @@ __all__ = [
     "install_ice_gathering_policy",
     "apply_ice_gathering_policy",
     "WebRtcOffer",
+    "WebRtcPath",
+    "WebRtcSessionEnded",
+    "WebRtcSessionEndReason",
     "WebRtcAnswer",
     "WebRtcClose",
     "WebRtcCloseResult",

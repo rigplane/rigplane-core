@@ -157,8 +157,8 @@ async def test_close_all_reports_only_completed_teardowns(
     assert closed == ["clean"]
     assert manager.active_session_ids == []
     assert caplog.messages == [
-        "WebRTC session broken closing on answerer: close_all",
-        "WebRTC session clean closing on answerer: close_all",
+        "WebRTC session broken closing on answerer: all_sessions_closed",
+        "WebRTC session clean closing on answerer: all_sessions_closed",
     ]
 
 
