@@ -2317,7 +2317,7 @@ class UsbAudioDriver:
         the audio bridge keeps its playback stream up through a radio
         outage) asks volunteered holders to quiesce their streams first
         (MOR-4521, via ``backend.rescan_quiesce_callbacks``): quiesce,
-        re-scan, retry, restore. The original failure is raised unchanged
+        re-scan, restore, retry. The original failure is raised unchanged
         when nobody volunteered, when the re-scan stays declined, or when
         the stop epoch moved.
         """
@@ -2385,34 +2385,52 @@ class UsbAudioDriver:
             "quiescing %d stream holder(s) for the re-scan",
             len(callbacks),
         )
-        for _token, quiesce, _restore in callbacks:
+
+        async def rescan() -> bool:
             try:
-                await quiesce()
-            except Exception:
-                logger.warning(
-                    "usb-audio: rescan quiesce failed; continuing", exc_info=True
-                )
-        try:
-            try:
-                ran = await bounded_portaudio_pool.run_bounded(
-                    backend.refresh_devices,
-                    what="device refresh (streams quiesced)",
-                    direction=direction,
-                    timeout=self._capture_open_timeout,
-                )
-                return bool(ran)
-            except Exception:
-                logger.warning("usb-audio: device refresh failed", exc_info=True)
-                return False
-        finally:
-            for _token, _quiesce, restore in callbacks:
+                for _token, quiesce, _restore in callbacks:
+                    try:
+                        await quiesce()
+                    except Exception:
+                        logger.warning(
+                            "usb-audio: rescan quiesce failed; continuing",
+                            exc_info=True,
+                        )
                 try:
-                    await restore()
-                except Exception:
-                    logger.warning(
-                        "usb-audio: rescan restore failed; continuing",
-                        exc_info=True,
+                    ran = await bounded_portaudio_pool.run_bounded(
+                        backend.refresh_devices,
+                        what="device refresh (streams quiesced)",
+                        direction=direction,
+                        timeout=self._capture_open_timeout,
                     )
+                    return bool(ran)
+                except Exception:
+                    logger.warning("usb-audio: device refresh failed", exc_info=True)
+                    return False
+            finally:
+                for _token, _quiesce, restore in callbacks:
+                    try:
+                        await restore()
+                    except Exception:
+                        logger.warning(
+                            "usb-audio: rescan restore failed; continuing",
+                            exc_info=True,
+                        )
+
+        # A cancelled radio start must not strand the bridge halfway
+        # through quiesce. Finish the streams-only transaction before
+        # propagating cancellation, including repeated cancellation.
+        transaction = asyncio.create_task(rescan(), name="audio-device-rescan")
+        try:
+            return await asyncio.shield(transaction)
+        except asyncio.CancelledError:
+            while not transaction.done():
+                try:
+                    await asyncio.shield(transaction)
+                except asyncio.CancelledError:
+                    continue
+            transaction.result()
+            raise
 
     async def start_rx(
         self,

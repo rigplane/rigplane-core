@@ -821,8 +821,7 @@ def device_scan_generation() -> int:
 # count it relieves (``_open_streams``) is process-wide too. The single
 # consumer is ``UsbAudioDriver``'s declined-refresh path: a refresh that is
 # declined while streams are open asks every volunteer to quiesce, re-scans,
-# retries the start, and restores — best-effort each step, the original
-# failure surfacing whenever any step cannot help.
+# and restores the holders before retrying the start.
 _RescanQuiesceCallback = Callable[[], Awaitable[None]]
 
 _rescan_quiesce: list[tuple[Any, _RescanQuiesceCallback, _RescanQuiesceCallback]] = []

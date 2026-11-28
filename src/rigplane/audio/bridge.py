@@ -434,6 +434,7 @@ class AudioBridge:
         # radio-side re-scan (MOR-4521): the restore reopens them, unless
         # the bridge stopped meanwhile.
         self._quiesced_for_rescan = False
+        self._device_stream_lock = asyncio.Lock()
         self._samples_per_frame = sample_rate * frame_ms // 1000
         self._tx_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
 
@@ -762,21 +763,6 @@ class AudioBridge:
         # restore below keeps the live queue instead (nothing was lost —
         # only the device streams were released).
         self._tx_queue = asyncio.Queue(maxsize=64)
-        await self._open_device_streams(session, dev, dev_id, tx_dev_id)
-
-    async def _open_device_streams(
-        self,
-        session: AudioSession,
-        dev: AudioDeviceInfo,
-        dev_id: AudioDeviceId,
-        tx_dev_id: AudioDeviceId,
-    ) -> None:
-        """Arm the TX leg, open the device streams, start the loops.
-
-        Shared by :meth:`_setup_streams` (after declaring demands) and the
-        re-scan restore (demands survive the quiesce, so nothing here
-        subscribes, acquires, or releases — streams and loops only).
-        """
         # The radio may reject TX (serial backend with no USB-audio TX
         # path): degrade to RX-only and use a plain output stream, never a
         # duplex one (MOR-242). Only when TX is armed AND the capture leg
@@ -820,6 +806,17 @@ class AudioBridge:
                 tx_armed = True
                 self._tx_started = True
 
+        await self._open_device_streams(dev, dev_id, tx_dev_id, tx_armed=tx_armed)
+
+    async def _open_device_streams(
+        self,
+        dev: AudioDeviceInfo,
+        dev_id: AudioDeviceId,
+        tx_dev_id: AudioDeviceId,
+        *,
+        tx_armed: bool,
+    ) -> None:
+        """Open device streams and loops without changing radio/session demand."""
         # Same-device duplex only for a REAL CODEC: a virtual loopback
         # (RigPlane cable/VB-Cable/PipeWire) has no AUHAL -50 limitation and stays on
         # the two-stream path (MOR-531 targets the C-Media same-device case).
@@ -902,7 +899,11 @@ class AudioBridge:
         legacy ``*_audio_tx_pcm`` TX stop (no session lease) belongs in
         :meth:`stop` only.
         """
-        await self._cancel_loops()
+        # Stop may overlap a rescan restore's awaited device open. Drain
+        # that open before cancelling its loops; session operations below
+        # stay outside this lock (reestablish holds the session lock).
+        async with self._device_stream_lock:
+            await self._cancel_loops()
 
         # Release the RX demand with the TX lease still held: the session
         # sequences stop_tx → RX drop (MOR-574); the lease release after
@@ -914,7 +915,8 @@ class AudioBridge:
             await self._tx_lease.release()
             self._tx_lease = None
 
-        await self._stop_device_streams()
+        async with self._device_stream_lock:
+            await self._stop_device_streams()
 
     async def _cancel_loops(self) -> None:
         """Cancel the RX/TX loops, leaving demands and streams in place."""
@@ -993,11 +995,12 @@ class AudioBridge:
         Only a RUNNING bridge quiesces — reconnect setup/teardown owns any
         other state, and a stopped bridge has nothing to release.
         """
-        if not self._running or self._bridge_state is not BridgeState.RUNNING:
-            return
-        self._quiesced_for_rescan = True
-        await self._cancel_loops()
-        await self._stop_device_streams()
+        async with self._device_stream_lock:
+            if not self._running or self._bridge_state is not BridgeState.RUNNING:
+                return
+            self._quiesced_for_rescan = True
+            await self._cancel_loops()
+            await self._stop_device_streams()
 
     async def _restore_after_rescan(self) -> None:
         """Reopen the device streams after a radio-side re-scan (MOR-4521).
@@ -1008,24 +1011,29 @@ class AudioBridge:
         reopen hands the bridge to the reconnect loop — the loops are gone
         and must not stay missing.
         """
-        if not self._quiesced_for_rescan:
-            return
-        self._quiesced_for_rescan = False
-        if not self._running or self._bridge_state is not BridgeState.RUNNING:
-            return
-        session = self._session
-        if session is None:  # pragma: no cover — quiesce implies setup ran
-            return
-        try:
-            dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
-            await self._open_device_streams(session, dev, dev_id, tx_dev_id)
-        except Exception as exc:
-            logger.warning(
-                "%s: restore after re-scan failed; reconnecting",
-                self._label,
-                exc_info=True,
-            )
-            self._on_stream_error(exc)
+        async with self._device_stream_lock:
+            if not self._quiesced_for_rescan:
+                return
+            self._quiesced_for_rescan = False
+            if not self._running or self._bridge_state is not BridgeState.RUNNING:
+                return
+            try:
+                dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
+                if not self._running or self._bridge_state is not BridgeState.RUNNING:
+                    return
+                await self._open_device_streams(
+                    dev,
+                    dev_id,
+                    tx_dev_id,
+                    tx_armed=self._tx_enabled and self._tx_started,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "%s: restore after re-scan failed; reconnecting",
+                    self._label,
+                    exc_info=True,
+                )
+                self._on_stream_error(exc)
 
     # ------------------------------------------------------------------
     # Reconnect
@@ -1201,6 +1209,7 @@ class AudioBridge:
             return
 
         unregister_rescan_quiesce(self)
+        self._quiesced_for_rescan = False
         self._running = False
         # Immediately leave RUNNING to prevent _on_stream_error from
         # scheduling new reconnect tasks while we tear down.

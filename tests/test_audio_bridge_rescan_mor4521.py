@@ -8,7 +8,7 @@ a returned radio stayed silent while the bridge was up.
 Item 1: the radio re-arm route (``AudioBus.restart_rx``, reached from the
 session re-establish after a reconnect) reaches the USB driver's
 declined-refresh path, which quiesces the bridge's device streams,
-re-scans in the idle window, retries the start, and restores the bridge.
+re-scans in the idle window, restores the bridge, and retries the start.
 The regression below drives that route with an initially live bridge
 playback and a returned USB capture device: no playback error is
 injected, the refresh is required to run after the teardown, and actual
@@ -26,9 +26,11 @@ recover after the refresh.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import asyncio
 
+import numpy as np
 import pytest
+from _order_sensitive_radios import LanLikeRadio
 from test_audio_backend_capture_mode_mor4030 import (
     WASAPI_DEVICE,
     FakeSd,
@@ -43,12 +45,15 @@ from rigplane.audio.backend import (
     AudioDeviceId,
     AudioDeviceInfo,
     FakeAudioBackend,
+    PortAudioBackend,
     device_scan_generation,
 )
 from rigplane.audio.bridge import AudioBridge
 from rigplane.audio.lan_stream import AudioPacket
+from rigplane.audio.session import AudioSession, AudioSessionState
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.audio_bus import AudioBus
+from rigplane.core.types import AudioCodec
 from rigplane.testing.timing import VirtualClock, await_until
 
 _CODEC = "USB Audio CODEC"
@@ -80,12 +85,6 @@ def _cable_device(index: int) -> dict:
         "max_output_channels": 2,
         "default_samplerate": 48_000,
     }
-
-
-def _make_radio() -> object:
-    radio = AsyncMock()
-    radio.audio_bus = AudioBus(radio)
-    return radio
 
 
 class _PowerCycleSd(FakeSd):
@@ -183,6 +182,8 @@ class _UsbRxHarness:
 
     def __init__(self, driver: UsbAudioDriver) -> None:
         self._driver = driver
+        self.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
+        self.pushed: list[bytes] = []
         self._seq = 0
         # Wired by the test after the shared bus is built, so the bridge's
         # session wraps the same bus the test re-arms (production shape).
@@ -199,14 +200,19 @@ class _UsbRxHarness:
     async def stop_audio_rx_opus(self) -> None:
         await self._driver.stop_rx()
 
+    @property
+    def tx_running(self) -> bool:
+        return self._driver.tx_running
 
-async def _drive_virtual_backoff(clock: VirtualClock, done) -> None:  # type: ignore[no-untyped-def]
-    """Advance the virtual clock until ``done()`` (reconnect backoff driver)."""
-    for _ in range(200):
-        if done():
-            return
-        await clock.elapse(0.1)
-    assert done(), "reconnect did not settle within 20 s of virtual time"
+    async def start_tx(self) -> None:
+        await self._driver.start_tx()
+
+    async def stop_tx(self) -> None:
+        await self._driver.stop_tx()
+
+    async def push_tx(self, pcm: bytes) -> None:
+        await self._driver._push_tx_pcm(pcm)
+        self.pushed.append(pcm)
 
 
 # ---------------------------------------------------------------------------
@@ -214,18 +220,26 @@ async def _drive_virtual_backoff(clock: VirtualClock, done) -> None:  # type: ig
 # ---------------------------------------------------------------------------
 
 
-async def test_returned_radio_re_arms_through_the_bridge_idle_window():
+@pytest.mark.timeout(30)
+async def test_returned_radio_re_arms_through_the_bridge_idle_window(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("rigplane.audio.usb_driver.platform.system", lambda: "Windows")
     sd = _PowerCycleSd([_codec_device(0), _cable_device(1)])
-    backend = _backend(sd, "shared")
-    driver = UsbAudioDriver(config=AudioDeviceConfig(rx_device=_CODEC), backend=backend)
+    backend = PortAudioBackend(dependency_loader=lambda: (sd, np))
+    driver = UsbAudioDriver(
+        config=AudioDeviceConfig(rx_device=_CODEC, tx_device=_CODEC), backend=backend
+    )
     radio = _UsbRxHarness(driver)
-    bus = AudioBus(radio)
+    bus = AudioBus(radio, monotonic=virtual_clock)
     radio.audio_bus = bus
+    session = AudioSession(radio, bus=bus, monotonic=virtual_clock)
+    radio.audio_session = session
     events: list[BridgeStateChange] = []
     bridge = AudioBridge(
         radio,
         device_name=_CABLE,
-        tx_enabled=False,
         backend=backend,
         on_state_changed=events.append,
     )
@@ -233,11 +247,13 @@ async def test_returned_radio_re_arms_through_the_bridge_idle_window():
     await bridge.start()
     try:
         assert bridge.bridge_state is BridgeState.RUNNING
+        assert session.state is AudioSessionState.RX_TX
+        rx_sub, tx_lease = bridge._rx_sub, bridge._tx_lease
         generation = device_scan_generation()
 
         # Baseline: real frames flow from the driver to the live playback.
         baseline = b"\x01\x02" * 960 * 10
-        sd.input_callbacks[-1](baseline)
+        sd.input_callbacks[0](baseline, 9600, None, None)
         await await_until(
             lambda: bridge.metrics.rx_frames >= 10,
             timeout=5.0,
@@ -249,9 +265,14 @@ async def test_returned_radio_re_arms_through_the_bridge_idle_window():
         # stays open — no playback error is injected anywhere.
         sd.set_current([_cable_device(1)])
         await radio.stop_audio_rx_opus()
+        await radio.stop_tx()
         assert not driver.rx_running
-        playback_outputs = [s for s in sd.streams if s.kind == "output"]
-        assert playback_outputs and all(s.started for s in playback_outputs)
+        surviving_playback = bridge._rx_stream
+        assert surviving_playback is not None and surviving_playback.running
+        assert bridge._tx_stream is not None and bridge._tx_stream.running
+
+        await virtual_clock.elapse(session._rx_liveness_timeout)
+        assert session.state is AudioSessionState.RECOVERING
 
         # The radio returns, renumbered; the scan is still stale.
         sd.set_current([_cable_device(1), _codec_device(2)])
@@ -259,10 +280,25 @@ async def test_returned_radio_re_arms_through_the_bridge_idle_window():
         # The existing radio re-arm route: the refresh it needs is
         # declined while the playback is open, so the driver quiesces the
         # bridge, re-scans in the idle window, retries, and restores.
-        await bus.restart_rx()
+        recovery = asyncio.create_task(session.reestablish())
+        try:
+            await await_until(recovery.done, description="RX+TX session recovery")
+            await recovery
+        finally:
+            if not recovery.done():
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
 
         assert bus.rx_active
         assert driver.rx_running
+        assert driver.tx_running
+        assert session.state is AudioSessionState.RX_TX
+        assert session.rx_demand == session.tx_demand == 1
+        assert bridge._rx_sub is rx_sub
+        assert bridge._tx_lease is tx_lease
+        assert tx_lease is not None and not tx_lease.released
+        assert bridge._rx_task is not None and not bridge._rx_task.done()
+        assert bridge._tx_task is not None and not bridge._tx_task.done()
         # The bridge never flapped at the state level: the quiesce and
         # restore are invisible to its state machine.
         assert bridge.bridge_state is BridgeState.RUNNING
@@ -275,27 +311,186 @@ async def test_returned_radio_re_arms_through_the_bridge_idle_window():
         # The capture reopened on the renumbered device, the playback on
         # the re-resolved cable.
         input_opens = [e for e in sd.opened if e["kind"] == "input"]
-        assert [e["device"] for e in input_opens] == [0, 2]
+        assert [e["device"] for e in input_opens] == [0, 1, 1, 2]
         output_opens = [e for e in sd.opened if e["kind"] == "output"]
-        assert len(output_opens) == 2
-        assert output_opens[-1]["device"] == 1
+        assert [e["device"] for e in output_opens] == [0, 1, 1, 2]
 
         # Actual returned-radio RX data reaches the restored playback.
         returned = b"\x03\x04" * 960 * 10
         frames_before = bridge.metrics.rx_frames
-        sd.input_callbacks[-1](returned)
+        radio_input = sd.input_callbacks[-1]
+        radio_input(returned[: 1920 * 8], 960 * 8, None, None)
         await await_until(
-            lambda: bridge.metrics.rx_frames >= frames_before + 10,
+            lambda: bridge.metrics.rx_frames >= frames_before + 8,
             timeout=5.0,
             description="returned-radio frames to reach the restored playback",
         )
-        restored = [e for e in sd.opened if e["kind"] == "output"][-1]
+        restored = [e for e in output_opens if e["device"] == 1][-1]
         collected = bytearray()
-        for _ in range(14):
+        # Keep a 160 ms fill while pumping the native callback, inside the
+        # adaptive player's deadband, so the entire burst stays byte-exact.
+        for index in range(14):
             buf = bytearray(1920)
             restored["callback"](buf, 960, None, None)
             collected += buf
+            next_frame = returned[(8 + index) * 1920 : (9 + index) * 1920]
+            radio_input(next_frame or bytes(1920), 960, None, None)
+            await await_until(
+                lambda: bridge.metrics.rx_frames >= frames_before + 9 + index,
+                description="the next frame to replenish bridge playback",
+            )
+        assert bridge.metrics.rx_frames >= frames_before + 10
         assert bytes(returned) in bytes(collected)
+
+        cable_input = sd.input_callbacks[-2]
+        cable_input(b"\x05\x06" * 960, 960, None, None)
+        await await_until(lambda: radio.pushed, description="restored bridge TX")
+        assert radio.pushed[-1] == b"\x05\x06" * 960
+        radio_output = [e for e in output_opens if e["device"] == 2][-1]
+        buf = bytearray(1920)
+        radio_output["callback"](buf, 960, None, None)
+        assert buf == b"\x05\x06" * 960
+    finally:
+        await bridge.stop()
+
+
+@pytest.mark.parametrize("pause_at", ["resolve", "open"])
+async def test_stop_drains_an_inflight_rescan_restore(
+    pause_at: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RescanningCableBackend()
+    bridge = AudioBridge(
+        LanLikeRadio(), device_name=_CABLE, tx_enabled=False, backend=backend
+    )
+    await bridge.start()
+    await bridge._quiesce_for_rescan()
+    entered, resume = asyncio.Event(), asyncio.Event()
+    if pause_at == "resolve":
+        resolve = bridge._resolve_cable_devices
+
+        async def paused_resolve():
+            devices = await resolve()
+            entered.set()
+            await resume.wait()
+            return devices
+
+        monkeypatch.setattr(bridge, "_resolve_cable_devices", paused_resolve)
+    else:
+        from rigplane.audio.usb_driver import bounded_portaudio_pool
+
+        open_stream = bounded_portaudio_pool.open_stream_bounded
+
+        async def paused_open(*args, **kwargs):
+            await open_stream(*args, **kwargs)
+            entered.set()
+            await resume.wait()
+
+        monkeypatch.setattr(bounded_portaudio_pool, "open_stream_bounded", paused_open)
+
+    restore = asyncio.create_task(bridge._restore_after_rescan())
+    stop = None
+    try:
+        await await_until(entered.is_set, description="restore to pause")
+        stop = asyncio.create_task(bridge.stop())
+        await await_until(
+            lambda: bridge.bridge_state is BridgeState.IDLE,
+            description="stop to retire the bridge",
+        )
+        resume.set()
+        await await_until(
+            lambda: restore.done() and stop.done(), description="restore and stop"
+        )
+        await restore
+        await stop
+        assert bridge._rx_task is bridge._tx_task is None
+        assert bridge._rx_stream is bridge._tx_stream is bridge._duplex_stream is None
+        assert not any(stream.running for stream in backend.tx_streams)
+        assert bridge._session.rx_demand == bridge._session.tx_demand == 0
+        if pause_at == "resolve":
+            assert backend.opened == [("playback", 1)]
+    finally:
+        resume.set()
+        await asyncio.gather(restore, *([stop] if stop else []), return_exceptions=True)
+        await bridge.stop()
+        await bridge._teardown_streams()
+
+
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancel_during_quiesce_restores_the_partially_quiesced_bridge(
+    cancel_count: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RescanningCableBackend()
+    bridge = AudioBridge(LanLikeRadio(), device_name=_CABLE, backend=backend)
+    await bridge.start()
+    driver = UsbAudioDriver(backend=backend)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    stop_streams = bridge._stop_device_streams
+    rx_sub = bridge._rx_sub
+    tx_lease = bridge._tx_lease
+
+    async def paused_stop() -> None:
+        entered.set()
+        await resume.wait()
+        await stop_streams()
+
+    monkeypatch.setattr(bridge, "_stop_device_streams", paused_stop)
+    rescan = asyncio.create_task(
+        driver._rescan_with_quiesced_streams(backend, direction="rx")
+    )
+    try:
+        await await_until(entered.is_set, description="quiesce to reach stream stop")
+        assert bridge._rx_task is bridge._tx_task is None
+        for _ in range(cancel_count):
+            rescan.cancel()
+            await asyncio.sleep(0)
+            assert not rescan.done()
+        resume.set()
+        await await_until(
+            rescan.done, description="cancelled rescan to restore holders"
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await rescan
+        assert bridge.bridge_state is BridgeState.RUNNING
+        assert bridge._rx_sub is rx_sub
+        assert bridge._tx_lease is tx_lease
+        assert tx_lease is not None and not tx_lease.released
+        assert bridge._session.rx_demand == bridge._session.tx_demand == 1
+        assert not bridge._quiesced_for_rescan
+        assert bridge._rx_stream is not None and bridge._rx_stream.running
+        assert bridge._rx_task is not None and not bridge._rx_task.done()
+        assert bridge._tx_stream is not None and bridge._tx_stream.running
+        assert bridge._tx_task is not None and not bridge._tx_task.done()
+        bridge._session.bus._on_opus_packet(
+            AudioPacket(ident=0x80, send_seq=1, data=b"\x03\x04" * 960)
+        )
+        await await_until(
+            lambda: backend.tx_streams[-1].written_frames,
+            description="RX after cancellation during quiesce",
+        )
+    finally:
+        resume.set()
+        await asyncio.gather(rescan, return_exceptions=True)
+        await bridge.stop()
+
+
+async def test_old_rescan_restore_does_not_reopen_a_restarted_bridge() -> None:
+    backend = _RescanningCableBackend()
+    bridge = AudioBridge(
+        LanLikeRadio(), device_name=_CABLE, tx_enabled=False, backend=backend
+    )
+    await bridge.start()
+    try:
+        await bridge._quiesce_for_rescan()
+        await bridge.stop()
+        await bridge.start()
+        playback, rx_task = bridge._rx_stream, bridge._rx_task
+        await bridge._restore_after_rescan()
+        assert bridge._rx_stream is playback
+        assert bridge._rx_task is rx_task
+        assert backend.opened == [("playback", 1), ("playback", 1)]
+        assert bridge._session.rx_demand == 1
     finally:
         await bridge.stop()
 
@@ -306,7 +501,7 @@ async def test_bridge_reconnect_rescans_after_a_cable_failure(
 ) -> None:
     """Cable-side failure: the reconnect teardown opens the idle window."""
     backend = _RescanningCableBackend()
-    radio = _make_radio()
+    radio = LanLikeRadio()
     events: list[BridgeStateChange] = []
     bridge = AudioBridge(
         radio,
@@ -340,7 +535,12 @@ async def test_bridge_reconnect_rescans_after_a_cable_failure(
                 for e in events
             )
 
-        await _drive_virtual_backoff(virtual_clock, reconnected)
+        await await_until(
+            lambda: bridge._reconnect_attempt == 1,
+            description="reconnect to enter its backoff",
+        )
+        await virtual_clock.elapse(bridge._retry_base_delay)
+        await await_until(reconnected, description="pool workers to finish reconnect")
         assert reconnected()
 
         # The re-scan ran once, while no bridge stream was open, and the
@@ -358,7 +558,6 @@ async def test_bridge_reconnect_rescans_after_a_cable_failure(
         await await_until(
             lambda: new_playback.written_frames,
             timeout=5.0,
-            clock=virtual_clock,
             description="RX to resume on the reopened playback",
         )
     finally:
