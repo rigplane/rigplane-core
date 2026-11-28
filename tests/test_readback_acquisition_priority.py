@@ -389,7 +389,13 @@ async def test_expiry_does_not_readmit_a_terminal_request_in_the_same_pass(
     fully_sent: bool,
     forget_hook: bool,
 ) -> None:
-    sibling = FieldPath.global_("operator_controls", "sibling")
+    # _FREQ and sibling share one scheduler envelope: both are
+    # receiver/main/active/freq_mode, and both names are LIVE tuning fields,
+    # so _request_key groups them into a single request. `other` is global
+    # scope and stays a separate request the drain can still dispatch.
+    # (rigs/ic7300.toml lists freq_hz and mode together as polled cadence
+    # members.) The grouping asserts below pin this before draining.
+    sibling = FieldPath.active("main", "freq_mode", "mode")
     other = FieldPath.global_("operator_controls", "other")
     scheduler = AcquisitionScheduler(
         profile=RadioAcquisitionProfile(
@@ -402,10 +408,19 @@ async def test_expiry_does_not_readmit_a_terminal_request_in_the_same_pass(
     scheduler.ensure_fresh(
         (_FREQ, sibling), max_age=10, priority="background", reason="policy-cadence"
     )
-    request = scheduler.pending_requests()[0]
+    grouped = scheduler.pending_requests()
+    assert len(grouped) == 1
+    assert frozenset(grouped[0].paths) == frozenset((_FREQ, sibling))
     scheduler.ensure_fresh(
         other, max_age=10, priority="background", reason="policy-cadence"
     )
+    pending = scheduler.pending_requests()
+    assert len(pending) == 2
+    request = next(r for r in pending if _FREQ in r.paths)
+    assert frozenset(request.paths) == frozenset((_FREQ, sibling))
+    assert frozenset(
+        next(r for r in pending if r.id != request.id).paths
+    ) == frozenset((other,))
     sent_paths = frozenset(request.paths if fully_sent else (_FREQ,))
     ledger: InFlightLedger = {request.id: (sent_paths, 10.0)}
     reports: list[str] = []
