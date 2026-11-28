@@ -45,7 +45,6 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -59,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import await_until  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -203,8 +203,6 @@ class VfoDualWatchMockRadio(MockIcomRadio):
 # Fixtures
 # ---------------------------------------------------------------------------
 
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before checking state
-
 
 @pytest.fixture
 async def vfo_mock() -> AsyncGenerator[VfoDualWatchMockRadio, None]:
@@ -271,7 +269,11 @@ class TestTuningStep:
     ) -> None:
         """Set step index 1 (1Hz), verify GET returns 1 and mock state matches."""
         await vfo_radio.set_tuning_step(1)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._tuning_step == 0x01,
+            timeout=5.0,
+            description="tuning step 1 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 1
         assert vfo_mock._tuning_step == 0x01
@@ -281,7 +283,11 @@ class TestTuningStep:
     ) -> None:
         """Set step index 4 (1kHz per IC-7610 table), verify roundtrip."""
         await vfo_radio.set_tuning_step(4)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._tuning_step == 0x04,
+            timeout=5.0,
+            description="tuning step 4 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 4
         assert vfo_mock._tuning_step == 0x04
@@ -291,7 +297,11 @@ class TestTuningStep:
     ) -> None:
         """Set step index 7 (10kHz per IC-7610 table), verify roundtrip."""
         await vfo_radio.set_tuning_step(7)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._tuning_step == 0x07,
+            timeout=5.0,
+            description="tuning step 7 SET reaching the mock",
+        )
         step = await vfo_radio.get_tuning_step()
         assert step == 7
         assert vfo_mock._tuning_step == 0x07
@@ -302,7 +312,11 @@ class TestTuningStep:
         """Step state persists across multiple SET → GET cycles."""
         for idx in (1, 3, 5, 8):
             await vfo_radio.set_tuning_step(idx)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda i=idx: vfo_mock._tuning_step == i,
+                timeout=5.0,
+                description=f"tuning step {idx} SET reaching the mock",
+            )
             got = await vfo_radio.get_tuning_step()
             assert got == idx, f"step mismatch for index {idx}"
             assert vfo_mock._tuning_step == idx
@@ -335,7 +349,11 @@ class TestScanning:
     ) -> None:
         """start_scan() sets mock scanning state to True."""
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is True,
+            timeout=5.0,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
     async def test_scan_stop(
@@ -343,11 +361,19 @@ class TestScanning:
     ) -> None:
         """stop_scan() clears mock scanning state."""
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is True,
+            timeout=5.0,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is False,
+            timeout=5.0,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
     async def test_scan_start_stop_cycle(
@@ -355,19 +381,35 @@ class TestScanning:
     ) -> None:
         """Full start → stop → start → stop cycle verifies state at each step."""
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is True,
+            timeout=5.0,
+            description="scan start SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is False,
+            timeout=5.0,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is True,
+            timeout=5.0,
+            description="scan restart SET reaching the mock",
+        )
         assert vfo_mock._scanning is True
 
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is False,
+            timeout=5.0,
+            description="scan final stop SET reaching the mock",
+        )
         assert vfo_mock._scanning is False
 
 
@@ -395,7 +437,11 @@ class TestDualWatch:
     ) -> None:
         """set_dual_watch(True) → mock._dual_watch_on becomes True."""
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True,
+            timeout=5.0,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
     async def test_dual_watch_turn_off(
@@ -403,11 +449,19 @@ class TestDualWatch:
     ) -> None:
         """set_dual_watch(False) after on → mock._dual_watch_on becomes False."""
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True,
+            timeout=5.0,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is False,
+            timeout=5.0,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_on_off_cycle(
@@ -418,11 +472,19 @@ class TestDualWatch:
         assert vfo_mock._dual_watch_on is False
 
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True,
+            timeout=5.0,
+            description="dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is False,
+            timeout=5.0,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_idempotent_on(
@@ -430,9 +492,17 @@ class TestDualWatch:
     ) -> None:
         """Setting dual watch ON twice does not cause an error."""
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True,
+            timeout=5.0,
+            description="first dual watch ON SET reaching the mock",
+        )
         await vfo_radio.set_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True,
+            timeout=5.0,
+            description="second dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is True
 
     async def test_dual_watch_idempotent_off(
@@ -440,9 +510,17 @@ class TestDualWatch:
     ) -> None:
         """Setting dual watch OFF twice does not cause an error."""
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is False,
+            timeout=5.0,
+            description="first dual watch OFF SET reaching the mock",
+        )
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is False,
+            timeout=5.0,
+            description="second dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._dual_watch_on is False
 
     async def test_dual_watch_unsolicited_on_fires_event(
@@ -457,7 +535,11 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x01"
         )
         vfo_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "dual_watch_changed" for name, _ in events),
+            timeout=5.0,
+            description="unsolicited dual-watch=ON firing dual_watch_changed",
+        )
 
         assert any(name == "dual_watch_changed" for name, _ in events), (
             f"dual_watch_changed not fired; events={[n for n, _ in events]}"
@@ -477,7 +559,14 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x01"
         )
         vfo_mock.inject_unsolicited_civ(on_frame)
-        await asyncio.sleep(0.1)
+        await await_until(
+            lambda: any(
+                name == "dual_watch_changed" and d.get("on") is True
+                for name, d in events
+            ),
+            timeout=5.0,
+            description="unsolicited dual-watch=ON firing dual_watch_changed",
+        )
 
         events.clear()
 
@@ -485,7 +574,11 @@ class TestDualWatch:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_VFO_SELECT, data=b"\xc2\x00"
         )
         vfo_mock.inject_unsolicited_civ(off_frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "dual_watch_changed" for name, _ in events),
+            timeout=5.0,
+            description="unsolicited dual-watch=OFF firing dual_watch_changed",
+        )
 
         assert any(name == "dual_watch_changed" for name, _ in events), (
             f"dual_watch_changed not fired; events={[n for n, _ in events]}"
@@ -517,22 +610,34 @@ class TestQuickDualWatch:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         await vfo_radio.set_quick_dual_watch(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._quick_dual_watch_on is True,
+            timeout=5.0,
+            description="quick dual watch ON SET reaching the mock",
+        )
         assert vfo_mock._quick_dual_watch_on is True
         assert await vfo_radio.get_quick_dual_watch() is True
 
         await vfo_radio.set_quick_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._quick_dual_watch_on is False,
+            timeout=5.0,
+            description="quick dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._quick_dual_watch_on is False
         assert await vfo_radio.get_quick_dual_watch() is False
 
     async def test_set_quick_dual_watch_multiple_calls(
-        self, vfo_radio: IcomRadio
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         """Calling set_quick_dual_watch() repeatedly does not raise."""
         for _ in range(3):
             await vfo_radio.set_quick_dual_watch(True)
-            await asyncio.sleep(0.02)
+            await await_until(
+                lambda: vfo_mock._quick_dual_watch_on is True,
+                timeout=5.0,
+                description="quick dual watch ON SET reaching the mock",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -558,20 +663,34 @@ class TestQuickSplit:
         self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
     ) -> None:
         await vfo_radio.set_quick_split(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._quick_split_on is True,
+            timeout=5.0,
+            description="quick split ON SET reaching the mock",
+        )
         assert vfo_mock._quick_split_on is True
         assert await vfo_radio.get_quick_split() is True
 
         await vfo_radio.set_quick_split(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._quick_split_on is False,
+            timeout=5.0,
+            description="quick split OFF SET reaching the mock",
+        )
         assert vfo_mock._quick_split_on is False
         assert await vfo_radio.get_quick_split() is False
 
-    async def test_set_quick_split_multiple_calls(self, vfo_radio: IcomRadio) -> None:
+    async def test_set_quick_split_multiple_calls(
+        self, vfo_radio: IcomRadio, vfo_mock: VfoDualWatchMockRadio
+    ) -> None:
         """Calling set_quick_split() repeatedly does not raise."""
         for _ in range(3):
             await vfo_radio.set_quick_split(True)
-            await asyncio.sleep(0.02)
+            await await_until(
+                lambda: vfo_mock._quick_split_on is True,
+                timeout=5.0,
+                description="quick split ON SET reaching the mock",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +708,15 @@ class TestStateIndependence:
         await vfo_radio.set_tuning_step(3)
         await vfo_radio.set_dual_watch(True)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                vfo_mock._tuning_step == 0x03
+                and vfo_mock._dual_watch_on is True
+                and vfo_mock._scanning is True
+            ),
+            timeout=5.0,
+            description="tuning step + dual watch + scan SETs reaching the mock",
+        )
 
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is True
@@ -597,14 +724,22 @@ class TestStateIndependence:
 
         # Disable dual watch — step and scan unchanged
         await vfo_radio.set_dual_watch(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is False,
+            timeout=5.0,
+            description="dual watch OFF SET reaching the mock",
+        )
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is False
         assert vfo_mock._scanning is True
 
         # Stop scanning — step and dual watch unchanged
         await vfo_radio.stop_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._scanning is False,
+            timeout=5.0,
+            description="scan stop SET reaching the mock",
+        )
         assert vfo_mock._tuning_step == 0x03
         assert vfo_mock._dual_watch_on is False
         assert vfo_mock._scanning is False
@@ -617,11 +752,22 @@ class TestStateIndependence:
         state exercised elsewhere in this file."""
         await vfo_radio.set_dual_watch(True)
         await vfo_radio.start_scan()
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: vfo_mock._dual_watch_on is True and vfo_mock._scanning is True,
+            timeout=5.0,
+            description="dual watch + scan SETs reaching the mock",
+        )
 
         await vfo_radio.set_quick_dual_watch(True)
         await vfo_radio.set_quick_split(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                vfo_mock._quick_dual_watch_on is True
+                and vfo_mock._quick_split_on is True
+            ),
+            timeout=5.0,
+            description="quick dual watch + quick split SETs reaching the mock",
+        )
 
         # Regular dual-watch/scan state must be unchanged by the quick toggles.
         assert vfo_mock._dual_watch_on is True
