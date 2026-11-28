@@ -613,12 +613,20 @@ class ControlPhaseRuntime:
                 )
             h._civ_transport = None
         try:
-            await h._ctrl_transport.disconnect()
+            if h._token:
+                await self._send_token(0x01)
         except Exception:
             logger.debug(
-                "data-port cooldown cleanup: control disconnect failed",
-                exc_info=True,
+                "data-port cooldown cleanup: token remove failed", exc_info=True
             )
+        finally:
+            try:
+                await h._ctrl_transport.disconnect()
+            except Exception:
+                logger.debug(
+                    "data-port cooldown cleanup: control disconnect failed",
+                    exc_info=True,
+                )
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
@@ -1209,7 +1217,7 @@ class ControlPhaseRuntime:
         struct.pack_into("<I", pkt, 0x1C, h._token)
         struct.pack_into(">H", pkt, 0x24, 0x0798)
         await h._ctrl_transport.send_tracked(bytes(pkt))
-        logger.debug("Token ack sent (token=0x%08X)", h._token)
+        logger.debug("Token ack sent")
 
     def _on_conninfo_notice(self, data: bytes) -> None:
         """A 0x90 notice on the control port. On the IC-7610, busy=0 is sent when the radio drops our streams.

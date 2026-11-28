@@ -943,11 +943,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     @property
     def startup_busy_hold_event(self) -> asyncio.Event:
-        """Set while the first connect waits out a busy reject (MOR-3391).
+        """Set during first-connect busy or silent-discovery retry cooldowns.
 
         Read-only for consumers: wait on it or probe ``is_set()``, never
         set or clear it. The session lifecycle sets it when the first
-        connect enters the SESSION_BUSY_REJECT cooldown and clears it on
+        connect enters one of these cooldowns and clears it on
         CONNECTED/DISCONNECTED; reconnect busy rejects never set it.
         Lets start-up serve not-ready while the same connect keeps running.
         """

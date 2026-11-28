@@ -1320,3 +1320,106 @@ async def test_silent_first_discovery_then_busy_uses_busy_rules(
     ]
     assert lines.count("discovery attempt 1/3 got no answer") == 1
     assert lc.state is LifecycleState.DISCONNECTED
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("finish", ["connect", "cancel", "exhaust"])
+async def test_silent_discovery_publishes_hold_countdown(
+    virtual_clock,
+    monkeypatch: pytest.MonkeyPatch,
+    finish: str,
+) -> None:
+    from types import SimpleNamespace
+    from rigplane.runtime import session_lifecycle
+
+    # Replace the module's clock view, never the process-wide time module.
+    monkeypatch.setattr(
+        session_lifecycle, "time", SimpleNamespace(monotonic=virtual_clock)
+    )
+    mech = FakeMechanism()
+    mech.queue_discovery_timeout()
+    if finish == "exhaust":
+        mech.queue_discovery_timeout()
+        mech.queue_discovery_timeout()
+    else:
+        mech.queue_ok()
+    lc = CoreRadioSessionLifecycle(
+        mechanism=mech,
+        first_connect_busy_budget_s=600.0,
+        first_connect_busy_cooldown_s=30.0,
+    )
+    events: list[LifecycleEvent] = []
+    lc.add_event_listener(events.append)
+    task = asyncio.create_task(lc.connect())
+    try:
+        await virtual_clock.elapse(0)
+        assert lc.startup_busy_hold_event.is_set()
+        assert lc.state is LifecycleState.COOLDOWN
+        assert events[-1].to_state is LifecycleState.COOLDOWN
+        assert events[-1].cooldown_remaining_s == pytest.approx(30.0)
+        assert lc.startup_busy_hold_retry_in_seconds == pytest.approx(30.0)
+        assert lc.status.cooldown_remaining_s == pytest.approx(30.0)
+        await virtual_clock.elapse(12.0)
+        assert lc.startup_busy_hold_retry_in_seconds == pytest.approx(18.0)
+        assert lc.status.cooldown_remaining_s == pytest.approx(18.0)
+        if finish == "cancel":
+            await lc.disconnect()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif finish == "exhaust":
+            await virtual_clock.elapse(48.0)
+            with pytest.raises(DiscoveryTimeout):
+                await task
+            assert mech.connect_calls == 3
+        else:
+            await virtual_clock.elapse(18.0)
+            await task
+            assert mech.connect_calls == 2
+        assert not lc.startup_busy_hold_event.is_set()
+        assert lc.startup_busy_hold_retry_in_seconds is None
+        assert lc.status.cooldown_remaining_s is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await lc.disconnect()
+
+
+@pytest.mark.parametrize("fail_remove", [False, True])
+async def test_data_port_timeout_removes_token_before_control_close(
+    fail_remove: bool,
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from rigplane.runtime._control_phase import ControlPhaseRuntime
+    from rigplane.runtime._connection_state import RadioConnectionState
+
+    events: list[str] = []
+
+    async def remove(magic: int) -> None:
+        assert magic == 0x01
+        events.append("remove")
+        if fail_remove:
+            raise OSError("simulated token-remove send failure")
+
+    async def close() -> None:
+        events.append("close")
+
+    host = SimpleNamespace(
+        _token=1,
+        _civ_sock_pending=None,
+        _audio_sock_pending=None,
+        _civ_transport=None,
+        _ctrl_transport=SimpleNamespace(disconnect=close),
+        _conn_state=RadioConnectionState.CONNECTING,
+        _civ_stream_ready=True,
+        _civ_recovering=True,
+    )
+    phase = ControlPhaseRuntime(host)
+    phase._send_token = AsyncMock(side_effect=remove)
+    await phase._cleanup_data_port_discovery_timeout()
+    assert events == ["remove", "close"]
+    assert host._conn_state is RadioConnectionState.DISCONNECTED
+    assert not host._civ_stream_ready
+    assert not host._civ_recovering
