@@ -38,6 +38,7 @@ from rigplane.backends.yaesu_cat.transport import (
     CatTimeoutError,
     CatTransportError,
 )
+import rigplane.backends.yaesu_cat.transport as yaesu_cat_transport_module
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.testing.timing import VirtualClock, await_until
@@ -207,12 +208,20 @@ async def test_managed_reconnect_restores_current_provider_without_replaying_on(
 @pytest.mark.timeout(30)
 @pytest.mark.parametrize("boundary", ["failure", "provider", "transport", "cooldown"])
 async def test_managed_reconnect_does_not_publish_failed_or_stale_readiness(
-    virtual_clock: VirtualClock, tmp_path: Path, boundary: str
+    virtual_clock: VirtualClock,
+    tmp_path: Path,
+    boundary: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     radio, poller, store, composition, actuator = await _managed_reconnect_path(
         tmp_path
     )
     transport = radio._transport
+    # The reconnect cooldown reads time.monotonic() inside the transport
+    # module: point that module at the shared clock so the cooldown stamp
+    # below and the reconnect read the same time. The module's own
+    # asyncio.sleep becomes a clock jump driven by elapse.
+    virtual_clock.scope_to(monkeypatch, yaesu_cat_transport_module)
     original_connect = transport.connect
 
     async def connect() -> None:
