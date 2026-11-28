@@ -1,7 +1,7 @@
 <script lang="ts">
   import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { runtime } from '$lib/runtime';
-  import { getHostUi } from '$lib/local-extensions/host-ui';
+  import { getHostUi, readHostDeclaration } from '$lib/local-extensions/host-ui';
   import { t } from '$lib/i18n';
   import { isStackedTraceEnabled, isStackedTraceUnavailable, setStackedTraceEnabled } from '$lib/stores/stacked-trace.svelte';
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, hasCapability, receiverLabel } from '$lib/stores/capabilities.svelte';
@@ -71,7 +71,7 @@
   } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import {
-    getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
+    getConnectionStatus, getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
     getWsConnected, hasEverConnected,
   } from '$lib/stores/connection.svelte';
   import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
@@ -93,6 +93,22 @@
   let radioPowerOn = $derived(getRadioPowerOn());
   let powerLabel = $derived(t(radioPowerOn === true ? 'core.statusbar.power.labelOff'
     : radioPowerOn === false ? 'core.statusbar.power.labelOn' : 'core.statusbar.power.labelUnknown'));
+  // MOR-4690: this layout shows the connection (radio-link line, veil) but
+  // had no Connect/Disconnect action — the toggle lived only in StatusBar.
+  // Same derivation, label keys, tooltip keys and HostUi command the desktop
+  // toggle uses; no new mechanism, no per-radio branches.
+  const hostDeclaration = readHostDeclaration();
+  let connectionStatus = $derived(getConnectionStatus());
+  let connectionTooltip = $derived(connectionStatus === 'connected'
+    ? t('core.statusbar.connection.toggleActive')
+    : t('core.statusbar.connection.toggleInactive'));
+  let connectionLabel = $derived(connectionStatus === 'connected'
+    ? t('core.statusbar.connection.actionDisconnect')
+    : t('core.statusbar.connection.actionConnect'));
+  function handleConnectionToggle() {
+    const ui = getHostUi();
+    if (connectionStatus === 'connected') ui?.disconnect(); else ui?.connect();
+  }
   // The reason text the desktop status bar adds to its radio indicator's
   // title; '' while no reason applies, which hides the line. While
   // `runtime.state` is null (no state has arrived) no reason is shown.
@@ -1105,6 +1121,12 @@
               {powerLabel}
             </button>
           {/if}
+          {#if !hostDeclaration.health}
+            <button type="button" class="m-connection" onclick={handleConnectionToggle}
+              title={connectionTooltip}>
+              {connectionLabel}
+            </button>
+          {/if}
           <!-- VFO/BAND, DSP panels removed (#841) — BAND lives in the "band" chip,
                VFO ops (SPLIT/A↔B/A=B) live in ESSENTIALS, DSP levels+toggles live
                in ESSENTIALS. -->
@@ -1203,7 +1225,8 @@
 {/if}
 
 <style>
-  .m-radio-power {
+  .m-radio-power,
+  .m-connection {
     min-height: 44px;
     margin: 12px;
     color: var(--v2-text-primary, #fff);
