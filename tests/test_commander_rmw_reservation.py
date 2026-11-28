@@ -41,9 +41,10 @@ if TYPE_CHECKING:
 _MODELS = ("IC-7300", "IC-705", "IC-7610")
 
 # Bounds for a stuck run, not the expected wait (MOR-3743 round 4, MOR-4075):
-# the converted tests run on the shared virtual clock, so their ``wait_for``
-# bounds are virtual-time hang guards and each test completes when its real
-# events (queued frames, task completion) arrive.
+# the converted tests run on the shared virtual clock, so no ``loop.time``
+# timeout can fire on its own; every wait is a real event (queued frames,
+# task completion) bounded by ``await_until``'s real-time deadline, and each
+# completed task is then awaited to propagate its result or failure.
 _BOUND_S = 2.0
 
 
@@ -145,7 +146,15 @@ async def _await_queued(
     entered: asyncio.Event, commander: IcomCommander, n: int
 ) -> None:
     """``send`` queues before it waits, so the frame is queued once ``entered`` wakes."""
-    await entered.wait()
+    await await_until(
+        lambda: (
+            entered.is_set()
+            and commander._queue is not None
+            and commander._queue.qsize() == n
+        ),
+        timeout=_BOUND_S,
+        description="the competing frame to queue",
+    )
     queue = commander._queue
     assert queue is not None and queue.qsize() == n
 
@@ -185,11 +194,16 @@ async def test_split_mode_write_rechecks_preservation_after_foreign_write(
                 await radio.send_civ(0x26, data=bytes([0x01, 0x05, 0x01, 0x01]))
 
             foreign = asyncio.create_task(competing())
-            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+            await _await_queued(entered, commander, 1)
 
         backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        observed = await asyncio.wait_for(write, 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the split write to complete after the foreign write",
+        )
+        observed = await write
     finally:
         radio._connected = False
         if foreign is not None:
@@ -237,12 +251,17 @@ async def test_split_mode_write_fails_after_persistent_interference(
                 await radio.send_civ(0x26, data=bytes([0x01, 0x05, 0x00, 0x02]))
 
             foreign_rounds.append(asyncio.create_task(competing()))
-            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+            await _await_queued(entered, commander, 1)
 
         backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
         with pytest.raises(CommandError, match="interfered with a concurrent command"):
-            await asyncio.wait_for(write, 1)
+            await await_until(
+                write.done,
+                timeout=_BOUND_S,
+                description="the interfered write to fail",
+            )
+            await write
     finally:
         radio._connected = False
         await asyncio.gather(*foreign_rounds, return_exceptions=True)
@@ -272,7 +291,12 @@ async def test_split_mode_write_without_interference_writes_once(
     commander.start()
     try:
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        observed = await asyncio.wait_for(write, 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the unopposed split write to complete",
+        )
+        observed = await write
     finally:
         radio._connected = False
         await commander.stop()
@@ -314,16 +338,31 @@ async def test_background_frames_do_not_interfere_with_split_write(
                 )
 
             foreign = asyncio.create_task(poll())
-            await asyncio.wait_for(_await_queued(entered, commander, 1), 1)
+            await _await_queued(entered, commander, 1)
 
         backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        observed = await asyncio.wait_for(write, 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the split write to complete beside the background poll",
+        )
+        observed = await write
         assert foreign is not None
-        await asyncio.wait_for(foreign, 1)
+        await await_until(
+            foreign.done,
+            timeout=_BOUND_S,
+            description="the background poll to dispatch",
+        )
+        await foreign
         queue = commander._queue
         assert queue is not None
-        await asyncio.wait_for(queue.join(), 1)
+        await await_until(
+            lambda: queue._unfinished_tasks == 0,
+            timeout=_BOUND_S,
+            description="the commander queue to drain",
+        )
+        await queue.join()
     finally:
         radio._connected = False
         if foreign is not None and not foreign.done():
@@ -370,7 +409,7 @@ async def test_ptt_frames_keep_priority_order_during_split_write(
                 await radio.send_civ(0x1C, 0x00, b"\x01", wait_response=False)
 
             tasks.append(asyncio.create_task(key_on()))
-            await asyncio.wait_for(_await_queued(key_entered, commander, 1), 1)
+            await _await_queued(key_entered, commander, 1)
             dekey_entered = asyncio.Event()
 
             async def dekey() -> None:
@@ -378,12 +417,22 @@ async def test_ptt_frames_keep_priority_order_during_split_write(
                 await radio.set_ptt(False)
 
             tasks.append(asyncio.create_task(dekey()))
-            await asyncio.wait_for(_await_queued(dekey_entered, commander, 2), 1)
+            await _await_queued(dekey_entered, commander, 2)
 
         backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the split write to complete around the PTT frames",
+        )
+        await write
+        await await_until(
+            lambda: all(task.done() for task in tasks),
+            timeout=_BOUND_S,
+            description="the PTT frames to dispatch",
+        )
+        await asyncio.gather(*tasks)
     finally:
         radio._connected = False
         for task in tasks:
@@ -433,7 +482,11 @@ async def test_ptt_frames_queued_before_the_write_are_not_delayed(
             await radio.send_civ(0x25, data=b"\x00")
 
         tasks.append(asyncio.create_task(helper_read()))
-        await asyncio.wait_for(helper_entered.wait(), 1)
+        await await_until(
+            helper_entered.is_set,
+            timeout=_BOUND_S,
+            description="the helper read to start",
+        )
 
         key_entered = asyncio.Event()
 
@@ -442,7 +495,7 @@ async def test_ptt_frames_queued_before_the_write_are_not_delayed(
             await radio.send_civ(0x1C, 0x00, b"\x01", wait_response=False)
 
         tasks.append(asyncio.create_task(key_on()))
-        await asyncio.wait_for(_await_queued(key_entered, commander, 1), 1)
+        await _await_queued(key_entered, commander, 1)
         dekey_entered = asyncio.Event()
 
         async def dekey() -> None:
@@ -450,12 +503,22 @@ async def test_ptt_frames_queued_before_the_write_are_not_delayed(
             await radio.set_ptt(False)
 
         tasks.append(asyncio.create_task(dekey()))
-        await asyncio.wait_for(_await_queued(dekey_entered, commander, 2), 1)
+        await _await_queued(dekey_entered, commander, 2)
 
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
         gate.set()
-        await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the split write to complete behind the PTT frames",
+        )
+        await write
+        await await_until(
+            lambda: all(task.done() for task in tasks),
+            timeout=_BOUND_S,
+            description="the queued frames to dispatch",
+        )
+        await asyncio.gather(*tasks)
     finally:
         gate.set()
         radio._connected = False
@@ -513,7 +576,7 @@ async def test_tx_releases_run_unhindered_and_mark_the_scope(
                 entered = asyncio.Event()
                 tasks.append(asyncio.create_task(spawn(entered, call)))
                 queued += 1
-                await asyncio.wait_for(_await_queued(entered, commander, queued), 1)
+                await _await_queued(entered, commander, queued)
 
             dekey = build_civ_frame(
                 radio._radio_addr, CONTROLLER_ADDR, 0x28, sub=0x00, data=b"\x00"
@@ -526,12 +589,22 @@ async def test_tx_releases_run_unhindered_and_mark_the_scope(
 
             tasks.append(asyncio.create_task(raw_release()))
             queued += 1
-            await asyncio.wait_for(_await_queued(entered_raw, commander, queued), 1)
+            await _await_queued(entered_raw, commander, queued)
 
         backend.on_mode_read = on_mode_read
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        await asyncio.wait_for(write, 1)
-        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the split write to complete around the TX releases",
+        )
+        await write
+        await await_until(
+            lambda: all(task.done() for task in tasks),
+            timeout=_BOUND_S,
+            description="the TX releases to dispatch",
+        )
+        await asyncio.gather(*tasks)
     finally:
         radio._connected = False
         for task in tasks:
@@ -592,7 +665,11 @@ async def test_scope_marks_interference_from_foreign_frames(
 
         owner_task = asyncio.create_task(owner())
         tasks.append(owner_task)
-        await asyncio.wait_for(inside.wait(), 1)
+        await await_until(
+            inside.is_set,
+            timeout=_BOUND_S,
+            description="the owner to enter its scope",
+        )
 
         async def foreign(payload: bytes, priority: Priority) -> None:
             await commander.send(payload, priority=priority)
@@ -603,7 +680,13 @@ async def test_scope_marks_interference_from_foreign_frames(
             (b"A", Priority.ABORT),
             (b"F", Priority.FORCE_RELEASE),
         ):
-            await asyncio.wait_for(asyncio.create_task(foreign(payload, priority)), 1)
+            foreign_task = asyncio.create_task(foreign(payload, priority))
+            await await_until(
+                foreign_task.done,
+                timeout=_BOUND_S,
+                description="the foreign frame to dispatch",
+            )
+            await foreign_task
         assert scopes[0].interfered is True
         assert scopes[0].is_current() is False
     finally:
@@ -635,12 +718,22 @@ async def test_scope_ignores_foreign_background_frames(
 
         owner_task = asyncio.create_task(owner())
         tasks.append(owner_task)
-        await asyncio.wait_for(inside.wait(), 1)
+        await await_until(
+            inside.is_set,
+            timeout=_BOUND_S,
+            description="the owner to enter its scope",
+        )
 
         async def poll() -> None:
             await commander.send(b"P", priority=Priority.BACKGROUND)
 
-        await asyncio.wait_for(asyncio.create_task(poll()), 1)
+        poll_task = asyncio.create_task(poll())
+        await await_until(
+            poll_task.done,
+            timeout=_BOUND_S,
+            description="the background poll to dispatch",
+        )
+        await poll_task
         assert scopes[0].interfered is False
         assert scopes[0].is_current() is True
     finally:
@@ -664,15 +757,27 @@ async def test_scope_deregisters_on_exit_error_and_cancellation(
         async with commander.interference_scope():
             pass
 
-    await asyncio.wait_for(clean(), 1)
+    clean_task = asyncio.create_task(clean())
+    await await_until(
+        clean_task.done,
+        timeout=_BOUND_S,
+        description="the clean scope to exit",
+    )
+    await clean_task
     assert commander._interference_scopes == set()
 
     async def boom() -> None:
         async with commander.interference_scope():
             raise RuntimeError("boom")
 
+    boom_task = asyncio.create_task(boom())
     with pytest.raises(RuntimeError):
-        await asyncio.wait_for(boom(), 1)
+        await await_until(
+            boom_task.done,
+            timeout=_BOUND_S,
+            description="the failing scope to exit",
+        )
+        await boom_task
     assert commander._interference_scopes == set()
 
     entered = asyncio.Event()
@@ -685,7 +790,11 @@ async def test_scope_deregisters_on_exit_error_and_cancellation(
             await asyncio.Event().wait()
 
     parked_task = asyncio.create_task(parked())
-    await asyncio.wait_for(entered.wait(), 1)
+    await await_until(
+        entered.is_set,
+        timeout=_BOUND_S,
+        description="the parked scope to enter",
+    )
     assert len(commander._interference_scopes) == 1
     parked_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -693,7 +802,13 @@ async def test_scope_deregisters_on_exit_error_and_cancellation(
     assert commander._interference_scopes == set()
 
     # A later foreign frame does not touch the deregistered scope.
-    await asyncio.wait_for(commander.send(b"W"), 1)
+    send_task = asyncio.create_task(commander.send(b"W"))
+    await await_until(
+        send_task.done,
+        timeout=_BOUND_S,
+        description="the foreign frame to dispatch",
+    )
+    await send_task
     assert dead[0].interfered is False
     assert commander._interference_scopes == set()
     await commander.stop()
@@ -728,7 +843,13 @@ async def test_concurrent_scopes_mark_each_other(
             sent_b.set()
             await sent_a.wait()
 
-    await asyncio.wait_for(asyncio.gather(side_a(), side_b()), 1)
+    sides = asyncio.gather(side_a(), side_b())
+    await await_until(
+        sides.done,
+        timeout=_BOUND_S,
+        description="both scopes to exchange frames",
+    )
+    await sides
     assert scopes["a"].interfered is True
     assert scopes["b"].interfered is True
     assert commander._interference_scopes == set()
@@ -756,7 +877,13 @@ async def test_scope_currency_dies_with_the_scope(
             scopes.append(scope)
             assert scope.is_current() is True
 
-    await asyncio.wait_for(clean(), 1)
+    clean_task = asyncio.create_task(clean())
+    await await_until(
+        clean_task.done,
+        timeout=_BOUND_S,
+        description="the clean scope to exit",
+    )
+    await clean_task
     assert scopes[0].closed is True
     assert scopes[0].interfered is False
     assert scopes[0].is_current() is False
@@ -766,8 +893,14 @@ async def test_scope_currency_dies_with_the_scope(
             scopes.append(scope)
             raise RuntimeError("boom")
 
+    boom_task = asyncio.create_task(boom())
     with pytest.raises(RuntimeError):
-        await asyncio.wait_for(boom(), 1)
+        await await_until(
+            boom_task.done,
+            timeout=_BOUND_S,
+            description="the failing scope to exit",
+        )
+        await boom_task
     assert scopes[1].closed is True
     assert scopes[1].is_current() is False
 
@@ -780,7 +913,11 @@ async def test_scope_currency_dies_with_the_scope(
             await asyncio.Event().wait()
 
     parked_task = asyncio.create_task(parked())
-    await asyncio.wait_for(entered.wait(), 1)
+    await await_until(
+        entered.is_set,
+        timeout=_BOUND_S,
+        description="the parked scope to enter",
+    )
     parked_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await parked_task
@@ -814,7 +951,11 @@ async def test_note_foreign_dispatch_marks_scopes_like_the_worker(
             await asyncio.Event().wait()
 
     owner_task = asyncio.create_task(owner())
-    await asyncio.wait_for(inside.wait(), 1)
+    await await_until(
+        inside.is_set,
+        timeout=_BOUND_S,
+        description="the owner to enter its scope",
+    )
     me = asyncio.current_task()
     assert me is not None
     try:
@@ -941,7 +1082,12 @@ async def test_retired_scope_set_is_not_retransmitted_after_completion(
     radio, backend, commander = _setup_retransmit_radio(monkeypatch, model)
     try:
         write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
-        observed = await asyncio.wait_for(write, 1)
+        await await_until(
+            write.done,
+            timeout=_BOUND_S,
+            description="the retired-scope write to complete",
+        )
+        observed = await write
     finally:
         radio._connected = False
         await commander.stop()
@@ -977,7 +1123,11 @@ async def test_retired_scope_set_is_not_retransmitted_after_cancellation(
     backend.on_mode_read = on_mode_read
     write = asyncio.create_task(radio.write_relative_vfo_mode(0x01, selected=False))
     try:
-        await asyncio.wait_for(parked.wait(), 1)
+        await await_until(
+            parked.is_set,
+            timeout=_BOUND_S,
+            description="the parked write to reach its readback",
+        )
         assert backend.set_seqs, "no mode SET reached the wire"
     finally:
         release.set()
@@ -1252,7 +1402,14 @@ async def test_transport_guard_refusal_before_the_write_still_retries(
 
     responder = asyncio.create_task(respond())
     try:
-        observed = await asyncio.wait_for(write, _BOUND_S)
+        await await_until(
+            lambda: write.done() or responder.done(),
+            timeout=_BOUND_S,
+            description="the write to complete",
+        )
+        if responder.done():
+            await responder
+        observed = await write
         assert marked.is_set(), "the guard refusal was never exercised"
     finally:
         responder.cancel()
