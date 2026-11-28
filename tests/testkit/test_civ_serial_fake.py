@@ -17,6 +17,7 @@ from rigplane.testing.timing import VirtualClock, virtual_clock
 
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
+from rigplane_testkit.serial import civ_serial as civ_serial_module
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -261,16 +262,30 @@ async def test_delay_identity_answer(clock: VirtualClock) -> None:
     # The echo is synchronous, but the identity reply waits out its delay.
     (echo,) = await _read_frames(reader, 1)
     assert echo == request
-    await clock.elapse(0.2)
-    (reply,) = await _read_frames(reader, 1)
-    assert clock() - started >= 0.15
+    reply_task = asyncio.ensure_future(reader.read(512))
+    try:
+        await clock.elapse(0.1)  # still inside the delay: nothing answered yet
+        assert not reply_task.done(), "the identity reply arrived before its delay"
+        await clock.elapse(0.1)  # past the 0.15 s delay: the answer is due
+        reply = await reply_task
+        received_at = clock()
+    finally:
+        if not reply_task.done():
+            reply_task.cancel()
+            await asyncio.gather(reply_task, return_exceptions=True)
+    assert received_at - started >= 0.15
     assert parse_civ_frame(reply).data == fake.model_id
 
 
 @virtual_clock
 async def test_silence_keeps_the_link_open_but_answers_nothing(
-    clock: VirtualClock,
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The fake measures its silence window on its own ``time`` name: point
+    # it at this clock (keeping the real asyncio API, so loop timers stay
+    # purely ``elapse()``-driven), as the USB-recovery tests already do.
+    clock.scope_to(monkeypatch, civ_serial_module)
+    monkeypatch.setattr(civ_serial_module, "asyncio", asyncio)
     fake = CivSerialFake()
     reader, writer = await fake.open_serial_connection()
     fake.silence(0.2)

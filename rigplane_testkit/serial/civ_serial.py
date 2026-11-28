@@ -98,6 +98,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import math
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -624,22 +625,13 @@ class CivSerialFake:
         width stores it and ACKs. Held keys answer before native handlers."""
         self._held[bytes(key)] = bytes(value)
 
-    def _now(self) -> float:
-        """The clock silence windows are measured on.
-
-        The running loop's time: monotonic on a real loop, and the shared
-        virtual clock inside a virtual-clock test, so a ``silence()``
-        window lapses on ``clock.elapse()`` there instead of in wall time.
-        """
-        return asyncio.get_running_loop().time()
-
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
 
         Writes are still accepted (a silent device does not error the port);
         reads simply never yield — echo included.
         """
-        self._silent_until = self._now() + max(0.0, for_seconds)
+        self._silent_until = time.monotonic() + max(0.0, for_seconds)
 
     def usb_vanish(self, at: float = 0.0) -> None:
         """Make the device disappear *at* seconds from now.
@@ -717,7 +709,7 @@ class CivSerialFake:
         self._frame_bauds.append(connection.baud)
         if not self._hears(connection):
             return  # wrong baud: line noise to the radio, no answer, no echo
-        if self._vanished or self._now() < self._silent_until:
+        if self._vanished or time.monotonic() < self._silent_until:
             return  # silent device: writes accepted, nothing answers, no echo
         if self.echo:
             # USB CI-V echo: the port returns the inbound frame verbatim.
@@ -1031,7 +1023,7 @@ class CivSerialFake:
             self._scope_panel
             and self._scope_wave
             and not self._vanished
-            and self._now() >= self._silent_until
+            and time.monotonic() >= self._silent_until
             and self._hears(connection)
             and self._scope_carries(connection)
         )
