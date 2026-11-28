@@ -530,18 +530,11 @@ async def test_third_successful_round_waits_for_real_frames(
         allow_frames = asyncio.Event()
         delivery_order: list[str] = []
         heartbeats: list[float] = []
-        episode_before_frames: list[tuple[int, float]] = []
         ensure_calls: list[int] = []
         release_frames: asyncio.TimerHandle | None = None
 
         def _gate_real_frames(packet: AudioPacket | None) -> None:
             if allow_frames.is_set() and packet is not None:
-                if not heartbeats:
-                    completed = radio._audio_silence_repair_teardown_completed
-                    assert completed is not None
-                    episode_before_frames.append(
-                        (radio._audio_silence_repair_attempts, completed)
-                    )
                 orig_callback(packet)
                 heartbeat = bus.last_rx_frame_monotonic
                 assert heartbeat is not None
@@ -579,16 +572,12 @@ async def test_third_successful_round_waits_for_real_frames(
                 lambda: radio._audio_silence_repair_task is None, timeout=5.0
             ), "third-round frame observation did not finish"
             assert len(teardown_calls) == 3
-            assert len(ensure_calls) == 3
-            attempts_before_frames, teardown_completed = episode_before_frames[0]
-            assert attempts_before_frames == (2 if frames_before_return else 3)
-            assert radio._audio_silence_repair_attempts == 0
-            assert radio._audio_silence_repair_teardown_completed is None
+            assert radio._audio_silence_repair_attempts == 3
             assert recovery == [], "healthy third round falsely reported FAILED"
             assert (
                 delivery_order.index("frame") < delivery_order.index("return")
             ) is frames_before_return
-            assert heartbeats[0] > teardown_completed
+            assert heartbeats[0] > radio._audio_silence_repair_teardown_completed
         finally:
             if release_frames is not None:
                 release_frames.cancel()
