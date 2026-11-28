@@ -26,6 +26,7 @@ from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.transport import IcomTransport
 from rigplane.runtime import _civ_rx
 from rigplane.runtime.radio import CoreRadio, IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.serial import CivSerialFake
 
@@ -88,6 +89,7 @@ def test_fifo_identity_orphan_and_writes():
     assert ledger.owed_count == 0
 
 
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize(
     "radio_cls,model",
     [(Icom7610SerialRadio, "IC-7610"), (Ic7300SerialRadio, "IC-7300")],
@@ -129,11 +131,20 @@ async def test_serial_reply_during_drain(radio_cls, model, monkeypatch):
         monkeypatch.setattr(ledger, "note_reply", account_reply)
         release.clear()
         task = asyncio.create_task(radio.read_transmit_state())
-        await asyncio.wait_for(entered.wait(), 1)
-        await asyncio.wait_for(received.wait(), 1)
+        await await_until(
+            entered.is_set, timeout=5.0, description="serial drain gate entered"
+        )
+        await await_until(
+            received.is_set,
+            timeout=5.0,
+            description="PTT reply accounted while drain is gated",
+        )
         assert not task.done()
         release.set()
-        reading = await asyncio.wait_for(task, 1)
+        await await_until(
+            task.done, timeout=5.0, description="serial PTT readback finishes"
+        )
+        reading = await task
         assert reading.verified_readback and reading.value is False
         assert reading.failure is None
         assert ledger.owed_count == ledger.orphan_count == 0
@@ -287,8 +298,9 @@ async def test_poll_debt_outlives_waiters_and_sinks(radio, ending, monkeypatch):
         (False, "unmapped"),
     ],
 )
+@pytest.mark.timeout(10)
 async def test_invocation_context_survives_queue_and_timeout(
-    radio, monkeypatch, queued, ending
+    radio, monkeypatch, virtual_clock: VirtualClock, queued, ending
 ):
     runtime = radio._civ_runtime
     entered, release = asyncio.Event(), asyncio.Event()
@@ -306,44 +318,71 @@ async def test_invocation_context_survives_queue_and_timeout(
         radio._commander.start()
     else:
         release.set()
+    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
     if ending == "pacing":
         radio._last_civ_send_monotonic = _civ_rx.time.monotonic()
         radio._civ_min_interval = 0.03
     if ending == "outer-sent":
         radio._civ_get_timeout = 1
+    radio._civ_runtime._ptt_ledger = PttReplyLedger(
+        clock=virtual_clock, answer_window=radio._civ_get_timeout
+    )
     task = asyncio.create_task(radio.read_transmit_state())
     try:
         if queued:
-            await asyncio.wait_for(entered.wait(), 1)
+            await await_until(
+                entered.is_set,
+                timeout=5.0,
+                description="queued PTT read reached the executor",
+            )
         if ending in ("orphan", "pacing"):
             if ending == "pacing":
-                await asyncio.sleep(0)
+                await virtual_clock.elapse(0)
             await _inject(radio)
             release.set()
+            await virtual_clock.elapse(0.05)
+            assert task.done()
             assert (await task).failure == "not-quiescent"
             assert not radio._civ_transport.sent_packets
         elif ending in ("broadcast", "unmapped"):
-            while not radio._civ_transport.sent_packets:
-                await asyncio.sleep(0)
+            await await_until(
+                lambda: radio._civ_transport.sent_packets,
+                timeout=5.0,
+                description="PTT read reached the wire",
+            )
             await _inject(radio, ending)
+            await await_until(
+                task.done,
+                timeout=5.0,
+                description="PTT read fails on unverifiable provenance",
+            )
             assert (await task).failure == "unverifiable-provenance"
             assert runtime._ptt_reply_ledger.owed_count == 1
         elif ending == "outer-sent":
+            await virtual_clock.elapse(0.5)
+            assert task.done()
             assert (await task).failure == "timeout"
             assert runtime._ptt_reply_ledger.owed_count == 1
         elif ending == "outer-timeout":
+            await virtual_clock.elapse(0.5)
+            assert task.done()
             assert (await task).failure == "timeout"
             release.set()
-            await asyncio.sleep(0)
+            await virtual_clock.elapse(0)
             assert runtime._ptt_reply_ledger.owed_count == 0
         else:
             release.set()
-            while not radio._civ_transport.sent_packets:
-                await asyncio.sleep(0)
+            await await_until(
+                lambda: radio._civ_transport.sent_packets,
+                timeout=5.0,
+                description="PTT read reached the wire",
+            )
             await runtime.execute_civ_raw(
                 build_civ_frame(0x98, 0xE0, 0x1C, sub=0), False
             )
             frame = await _inject(radio)
+            await virtual_clock.elapse(0.01)
+            assert task.done()
             assert (await task).value is False
             assert runtime._ptt_reply_ledger.owed_count == 1
             await _inject(radio)
@@ -371,14 +410,16 @@ async def test_invocation_context_survives_queue_and_timeout(
         "serial",
     ],
 )
-async def test_pump_replay_cache(radio, monkeypatch, variant):
+@pytest.mark.timeout(10)
+async def test_pump_replay_cache(
+    radio, monkeypatch, virtual_clock: VirtualClock, variant
+):
     runtime = radio._civ_runtime
     if variant == "serial":
         radio._civ_transport = SerialCivTransport(ScriptedCivLink())
         await radio._civ_transport._civ_link.connect()
-    now = [0.0]
-    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=lambda: now[0]))
-    runtime._ptt_ledger = PttReplyLedger(clock=lambda: now[0], answer_window=2)
+    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
+    runtime._ptt_ledger = PttReplyLedger(clock=virtual_clock, answer_window=2)
     delivered, ready = [], asyncio.Event()
     sentinel = [b""]
     batches = [0]
@@ -404,7 +445,11 @@ async def test_pump_replay_cache(radio, monkeypatch, variant):
             else:
                 radio._civ_transport.queue_response(pkt)
         runtime.start_pump()
-        await asyncio.wait_for(ready.wait(), 1)
+        await await_until(
+            ready.is_set,
+            timeout=5.0,
+            description="replay-cache pump delivers the sentinel",
+        )
         await asyncio.sleep(0)
 
     if variant == "echo":
@@ -430,9 +475,10 @@ async def test_pump_replay_cache(radio, monkeypatch, variant):
         )
         if variant == "serial":
             await radio._civ_transport._civ_link.connect()
-    now[0] = {"boundary": 4.0, "after-q": 2.1, "beyond-lifetime": 4.001}.get(
+    first_jump = {"boundary": 4.0, "after-q": 2.1, "beyond-lifetime": 4.001}.get(
         variant, 1.0
     )
+    virtual_clock.advance(first_jump)
     b = runtime._ptt_reply_ledger.note_dispatch(_request())
     runtime._ptt_reply_ledger.note_written(b)
     before = delivered.count(reply)
@@ -450,13 +496,20 @@ async def test_pump_replay_cache(radio, monkeypatch, variant):
     if not accepted:
         assert delivered.count(reply) == before
         assert delivered.count(marker) == mixed_before
-        now[0] = 4.001
+        virtual_clock.advance(4.001 - first_jump)
         await pump(packet)
         assert b.answered_by is not None
 
 
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("stale", [False, True])
-async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, stale):
+async def test_reconnect_retains_debt_and_stale_generation_accounting(
+    radio, monkeypatch, virtual_clock: VirtualClock, stale
+):
+    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
+    radio._civ_runtime._ptt_ledger = PttReplyLedger(
+        clock=virtual_clock, answer_window=radio._civ_get_timeout
+    )
     runtime = radio._civ_runtime
     a = runtime._ptt_reply_ledger.note_dispatch(_request())
     runtime._ptt_reply_ledger.note_written(a)
@@ -475,7 +528,12 @@ async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, sta
         wrap_civ_in_udp(civ_transmit_state_reply("rx", 0x98))
     )
     radio._civ_runtime.start_pump()
-    assert await asyncio.wait_for(waiter, 1) is not None
+    await await_until(
+        waiter.done,
+        timeout=5.0,
+        description="reconnect pump delivers the waiter reply",
+    )
+    assert await waiter is not None
     assert a.answered_by is not None
     if not stale:
         await _inject(radio)
@@ -498,11 +556,15 @@ async def test_waiter_completion_charged_to_another_entry(radio):
     assert (await reading).failure == "unverifiable-provenance"
 
 
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("ending", ["written", "cancel", "refuse"])
-async def test_unwritten_debt_survives_queue_delay(radio, monkeypatch, ending):
-    runtime, now = radio._civ_runtime, [0.0]
+async def test_unwritten_debt_survives_queue_delay(
+    radio, monkeypatch, virtual_clock: VirtualClock, ending
+):
+    runtime = radio._civ_runtime
+    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
     ledger = runtime._ptt_ledger = PttReplyLedger(
-        clock=lambda: now[0], answer_window=0.1
+        clock=virtual_clock, answer_window=0.1
     )
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -518,8 +580,10 @@ async def test_unwritten_debt_survives_queue_delay(radio, monkeypatch, ending):
             build_civ_frame(0x98, 0xE0, 0x1C, sub=0), expect="none"
         )
     )
-    await asyncio.wait_for(entered.wait(), 1)
-    now[0] = 10
+    await await_until(
+        entered.is_set, timeout=5.0, description="blocked send reached the gate"
+    )
+    virtual_clock.advance(10)
     assert (await radio.read_transmit_state()).failure == "not-quiescent"
     release.set()
     if ending == "cancel":
@@ -538,41 +602,40 @@ async def test_unwritten_debt_survives_queue_delay(radio, monkeypatch, ending):
         assert ledger.eligible()
 
 
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("change", ["clean", "orphan", "epoch", "transport"])
 async def test_reader_settle_checks_receive_pump_and_session(
-    radio, monkeypatch, change
+    radio, monkeypatch, virtual_clock: VirtualClock, change
 ):
-    entered, release = asyncio.Event(), asyncio.Event()
-    sleep = asyncio.sleep
     monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.007123)
-
-    async def settle(delay):
-        if delay == 0.007123:
-            entered.set()
-            await release.wait()
-        else:
-            await sleep(delay)
-
-    monkeypatch.setattr(asyncio, "sleep", settle)
+    monkeypatch.setattr(_civ_rx, "time", SimpleNamespace(monotonic=virtual_clock))
+    radio._civ_runtime._ptt_ledger = PttReplyLedger(
+        clock=virtual_clock, answer_window=radio._civ_get_timeout
+    )
     task = asyncio.create_task(radio.read_transmit_state())
     try:
-        while not radio._civ_transport.sent_packets:
-            await sleep(0)
+        await await_until(
+            lambda: radio._civ_transport.sent_packets,
+            timeout=5.0,
+            description="PTT read reached the wire",
+        )
         radio._civ_transport.queue_response(
             wrap_civ_in_udp(civ_transmit_state_reply("rx", 0x98), seq=71)
         )
-        await asyncio.wait_for(entered.wait(), 1)
+        # Let the pump deliver the reply so the read parks in its settle
+        # sleep; nothing virtual may elapse yet, or the settle would fire.
+        await virtual_clock.elapse(0)
+        assert not task.done()
         if change == "orphan":
             radio._civ_transport.queue_response(
                 wrap_civ_in_udp(civ_transmit_state_reply("tx_cat", 0x98), seq=72)
             )
-            while radio._civ_runtime._ptt_reply_ledger.orphan_count == 0:
-                await sleep(0)
         elif change == "epoch":
             radio._civ_epoch += 1
         elif change == "transport":
             radio._civ_transport = _LanTransport()
-        release.set()
+        await virtual_clock.elapse(0.01)
+        assert task.done()
         reading = await task
         assert reading.verified_readback is (change == "clean")
         assert reading.failure == {
@@ -585,6 +648,5 @@ async def test_reader_settle_checks_receive_pump_and_session(
                 and not radio._civ_runtime._ptt_reply_ledger.eligible()
             )
     finally:
-        release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
