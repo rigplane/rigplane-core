@@ -61,11 +61,13 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
-import { FTX1_CAPABILITIES } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
+import { FTX1_CAPABILITIES, FTX1_STATE } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 import radioPowerGolden from '$lib/transport/__tests__/fixtures/radio-power.json';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioPowerOn } from '$lib/stores/connection.svelte';
-import { resetRadioState } from '$lib/stores/radio.svelte';
+import { radio, resetRadioState } from '$lib/stores/radio.svelte';
+import { setLocale } from '$lib/i18n';
+import type { LocaleCode } from '$lib/i18n/types';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { mobileLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
@@ -162,6 +164,104 @@ afterEach(async () => {
   expect(tx.listenerCount()).toBe(0);
   vi.restoreAllMocks(); vi.unstubAllGlobals(); clearCapabilities();
   document.body.innerHTML = ''; localStorage.clear();
+});
+
+describe('MOR-4920 mobile RX audio restoration status', () => {
+  afterEach(() => setLocale('en-US'));
+
+  const locales: [LocaleCode, string, string][] = [
+    ['en-US', 'RX audio could not be restored', 'Retry'],
+    ['ru-RU', 'Не удалось восстановить звук приёма', 'Повторить'],
+    ['ja-JP', '受信音声を復旧できませんでした', '再試行'],
+  ];
+
+  describe.each([false, true])('landscape=%s', (landscape) => {
+    it.each(locales)('renders and clears the retained failure in %s', (locale, message, retry) => {
+      setViewport(landscape);
+      setLocale(locale);
+      radio.current = { ...FTX1_STATE, audioReceive: { schemaVersion: 1, failure: null } };
+      const phone = mountMobileWithAppPlan();
+      expect(phone.querySelector(landscape ? '.m-landscape' : '.m-layout')).not.toBeNull();
+      const status = () => phone.querySelector('[data-testid="rx-audio-restore-failed"]');
+      expect(status()).toBeNull();
+
+      radio.current = {
+        ...FTX1_STATE,
+        audioReceive: {
+          schemaVersion: 1,
+          failure: {
+            stage: 'rx_recovery', code: 'core_rx_restore_failed', reason: 'retries_exhausted',
+          },
+        },
+      };
+      flushSync();
+      expect(status()?.querySelector('[data-testid="rx-audio-restore-message"]')?.textContent).toBe(message);
+      expect(status()?.querySelectorAll('button')).toHaveLength(1);
+      expect(status()?.querySelector('button')?.textContent).toBe(retry);
+      expect(status()?.getAttribute('role')).toBe('status');
+      expect(phone.querySelectorAll('[data-testid="rx-audio-restore-failed"]')).toHaveLength(1);
+      expect(status()?.closest('.m-content, .m-sheet, .m-ls-overlay')).toBeNull();
+
+      setViewport(!landscape);
+      window.dispatchEvent(new Event('resize'));
+      flushSync();
+      expect(phone.querySelector(landscape ? '.m-layout' : '.m-landscape')).not.toBeNull();
+      expect(status()?.querySelector('[data-testid="rx-audio-restore-message"]')?.textContent).toBe(message);
+      expect(status()?.querySelectorAll('button')).toHaveLength(1);
+      expect(status()?.querySelector('button')?.textContent).toBe(retry);
+      expect(phone.querySelectorAll('[data-testid="rx-audio-restore-failed"]')).toHaveLength(1);
+
+      radio.current = { ...FTX1_STATE, audioReceive: { schemaVersion: 1, failure: null } };
+      flushSync();
+      expect(status()).toBeNull();
+      expect(phone.textContent).not.toContain(message);
+    });
+
+    it('sends one retry through the command sender and disables it until the reply', async () => {
+      setViewport(landscape);
+      radio.current = {
+        ...FTX1_STATE,
+        audioReceive: {
+          schemaVersion: 1,
+          failure: { stage: 'rx_recovery', code: 'core_rx_restore_failed', reason: 'retries_exhausted' },
+        },
+      };
+      let respond: Parameters<typeof client.onMessage>[0] | undefined;
+      const remove = vi.fn();
+      vi.spyOn(client, 'onMessage').mockImplementation((handler) => { respond = handler; return remove; });
+      const send = vi.spyOn(client, 'sendCommand').mockReturnValue(true);
+      const phone = mountMobileWithAppPlan();
+      const retry = phone.querySelector<HTMLButtonElement>('[data-testid="rx-audio-restore-failed"] button')!;
+      expect(retry).not.toBeNull();
+      retry.click(); retry.click(); flushSync();
+      expect(send).toHaveBeenCalledExactlyOnceWith('audio_retry', {}, expect.any(String));
+      expect(retry.disabled).toBe(true);
+      respond!({ type: 'response', id: send.mock.calls[0][2]!, ok: true, result: { accepted: false, reason: 'not_applicable' } });
+      await tick();
+      expect(retry.disabled).toBe(false);
+      expect(phone.textContent).toContain('Audio retry is not available in the current state.');
+      expect(remove).toHaveBeenCalledTimes(1);
+      retry.click(); flushSync();
+      expect(retry.disabled).toBe(true);
+      expect(send).toHaveBeenCalledTimes(2);
+      radio.current = { ...FTX1_STATE, audioReceive: { schemaVersion: 1, failure: null } };
+      flushSync();
+      await tick();
+      expect(phone.querySelector('[data-testid="rx-audio-restore-failed"]')).toBeNull();
+      expect(remove).toHaveBeenCalledTimes(2);
+      respond!({ type: 'response', id: send.mock.calls[1][2]!, ok: true, result: { accepted: false, reason: 'unsupported' } });
+      radio.current = {
+        ...FTX1_STATE,
+        audioReceive: {
+          schemaVersion: 1,
+          failure: { stage: 'rx_recovery', code: 'core_rx_restore_failed', reason: 'retries_exhausted' },
+        },
+      };
+      await tick();
+      expect(phone.querySelector<HTMLButtonElement>('[data-testid="rx-audio-restore-failed"] button')?.disabled).toBe(false);
+      expect(phone.textContent).not.toContain('Audio retry is not supported.');
+    });
+  });
 });
 
 describe('MOR-4299 mobile radio power', () => {

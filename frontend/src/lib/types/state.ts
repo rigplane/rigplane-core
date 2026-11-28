@@ -398,19 +398,22 @@ export interface SdrStatusPublic {
   lastError: string | null;
 }
 /**
- * Structured RX-audio start facts (MOR-4279), served by ``GET
+ * Structured RX-audio failure facts, served by ``GET
  * /api/v1/info`` and pushed on the control WS as a state-payload leaf.
  *
  * Produced by the one producer ``AudioBroadcaster.rx_start_status``;
- * ``failure`` is ``None`` while the last RX start succeeded. Optional on
- * :class:`ServerStatePublic`: only the web server injects it.
+ * ``failure`` is ``None`` when no start or restoration failure is retained.
+ * Optional on :class:`ServerStatePublic`: only the web server injects it.
  */
 export interface AudioReceivePublic {
   schemaVersion: number;
   failure: AudioReceiveFailurePublic | null;
 }
 /**
- * The latest RX-start failure Core retained (schema version 1).
+ * Retained RX-start or RX-restoration failure (schema version 1).
+ *
+ * Exhausted LAN repair uses ``stage=rx_recovery``,
+ * ``code=core_rx_restore_failed``, ``reason=retries_exhausted``.
  */
 export interface AudioReceiveFailurePublic {
   stage: string;

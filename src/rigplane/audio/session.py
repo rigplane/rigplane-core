@@ -291,6 +291,7 @@ class AudioSession:
         self._listeners: list[Callable[[AudioSessionEvent], None]] = []
         self._last_event: AudioSessionEvent | None = None
         self._rx_silent_reported = False
+        self._rx_restore_failed_at: float | None = None
 
     @property
     def state(self) -> AudioSessionState:
@@ -313,6 +314,17 @@ class AudioSession:
     def last_event(self) -> AudioSessionEvent | None:
         """Most recent liveness event, or None (MOR-581)."""
         return self._last_event
+
+    @property
+    def rx_restore_failed(self) -> bool:
+        """RX repair exhausted its budget without restored frames (MOR-4920)."""
+        return self._rx_restore_failed_at is not None
+
+    def mark_rx_restore_failed(self) -> None:
+        """Retain the repair failure independently of embedder callbacks."""
+        self._rx_restore_failed_at = self._monotonic()
+        logger.warning("event=rx_audio_restore_failed RX audio could not be restored")
+        self._emit("rx_restore_failed")
 
     @property
     def rx_silent(self) -> bool:
@@ -811,7 +823,20 @@ class AudioSession:
     def _check_liveness_locked(self) -> None:
         now = self._monotonic()
         last = self._bus.last_rx_frame_monotonic
-        if self._state in (AudioSessionState.RX_ONLY, AudioSessionState.RX_TX):
+        failed_at = self._rx_restore_failed_at
+        if (
+            (self._state is AudioSessionState.RECOVERING or failed_at is not None)
+            and last is not None
+            and now - last < self._rx_liveness_timeout
+            # A heartbeat buffered before the FAILED verdict cannot clear it.
+            and (failed_at is None or last > failed_at)
+        ):
+            self._rx_restore_failed_at = None
+            self._recovering_from = None
+            self._state = self._desired()
+            logger.info("audio-session: RX frames resumed — %s", self._state.value)
+            self._emit("rx_resumed")
+        elif self._state in (AudioSessionState.RX_ONLY, AudioSessionState.RX_TX):
             # Reference = the later of the last heartbeat and the arm point, so
             # a stale stamp from a previous run never false-positives a freshly
             # armed (still "starting") RX leg.
@@ -821,12 +846,6 @@ class AudioSession:
                 self._state = AudioSessionState.RECOVERING
                 logger.warning("audio-session: RX silent %.1fs — RECOVERING", now - ref)
                 self._emit("rx_silent")
-        elif self._state is AudioSessionState.RECOVERING:
-            if last is not None and now - last < self._rx_liveness_timeout:
-                self._recovering_from = None
-                self._state = self._desired()
-                logger.info("audio-session: RX frames resumed — %s", self._state.value)
-                self._emit("rx_resumed")
         # MOR-2792: surface digital-silence edges on the same loop (the USB
         # driver's frame watchdog owns detection; this only publishes edges).
         silent = self.rx_silent

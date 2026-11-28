@@ -20,7 +20,7 @@ from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
-from ...audio.session import RxSubscription
+from ...audio.session import AudioSession, RxSubscription
 from ...audio._usb_pairing import AudioCandidate
 from ...audio.usb_driver import (
     AudioAlreadyStartedError,
@@ -756,6 +756,16 @@ class AudioBroadcaster:
             )
 
     def rx_start_status(self) -> AudioReceiveRecord:
+        session = getattr(self._radio, "_audio_session", None)
+        if isinstance(session, AudioSession) and session.rx_restore_failed:
+            return {
+                "schemaVersion": 1,
+                "failure": {
+                    "stage": "rx_recovery",
+                    "code": "core_rx_restore_failed",
+                    "reason": "retries_exhausted",
+                },
+            }
         failure = self._rx_start_failure
         if failure is not None:
             try:

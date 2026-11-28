@@ -110,7 +110,7 @@ class AudioCandidatesRecord(TypedDict):
 
 
 class AudioReceiveFailureRecord(TypedDict):
-    """The latest RX-start failure Core retained (schema version 1)."""
+    """A retained RX-start or RX-restoration failure (schema version 1)."""
 
     stage: str
     code: str
@@ -124,8 +124,10 @@ class AudioReceiveRecord(TypedDict):
     public state payload (pushed on the control WS by MOR-4279).
 
     Produced by ``AudioBroadcaster.rx_start_status`` — the one producer
-    both surfaces share. ``failure`` is ``None`` while the last RX start
-    succeeded (or no attempt was made).
+    both surfaces share. ``failure`` is ``None`` when no RX-start or
+    restoration failure is retained. Exhausted LAN repair uses
+    ``stage=rx_recovery``, ``code=core_rx_restore_failed``, and
+    ``reason=retries_exhausted`` until fresh RX frames resume.
     """
 
     schemaVersion: int

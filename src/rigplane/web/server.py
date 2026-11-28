@@ -3758,6 +3758,7 @@ class WebServer:
         self.broadcast_event(
             "audio_session", _audio_session_event_json(event, rx_silent=rx_silent)
         )
+        self._on_rx_start_status_change()
 
     def _attach_reconnect_status_listener(self) -> None:
         """Forward radio reconnect-status updates to control WS clients and

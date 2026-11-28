@@ -1679,8 +1679,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         one attempt. Re-establishing demand does NOT reset the budget:
         only real RX frames (or a new CI-V epoch) close the episode, so a
         leg that re-arms yet stays frameless
-        consumes the shared budget and reports FAILED once through
-        ``_on_audio_recovery`` instead of looping with a fresh budget per
+        consumes the shared budget and retains the session's RX restoration
+        failure, also reporting FAILED through ``_on_audio_recovery``,
+        instead of looping with a fresh budget per
         task. A successful final round observes frames for at most
         ``RX_LIVENESS_TIMEOUT_S`` before reporting FAILED. Before every
         round (after the backoff sleep) the task stops quietly when frames
@@ -1748,6 +1749,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     or self._silence_repair_silence_over()
                 ):
                     return
+                self._audio_session.mark_rx_restore_failed()
                 report = self._on_audio_recovery
                 if report is not None:
                     try:

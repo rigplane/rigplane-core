@@ -1219,9 +1219,17 @@ client-verifiable freshness. Positive liveness needs a daemon contract binding
 a physical-read result to this request and connection generation; this client
 has no such supported contract.
 
-`audioReceive` retains the latest RX-start failure in schema version 1.
-Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
-`code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates
+`audioReceive` retains RX-start and RX-restoration failures in schema version 1.
+Its `failure` is `null` when clear. RX-start failures have `stage` (`rx_start`),
+`code` (`core_rx_start_failed`) and `reason`. After the third failed LAN
+audio-only repair attempt, the same field carries `stage: rx_recovery`,
+`code: core_rx_restore_failed`, and `reason: retries_exhausted`. Successful
+re-arming alone does not clear it; fresh RX frames must resume. The retained
+fact and WARNING log event `rx_audio_restore_failed` do not require an embedder
+callback (`src/rigplane/audio/session.py: AudioSession.mark_rx_restore_failed`,
+`src/rigplane/runtime/radio.py: CoreRadio._run_audio_silence_repair`,
+`src/rigplane/web/handlers/audio.py: AudioBroadcaster.rx_start_status`).
+Consumers should tolerate unfamiliar failure codes. Pairing refusals with candidates
 add this field to `failure`:
 
 ```json
