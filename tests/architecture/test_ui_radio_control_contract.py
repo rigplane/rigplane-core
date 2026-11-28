@@ -355,6 +355,15 @@ def test_every_control_handler_intent_is_registered_exactly_once() -> None:
     _assert_control_handler_intents_are_exactly_once(_control_handler_commands())
 
 
+def test_audio_retry_belongs_to_audio_payload_and_routing() -> None:
+    owners = [
+        family["id"]
+        for family in _contract()["families"]
+        if "audio_retry" in family["intents"]
+    ]
+    assert owners == ["audio_payload_and_routing"]
+
+
 def test_control_handler_inventory_accepts_literal_and_descriptor_union(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

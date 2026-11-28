@@ -1055,12 +1055,18 @@ class CivRuntime:
         self._managed_tx_retirements.clear()
 
     async def write_managed_ptt(
-        self, civ_frame: bytes, provider_generation: int
+        self,
+        civ_frame: bytes,
+        provider_generation: int,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> None:
         token = self._managed_tx_ports.get(provider_generation)
         if token is None or not self._managed_tx_port_is_current(token):
             raise ConnectionError("managed TX physical port is stale")
-        await self.execute_civ_transaction(civ_frame, expect="none", owner=token)
+        await self.execute_civ_transaction(
+            civ_frame, expect="none", owner=token, is_current=is_current
+        )
 
     async def retire_managed_tx_port(self, provider_generation: int) -> None:
         token = self._managed_tx_ports.get(provider_generation)
@@ -1230,6 +1236,7 @@ class CivRuntime:
         timeout: float | None = None,
         owner: object | None = None,
         nak_terminal: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> RawCivTransactionResult:
         """Execute one explicitly-scoped raw CI-V transaction.
 
@@ -1276,7 +1283,9 @@ class CivRuntime:
 
         if expect == "none":
             self.start_pump()
-            await self._send_civ_frame_now(civ_frame, owner=owner)
+            await self._send_civ_frame_now(
+                civ_frame, owner=owner, is_current=is_current
+            )
             # No waiter claims whatever FB/FA answers this frame.
             self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
@@ -1309,7 +1318,10 @@ class CivRuntime:
 
             self.start_pump()
             await self._send_civ_frame_now(
-                civ_frame, owner=owner, waiters=tuple(pending_waiters)
+                civ_frame,
+                owner=owner,
+                waiters=tuple(pending_waiters),
+                is_current=is_current,
             )
             done, _ = await asyncio.wait(
                 pending_waiters,
@@ -1449,6 +1461,7 @@ class CivRuntime:
         *,
         owner: object | None = None,
         waiters: tuple[asyncio.Future[CivFrame], ...] = (),
+        is_current: Callable[[], bool] | None = None,
     ) -> None:
         """Send one CI-V frame directly through the runtime transport.
 
@@ -1461,6 +1474,8 @@ class CivRuntime:
         if delta < self._host._civ_min_interval:
             await asyncio.sleep(self._host._civ_min_interval - delta)
 
+        if is_current is not None and not is_current():
+            raise StaleBeforeWireError("PTT key superseded before dispatch")
         token = owner if isinstance(owner, _ManagedTxPortToken) else None
         if isinstance(owner, _AuthoritativePttRead) and owner.managed:
             token = owner.token
@@ -1491,7 +1506,12 @@ class CivRuntime:
                 self._host._civ_request_tracker.mark_sent(
                     time.monotonic(), futures=waiters
                 )
-            await self._send_ptt_accounted(transport, pkt, parse_civ_frame(civ_frame))
+            await self._send_ptt_accounted(
+                transport,
+                pkt,
+                parse_civ_frame(civ_frame),
+                write_guard=is_current,
+            )
 
         task = asyncio.create_task(send())
         tasks = None

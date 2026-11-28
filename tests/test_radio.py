@@ -1141,6 +1141,57 @@ class TestPtt:
         await radio._civ_runtime.stop_pump()
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(15)
+    @pytest.mark.parametrize("ingress", ["raw", "managed"])
+    async def test_release_supersedes_on_at_transport_write(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        monkeypatch: pytest.MonkeyPatch,
+        virtual_clock: VirtualClock,
+        ingress: str,
+    ) -> None:
+        radio._civ_min_interval = 0
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+        send_tracked = mock_transport.send_tracked
+
+        async def send(data: bytes, *, is_current=None) -> None:
+            if data.endswith(b"\x1c\x00\x01\xfd"):
+                entered.set()
+                await finish.wait()
+            await send_tracked(data, is_current=is_current)
+
+        monkeypatch.setattr(mock_transport, "send_tracked", send)
+        if ingress == "managed":
+            assert radio._capture_managed_tx_port(11, lambda _: None)
+
+        async def write(on: bool) -> None:
+            if ingress == "managed":
+                await radio._write_managed_ptt(11, on)
+            else:
+                await radio.set_ptt(on)
+
+        key = asyncio.create_task(write(True))
+        try:
+            await virtual_clock.elapse(0)
+            assert entered.is_set()
+            await write(False)
+            assert len(mock_transport.sent_packets) == 1
+            assert mock_transport.sent_packets[0].endswith(b"\x1c\x00\x00\xfd")
+            finish.set()
+            await virtual_clock.elapse(0)
+            error = CommandError if ingress == "managed" else ConnectionError
+            with pytest.raises(error):
+                await key
+            assert len(mock_transport.sent_packets) == 1
+        finally:
+            finish.set()
+            key.cancel()
+            await asyncio.gather(key, return_exceptions=True)
+            await radio._civ_runtime.stop_pump()
+
+    @pytest.mark.asyncio
     async def test_set_ptt_on(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:

@@ -1237,83 +1237,48 @@ async def test_real_frames_during_retry_close_episode_when_task_settles(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(15)
-@pytest.mark.parametrize(
-    ("ingress", "release_during_repair"),
-    [
-        ("raw", False),
-        ("raw", True),
-        ("managed_ptt", False),
-        ("managed_ptt", True),
-        ("managed_transmit", False),
-        ("managed_transmit", True),
-        ("legacy", False),
-    ],
-)
-async def test_ptt_admission_waits_through_audio_reader_retirement_and_rebuild(
+@pytest.mark.parametrize("ingress", ["raw", "websocket", "managed_transmit", "legacy"])
+@pytest.mark.parametrize("release_in_flight", [False, True])
+async def test_ptt_does_not_wait_for_blocked_audio_ensure(
     demanded_radio: IcomRadio,
     monkeypatch: pytest.MonkeyPatch,
     virtual_clock: VirtualClock,
     ingress: str,
-    release_during_repair: bool,
+    release_in_flight: bool,
 ) -> None:
-    from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
-
     radio = demanded_radio
     session = radio.audio_session
     clock = virtual_clock
     monkeypatch.setattr(session, "_monotonic", clock)
     monkeypatch.setattr(session.bus, "_monotonic", clock)
-    stopping = asyncio.Event()
-    retire = asyncio.Event()
+    await session.subscribe_rx("ptt-during-repair")
     connecting = asyncio.Event()
-    rebuild = asyncio.Event()
-    old_stream: AudioStream | None = None
-    rx_loop = AudioStream._rx_loop
-    connect = IcomTransport.connect
-    wire: list[bool] = []
+    never_connected = asyncio.Event()
+    key_started = asyncio.Event()
+    finish_key = asyncio.Event()
+    wire: list[tuple[bool, float]] = []
 
-    async def gated_reader(stream: AudioStream) -> None:
-        try:
-            await rx_loop(stream)
-        finally:
-            if stream is old_stream:
-                stopping.set()
-                await retire.wait()
-
-    async def gated_connect(transport, host, port, **kwargs) -> None:
+    async def blocked_ensure(*, reestablish: bool = True) -> None:
         connecting.set()
-        await rebuild.wait()
-        await connect(transport, host, port, **kwargs)
+        await never_connected.wait()
 
     async def send(civ: bytes, **kwargs) -> CivFrame:
+        on = civ == radio._commands.ptt_on(to_addr=radio._radio_addr)
+        if on:
+            key_started.set()
+            await finish_key.wait()
         current = kwargs.get("is_current")
         if current is not None and not current():
             raise StaleBeforeWireError("superseded test key")
-        on = civ == radio._commands.ptt_on(to_addr=radio._radio_addr)
         if on or civ == radio._commands.ptt_off(to_addr=radio._radio_addr):
-            wire.append(on)
-        if on:
-            stream = radio._audio_stream
-            assert stream is not None and stream is not old_stream
-            assert stream.state is AudioState.RECEIVING
-            assert stream._rx_task is not None and not stream._rx_task.done()
-            assert stream._rx_callback == session.bus._on_opus_packet
+            wire.append((on, clock()))
         return CivFrame(to_addr=0xE0, from_addr=radio._radio_addr, command=0xFB)
 
-    async def legacy_send(civ: bytes, provider_generation: int) -> None:
+    async def legacy_send(civ: bytes, provider_generation: int, **kwargs) -> None:
         assert provider_generation == 7
-        await send(civ)
+        await send(civ, **kwargs)
 
-    monkeypatch.setattr(AudioStream, "_rx_loop", gated_reader)
-    sub = await session.subscribe_rx("ptt-during-retirement")
-    old_stream = radio._audio_stream
-    old_transport = radio._audio_transport
-    assert old_stream is not None and old_transport is not None
-    reader = old_stream._rx_task
-    assert reader is not None
-    old_transport._handle_packet(_make_audio_bytes(b"reader-started", send_seq=1))
-    assert await sub.get(timeout=2.0) is not None
-    monkeypatch.setattr(IcomTransport, "connect", gated_connect)
+    monkeypatch.setattr(radio, "_ensure_audio_transport", blocked_ensure)
     monkeypatch.setattr(radio, "_send_civ_raw", send)
     monkeypatch.setattr(radio._civ_runtime, "write_managed_ptt", legacy_send)
     authority = ManagedTxAuthority(
@@ -1327,17 +1292,33 @@ async def test_ptt_admission_waits_through_audio_reader_retirement_and_rebuild(
         radio, "_managed_tx_composition", SimpleNamespace(authority=authority)
     )
 
+    async def enqueue(*, ready, submission, **kwargs):
+        ready.set_result(None)
+        return await submission
+
+    handler = ControlHandler(
+        FakeConnection(),
+        radio,
+        "test",
+        "test",
+        server=SimpleNamespace(
+            command_queue=SimpleNamespace(capture_connection_generation=lambda: 1),
+            enqueue_managed_positive_tx=enqueue,
+        ),
+        session_id="repair-owner",
+        managed_tx_authority=authority,
+        clock=clock,
+    )
+
     async def key() -> None:
         if ingress == "raw":
             await radio.set_ptt(True)
         elif ingress == "legacy":
             await radio._write_managed_ptt(7, True)
+        elif ingress == "websocket":
+            await handler._enqueue_managed_ptt("ptt_on", {}, source="websocket")
         else:
-            submission = (
-                await authority.submit_ptt(True, "repair-owner")
-                if ingress == "managed_ptt"
-                else await authority.submit_transmit_on()
-            )
+            submission = await authority.submit_transmit_on()
             assert submission.outcome is ManagedTxOutcome.ACCEPTED
             await submission.wait_settlement()
 
@@ -1347,47 +1328,39 @@ async def test_ptt_admission_waits_through_audio_reader_retirement_and_rebuild(
     assert repair is not None
     try:
         await clock.elapse(0)
-        assert stopping.is_set() and not reader.done()
+        assert connecting.is_set() and not repair.done()
+        if not release_in_flight:
+            finish_key.set()
+        started = clock()
         key_task = asyncio.create_task(key())
-        await clock.elapse(0)
-        assert not key_task.done()
-        assert wire == []
-        if ingress in ("managed_ptt", "managed_transmit"):
-            assert (
-                authority.snapshot_nowait().state.intent.kind
-                is not ManagedTxIntentKind.RX
-            )
-        if release_during_repair:
+        await clock.elapse(0.199)
+        assert key_started.is_set(), "key-on waited behind audio repair"
+        if release_in_flight:
+            assert wire == []
             if ingress == "raw":
                 await radio.set_ptt(False)
+            elif ingress == "legacy":
+                await radio._write_managed_ptt(7, False)
+            elif ingress == "websocket":
+                await handler._enqueue_managed_ptt("ptt_off", {}, source="websocket")
             else:
                 await authority.force_off()
-            assert wire == [False]
-            assert not retire.is_set() and not repair.done()
-
-        retire.set()
-        await clock.elapse(0)
-        assert reader.done()
-        assert connecting.is_set() and not repair.done()
-        assert True not in wire
-        rebuild.set()
-        assert await await_until(repair.done, timeout=2.0)
-        await repair
-        if ingress == "raw" and release_during_repair:
-            with pytest.raises(StaleBeforeWireError):
+            assert [on for on, _ in wire] == [False]
+            finish_key.set()
+            await clock.elapse(0)
+            if ingress in ("raw", "legacy"):
+                with pytest.raises(StaleBeforeWireError):
+                    await key_task
+            else:
                 await key_task
+            assert [on for on, _ in wire] == [False]
         else:
-            assert await await_until(key_task.done, timeout=2.0)
+            assert [on for on, _ in wire] == [True]
+            assert wire[0][1] - started < 0.2
             await key_task
-        assert wire == ([False] if release_during_repair else [True])
-        transport = radio._audio_transport
-        assert transport is not None and transport is not old_transport
-        transport._handle_packet(_make_audio_bytes(b"rebuilt-before-key", send_seq=1))
-        packet = await sub.get(timeout=2.0)
-        assert packet is not None and packet.data == b"rebuilt-before-key"
+        assert not repair.done() and not never_connected.is_set()
     finally:
-        retire.set()
-        rebuild.set()
+        finish_key.set()
         if key_task is not None:
             key_task.cancel()
             await asyncio.gather(key_task, return_exceptions=True)
@@ -1400,98 +1373,69 @@ async def test_ptt_admission_waits_through_audio_reader_retirement_and_rebuild(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(15)
-@pytest.mark.parametrize("during_send", [False, True])
-async def test_raw_ptt_reserves_idle_bridge_until_fresh_off_readback(
+@pytest.mark.parametrize("blocked_phase", ["teardown", "ensure"])
+async def test_audio_repair_backs_off_at_next_check_after_key_on(
     demanded_radio: IcomRadio,
     monkeypatch: pytest.MonkeyPatch,
     virtual_clock: VirtualClock,
-    during_send: bool,
+    blocked_phase: str,
 ) -> None:
     radio = demanded_radio
     session = radio.audio_session
     clock = virtual_clock
     monkeypatch.setattr(session, "_monotonic", clock)
     monkeypatch.setattr(session.bus, "_monotonic", clock)
-    monkeypatch.setattr(
-        radio.state_store, "_freshness_clock", SimpleNamespace(now=clock)
-    )
-    await session.subscribe_rx("raw-readback-gap")
-    await session.acquire_tx("idle-bridge")
-    stream = radio._audio_stream
-    transport = radio._audio_transport
-    assert stream is not None and transport is not None
-    reader = stream._rx_task
-    assert reader is not None
-    wire: list[bool] = []
-    finish_key = asyncio.Event()
+    await session.subscribe_rx("key-interrupts-repair")
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    phases: list[str] = []
+    teardown = radio._teardown_audio_transport
 
-    def observe_off() -> None:
+    async def stop() -> None:
+        await teardown()
+        phases.append("teardown")
+        if blocked_phase == "teardown":
+            entered.set()
+            await finish.wait()
+
+    async def ensure(*, reestablish: bool = True) -> None:
+        phases.append("ensure")
+        entered.set()
+        await finish.wait()
+
+    async def reestablish() -> None:
+        phases.append("reestablish")
+
+    monkeypatch.setattr(radio, "_teardown_audio_transport", stop)
+    monkeypatch.setattr(radio, "_ensure_audio_transport", ensure)
+    monkeypatch.setattr(session, "_reestablish_locked", reestablish)
+    assert await radio.retry_audio(wait=False)
+    repair = radio._audio_silence_repair_task
+    assert repair is not None
+    try:
+        await clock.elapse(0)
+        assert entered.is_set()
+        monkeypatch.setattr(
+            radio.state_store, "_freshness_clock", SimpleNamespace(now=clock)
+        )
         radio.state_store.apply_current(
             Observation(
                 path=OBSERVED_PTT_PATH,
-                value=ObservedPtt.OFF,
+                value=ObservedPtt.ON,
                 source=SourceMetadata(source="civ_unsolicited", provider="test"),
                 timestamp_monotonic=clock(),
                 quality=("confirmed",),
                 max_age=60.0,
             )
         )
-
-    async def send(civ: bytes, **kwargs) -> None:
-        on = civ == radio._commands.ptt_on(to_addr=radio._radio_addr)
-        wire.append(on)
-        if on:
-            await finish_key.wait()
-
-    monkeypatch.setattr(radio, "_send_civ_raw", send)
-    observe_off()
-    await clock.elapse(0.01)
-    key_task = asyncio.create_task(radio.set_ptt(True))
-    repair = None
-    try:
-        await clock.elapse(0)
-        assert wire == [True]
-        if not during_send:
-            finish_key.set()
-            await key_task
-        # No ON readback and no submitted audio frame have arrived.
-        assert not await radio.retry_audio(wait=False)
-        await clock.elapse(RX_LIVENESS_TIMEOUT_S)
-        session._check_liveness_locked()
-        repair = radio._audio_silence_repair_task
-        assert repair is not None
+        finish.set()
         await clock.elapse(0.1)
+        assert phases == (
+            ["teardown"] if blocked_phase == "teardown" else ["teardown", "ensure"]
+        )
+        assert not repair.done()
         assert radio._audio_silence_repair_attempts == 0
-        assert radio._audio_stream is stream
-        assert not reader.done()
-        if during_send:
-            # An OFF decoded before the key send settles is not release evidence.
-            observe_off()
-            finish_key.set()
-            await key_task
-        await radio.set_ptt(False)
-        await clock.elapse(0.1)
-        assert radio._audio_silence_repair_attempts == 0
-        assert radio._audio_transport is transport
-        assert not await radio.retry_audio(wait=False)
-        await clock.elapse(0.01)
-        observe_off()
-        await clock.elapse(0.1)
-        assert await await_until(repair.done, timeout=2.0)
-        await repair
-        assert radio._audio_silence_repair_attempts == 1
-        assert radio._audio_stream is not stream
-        assert radio._audio_transport is not transport
-        assert reader.done()
-        assert session.tx_demand == 1
     finally:
-        finish_key.set()
-        key_task.cancel()
-        await asyncio.gather(key_task, return_exceptions=True)
-        repair = repair or radio._audio_silence_repair_task
-        if repair is not None:
-            repair.cancel()
-            await asyncio.gather(repair, return_exceptions=True)
-        if radio._audio_stream is not stream:
-            await stream.stop_tx()
-            await stream.stop_rx()
+        finish.set()
+        repair.cancel()
+        await asyncio.gather(repair, return_exceptions=True)
