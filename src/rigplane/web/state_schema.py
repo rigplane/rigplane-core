@@ -418,6 +418,7 @@ class AudioDeviceCandidatePublic(_Strict):
     hostApi: str
     portAudioIndex: int
     nearRadio: bool
+    unmatched: bool
 
 
 class AudioReceiveFailurePublic(_Strict):

@@ -30,12 +30,20 @@ RefusalReason = Literal[
 
 @dataclass(frozen=True, slots=True)
 class AudioCandidate:
+    """One offered device, with the path that produced it (MOR-4156).
+
+    ``unmatched`` is true when the record matched no endpoint name, so the
+    offer is the full capture/render fallback rather than a recognized
+    device; the UI can say so. It is orthogonal to ``near_radio``.
+    """
+
     stable_id: str
     display_name: str
     direction: Flow
     hostapi: str
     portaudio_index: int
     near_radio: bool
+    unmatched: bool = False
 
 
 AudioCandidateSource = Literal["usb_topology", "name_heuristic"]
@@ -228,7 +236,7 @@ def _candidates(
     prefer: str | None = None,
     include_unmatched: bool = False,
 ) -> tuple[AudioCandidate, ...]:
-    fallback: tuple[AudioCandidate, ...] = ()
+    unmatched: list[AudioCandidate] = []
     for api in _hostapis(snapshot, prefer):
         candidates = []
         matched = False
@@ -257,6 +265,7 @@ def _candidates(
                             _under_hub(endpoint.owner, hub, nodes)
                             for endpoint in matches
                         ),
+                        unmatched=not matches,
                     )
                 )
         if candidates:
@@ -268,9 +277,16 @@ def _candidates(
             )
             if matched:
                 return result
-            if not fallback:
-                fallback = result
-    return fallback
+            unmatched.extend(result)
+    # No host API matched a name (MOR-4156): the endpoint_names refusal class
+    # would otherwise offer only the first API's devices, so offer the full
+    # capture/render list across every host API instead, typed unmatched.
+    return tuple(
+        sorted(
+            unmatched,
+            key=lambda item: (not item.near_radio, item.portaudio_index),
+        )
+    )
 
 
 def _parent_hub(nodes: dict[str, UsbNode], serial: UsbNode) -> UsbNode | None:

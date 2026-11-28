@@ -83,6 +83,11 @@ class ConnectionSessionRecord(TypedDict):
 class AudioDeviceCandidateRecord(TypedDict):
     """One offered audio device: of an ``audioReceive`` RX-start failure or
     of the on-demand ``GET /api/v1/audio/candidates`` list (MOR-3883).
+
+    ``unmatched`` (MOR-4156) is true when the device matched no endpoint
+    name, so the offer is the full capture/render fallback rather than a
+    recognized device; the UI can say so. Absent on older servers, where
+    every offered device was name-matched.
     """
 
     stableId: str
@@ -91,6 +96,7 @@ class AudioDeviceCandidateRecord(TypedDict):
     hostApi: str
     portAudioIndex: int
     nearRadio: bool
+    unmatched: bool
 
 
 class AudioCandidatesRecord(TypedDict):

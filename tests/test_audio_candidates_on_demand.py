@@ -227,6 +227,7 @@ async def test_endpoint_serves_candidates_without_rx_start(monkeypatch):
             "hostApi",
             "portAudioIndex",
             "nearRadio",
+            "unmatched",
         }
         assert {
             (candidate["portAudioIndex"], candidate["direction"])

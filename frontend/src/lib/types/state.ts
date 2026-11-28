@@ -429,6 +429,7 @@ export interface AudioDeviceCandidatePublic {
   hostApi: string;
   portAudioIndex: number;
   nearRadio: boolean;
+  unmatched: boolean;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).
