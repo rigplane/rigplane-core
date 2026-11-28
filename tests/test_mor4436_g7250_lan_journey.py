@@ -10,8 +10,9 @@ knobs on (``radio_addr=0xA0``, ``substream_discovery="ping"``,
 recorded ``19 00`` answer): connect, initial frequency read, frequency
 write (``05`` is ignored by the simulator, so only the profile's ``25 00``
 write can move it), read-back on the client and on the simulator, RX audio frames at
-the client's audio callback, clean disconnect. Bounded entirely by the
-virtual clock; no real sleeps.
+the client's audio callback, clean disconnect. Bounded by the virtual
+clock; the only real-time wait is the loopback delivery of already-sent
+RX frames into the client callback.
 
 Every await that talks to the radio runs through :func:`_bounded`, which
 drives the virtual clock until the step finishes or a virtual deadline
@@ -31,7 +32,7 @@ import pytest
 from rigplane.backends.config import LanBackendConfig
 from rigplane.backends.factory import create_radio
 from rigplane.radio import IcomRadio
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
 
@@ -142,16 +143,30 @@ async def test_g7250_wfview_lan_journey(
         )
         try:
             await virtual_clock.elapse(2.0)
+            # Two virtual seconds of bursts are already sent by now; only
+            # real loopback delivery into the client callback is
+            # outstanding, so await the first frame on real time instead
+            # of assuming one settle was enough (MOR-4214: the immediate
+            # drain saw nothing under xdist load).
             frames = 0
-            while True:
-                try:
-                    packet = sub.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if packet is None:
-                    break
-                frames += 1
-            assert frames > 0, "no RX audio reached the client callback"
+
+            def _drain_available() -> bool:
+                nonlocal frames
+                while True:
+                    try:
+                        packet = sub.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if packet is None:
+                        break
+                    frames += 1
+                return frames > 0
+
+            assert await await_until(
+                _drain_available,
+                timeout=5.0,
+                description="RX audio frames at the client callback",
+            ), "no RX audio reached the client callback"
         finally:
             await _bounded(virtual_clock, "sub.release", sub.release(), 10.0)
 
