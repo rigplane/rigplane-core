@@ -361,6 +361,7 @@ class AcquisitionDrain:
                     if self._expiry_is_terminal(
                         scheduler, request, sent_paths=sent_paths, now=now
                     ):
+                        whole_request_attempts.add(request.id)
                         self._forget(
                             scheduler,
                             request.id,

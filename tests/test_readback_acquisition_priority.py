@@ -17,6 +17,7 @@ from rigplane.core.acquisition_drain import AcquisitionDrain, InFlightLedger
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionQuery,
+    AcquisitionRequest,
     AcquisitionScheduler,
     IcomCivAcquisitionExecutor,
 )
@@ -378,6 +379,116 @@ async def test_continuing_writes_allow_a_background_slot_after_four_readbacks(
     assert sent[:6] == [_METER_QUERY, *([_FREQ_QUERY] * 4), _METER_QUERY]
     assert len(sent) <= len(bg) + 4
     assert sent.count(_METER_QUERY) >= 3
+
+
+@pytest.mark.parametrize("seat_expiry", [None, True, False])
+@pytest.mark.parametrize("fully_sent", [True, False])
+@pytest.mark.parametrize("forget_hook", [True, False])
+async def test_expiry_does_not_readmit_a_terminal_request_in_the_same_pass(
+    seat_expiry: bool | None,
+    fully_sent: bool,
+    forget_hook: bool,
+) -> None:
+    sibling = FieldPath.global_("operator_controls", "sibling")
+    other = FieldPath.global_("operator_controls", "other")
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="icom_civ",
+            capabilities=tuple(
+                FieldCapability(path=p, polling=True) for p in (_FREQ, sibling, other)
+            ),
+        )
+    )
+    scheduler.ensure_fresh(
+        (_FREQ, sibling), max_age=10, priority="background", reason="policy-cadence"
+    )
+    request = scheduler.pending_requests()[0]
+    scheduler.ensure_fresh(
+        other, max_age=10, priority="background", reason="policy-cadence"
+    )
+    sent_paths = frozenset(request.paths if fully_sent else (_FREQ,))
+    ledger: InFlightLedger = {request.id: (sent_paths, 10.0)}
+    reports: list[str] = []
+    forgotten: list[str] = []
+    sent: list[AcquisitionQuery] = []
+    queries = {
+        _FREQ: _FREQ_QUERY,
+        sibling: AcquisitionQuery(command=0x19),
+        other: _METER_QUERY,
+    }
+
+    async def send(
+        query: AcquisitionQuery,
+        priority: AcquisitionPriority,
+        acquisition_class: AcquisitionClass,
+    ) -> None:
+        sent.append(query)
+
+    def failure(
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        assert reason == "acquisition_request_timeout"
+        assert frozenset(failed_paths) == sent_paths
+        reports.append(request.id)
+
+    def expiry(
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        reports.append(request.id)
+        return seat_expiry is True
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail(f"unexpected drain failure: {kwargs}")
+
+    executor = IcomCivAcquisitionExecutor(send, resolve_query=queries.get)
+    drain = AcquisitionDrain(
+        scheduler=lambda: scheduler,
+        executor=lambda: executor,
+        store=lambda: None,
+        in_flight=ledger,
+        expired=lambda candidate, *, sent_at, now: (
+            candidate.id == request.id and sent_at == 10.0
+        ),
+        dispatchable=lambda requests: requests,
+        report_failure=failure,
+        report_executor_missing=unexpected,
+        report_executor_error=unexpected,
+        report_sent=lambda *args, **kwargs: None,
+        report_expiry=expiry if seat_expiry is not None else None,
+        on_forget=forgotten.append if forget_hook else None,
+    )
+
+    await drain.run_once()
+
+    assert reports == [request.id]
+    assert any(pending.id == request.id for pending in scheduler.pending_requests())
+    assert _METER_QUERY in sent
+    terminal = seat_expiry is not False
+    if terminal:
+        assert request.id not in ledger
+        assert sent == [_METER_QUERY]
+        assert forgotten == ([request.id] if forget_hook else [])
+        assert not scheduler.claim_is_current(
+            request, claimant=drain, provider_generation=0
+        )
+        await drain.run_once()
+        assert len(sent) == 3
+        assert set(sent[1:]) == {_FREQ_QUERY, queries[sibling]}
+        assert ledger[request.id][0] == frozenset(request.paths)
+    else:
+        assert ledger[request.id][0] == frozenset(request.paths)
+        assert _FREQ_QUERY not in sent
+        assert (queries[sibling] in sent) is not fully_sent
+        assert forgotten == []
 
 
 def _incremental_drain(
