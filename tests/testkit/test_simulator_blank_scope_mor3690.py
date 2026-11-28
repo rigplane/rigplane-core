@@ -50,10 +50,24 @@ async def _collect_blank_waves() -> list[ScopeFrame]:
         await _open(client, sim)
         _set(sim, b"\x11\x01")
         decoded = []
+        pending = 0
+        collected = 0
         for _ in range(10):
             clock.advance(0.13)
-            assert sim.pump_scope_stream() >= 0
-            for wave in await _waves(client):
+            sent = sim.pump_scope_stream()
+            assert sent >= 0
+            # Exact outstanding count, never a guess: everything the pump
+            # sent but this client has not drained yet. Only loopback
+            # delivery is outstanding, so ``_waves`` awaits exactly that.
+            pending += sent
+            outstanding = pending - collected
+            waves = (
+                await _waves(client, at_least=outstanding)
+                if outstanding
+                else await _waves(client)
+            )
+            collected += len(waves)
+            for wave in waves:
                 decoded.append(_decode(wave))
             if len(decoded) >= 2:
                 break

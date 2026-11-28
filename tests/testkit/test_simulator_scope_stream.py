@@ -2,8 +2,8 @@
 
 All tests run on the virtual clock: the simulator's hand-advanced clock
 pins wave pacing, real loopback delivery is awaited with ``await_until``,
-and silence is asserted by advancing the clock and checking the client's
-queue — never by waiting out a real timeout.
+and silence is asserted through sender observation (no new wave emitted,
+nothing outstanding) — never by waiting out a real timeout.
 """
 
 import asyncio
@@ -40,9 +40,25 @@ async def _client() -> _UdpClient:
     return client
 
 
+async def _recv(client: _UdpClient, description: str) -> bytes:
+    """One loopback datagram, awaited as a real event with a real deadline.
+
+    ``_UdpClient.recv`` parks on ``asyncio.wait_for``, whose deadline reads
+    the frozen ``loop.time`` on a virtual clock and so never elapses: a lost
+    reply would hang until the watchdog instead of failing here. Waiting for
+    the queue to fill with ``await_until`` keeps the deadline on real time.
+    """
+    assert await await_until(
+        lambda: not client.queue.empty(),
+        timeout=5.0,
+        description=description,
+    )
+    return client.queue.get_nowait()
+
+
 async def _open(client: _UdpClient, sim: MockIcomRadio, seq: int = 1) -> None:
     client.send(_openclose(seq=seq), sim.civ_port)
-    marker = await client.recv()
+    marker = await _recv(client, "the open marker")
     assert marker[0x15:] == bytes.fromhex("fefe009800fd")
 
 
@@ -58,8 +74,13 @@ async def _waves(client: _UdpClient, at_least: int = 0) -> list[bytes]:
     move simulator time with ``VirtualClock.advance`` and pump the stream
     by hand — so only real loopback delivery is outstanding, and
     ``await_until`` parks on real time for exactly that. ``at_least`` is
-    the exact number of still-undrained waves (never a guess); with no
-    count the queue is settled briefly and drained as-is.
+    the exact number of still-undrained waves (pump returns or
+    ``_sent_waves`` template-index deltas, never a guess) and is required
+    for positive collection. A bare call waits for nothing and only drains
+    what already arrived: it is sound solely where sender observation
+    proves nothing is still outstanding (every earlier send was collected
+    through an exact-count wait and the last pump returned 0), which is
+    exactly the silence points that use it.
     """
     if at_least:
         assert await await_until(
@@ -67,24 +88,32 @@ async def _waves(client: _UdpClient, at_least: int = 0) -> list[bytes]:
             timeout=5.0,
             description=f"{at_least} loopback wave datagrams",
         )
-    else:
-        for _ in range(3):
-            await asyncio.sleep(0)
     frames = []
     while not client.queue.empty():
-        packet = client.queue.get_nowait()
+        try:
+            packet = client.queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
         if packet[0x15:].startswith(_WAVE_PREFIX):
             frames.append(packet[0x15:])
     return frames
 
 
 async def _assert_silence(
-    clock: VirtualClock, client: _UdpClient, seconds: float
+    clock: VirtualClock, sim: MockIcomRadio, client: _UdpClient, seconds: float
 ) -> None:
-    """Advance the clock and assert nothing arrived (no real waiting)."""
+    """Advance the clock and assert the simulator emitted nothing (no real waiting).
+
+    Sender-observed, not timed: the wave counter is unchanged across the
+    window and the client queue is empty. Sound because every earlier send
+    was collected through an exact-count ``await_until`` wait, so no
+    datagram can still be in the kernel — there is no delivery to wait for,
+    and no fixed number of loop turns to get wrong. No ``elapse``: the
+    background stream loop stays frozen on manual-pump tests.
+    """
+    sent_before = _sent_waves(sim)
     clock.advance(seconds)
-    for _ in range(3):
-        await asyncio.sleep(0)
+    assert _sent_waves(sim) == sent_before, "no wave may be emitted in a silence window"
     assert client.queue.empty(), "expected silence on the wire"
 
 
@@ -118,8 +147,9 @@ async def _wire_scope(
 ) -> bytes:
     request = _packet(payload, seq)
     client.send(request, sim.civ_port)
-    assert _is_echo_of(await client.recv(), request)  # recorded LAN echo precedes reply
-    reply = await client.recv()
+    echo = await _recv(client, "the LAN echo")
+    assert _is_echo_of(echo, request)  # recorded LAN echo precedes reply
+    reply = await _recv(client, "the scope reply")
     return reply[0x15:]
 
 
@@ -133,7 +163,7 @@ async def test_default_with_table_preserves_recorded_fb_and_no_waves(
         for seq, payload in enumerate((b"\x10\x01", b"\x11\x01"), 1):
             assert await _wire_scope(client, sim, payload, seq) == _ACK
         assert sim.pump_scope_stream() == 0
-        await _assert_silence(virtual_clock, client, 0.16)  # default stays silent
+        await _assert_silence(virtual_clock, sim, client, 0.16)  # default stays silent
         assert await _wire_scope(client, sim, b"\x11\x00", 3) == _ACK
         # A form outside the native 10-13 slice still uses the recorded table.
         assert await _wire_scope(client, sim, b"\x1a\x00", 4) == bytes.fromhex(
@@ -334,7 +364,7 @@ async def test_session_end_stops_wave_output(
     try:
         if end == "disconnect":
             control.send(_login(), sim.control_port)
-            await control.recv()
+            await _recv(control, "the control login reply")
         await _open(civ, sim)
         _set(sim, b"\x11\x01")
         virtual_clock.advance(0.13)
