@@ -10,6 +10,7 @@ __all__ = [
     "CatReplyValidationError",
     "BackgroundSendDropped",
     "CommandRejectedError",
+    "CommandNotSupportedError",
     "ModeReadbackError",
     "ReceiverNotSelectedError",
     "TimeoutError",
@@ -83,7 +84,7 @@ class CatReplyValidationError(CommandError):
     NOT raised for transport or connection failures (those are
     ``ConnectionError``/``CatTransportError`` and must still propagate to
     the poller's reconnect path) nor for programming/config errors
-    (missing profile spec, out-of-range write argument), which stay plain
+    (missing profile spec, out-of-range write argument), which stay
     ``CommandError`` and stay loud.
     """
 
@@ -98,6 +99,10 @@ class BackgroundSendDropped(CommandError):
 
 class CommandRejectedError(CommandError):
     """The radio positively refused a command (e.g. a Yaesu ``?;`` response)."""
+
+
+class CommandNotSupportedError(CommandError):
+    """Raised before any byte is sent when the profile cannot build a command."""
 
 
 class ModeReadbackError(CommandError):
