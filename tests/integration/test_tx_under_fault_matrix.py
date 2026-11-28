@@ -618,7 +618,10 @@ async def test_tx_under_fault_matrix(
             loss_task.add_done_callback(lambda task: task.exception())
 
         # (1) The simulator's PTT is 0 within the budget.
-        ptt0_elapsed = await _wait_ptt(sim, False, budget)
+        # The held WebSocket lease can owe OFF through a second watchdog
+        # episode after reboot (MOR-4930). Allow that repair to reach the wire.
+        ptt_budget = budget + 4.0 if cell.id == "ws-reboot-hold" else budget
+        ptt0_elapsed = await _wait_ptt(sim, False, ptt_budget)
         cell.note(f"ptt=0 in {ptt0_elapsed:.2f}s after fault")
 
         if fault in _LINK_FAULTS:

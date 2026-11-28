@@ -767,6 +767,7 @@ class CivRuntime:
             tuple[asyncio.Task[None], asyncio.Task[None]] | None
         ) = None
         self._soft_recovery_epoch: int | None = None
+        self._recovery_frame_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, tuple[CivFrame, bytes]] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
@@ -1195,6 +1196,10 @@ class CivRuntime:
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
+        if reason in ("connect", "soft_reconnect"):
+            self._host._last_civ_data_received = time.monotonic()
+            if self._recovery_running():
+                self._recovery_frame_epoch = self._host._civ_epoch
         self._host._state_store.begin_provider_generation()
         session = getattr(self._host, "_control_scope_session", None)
         if isinstance(session, ScopeSession):
@@ -1599,13 +1604,10 @@ class CivRuntime:
         sleeps) survives this watchdog loop exiting (the self-cancel guard in
         :meth:`stop_data_watchdog` keeps it from cancelling itself).
 
-        A quiet link is not a stall. Recovery starts only when payload has been
-        idle past ``_CIV_DATA_WATCHDOG_TIMEOUT`` AND either the CI-V port itself
-        has gone silent (``rx_packet_count`` stopped advancing, pings included)
-        or a send made after the last payload is still unanswered. A port that
-        is completely silent hands off after ``_SILENT_OPENCLOSE_DEADLINE``;
-        a live port that merely leaves queries unanswered keeps the 60 s
-        patience.
+        Once payload is idle, silence, unanswered sends, or a recovery that
+        still needs a CI-V frame can start a stall episode. A silent port
+        or an unconfirmed recovery uses the short deadline. A live port
+        with an unanswered send keeps the 60 s patience.
 
         Before that patience window starts, the control session itself is
         probed once (MOR-3703) — but only while a LAN control session is
@@ -1670,7 +1672,12 @@ class CivRuntime:
                 )
 
                 payload_idle = now - last > _CIV_DATA_WATCHDOG_TIMEOUT
-                stalled = payload_idle and (port_silent or unanswered)
+                recovery_owes_data = self._recovery_owes_data()
+                stalled = payload_idle and (
+                    port_silent
+                    or unanswered
+                    or (recovery_owes_data and not self._recovery_running())
+                )
                 if payload_idle and not stalled:
                     if not quiet_logged:
                         logger.debug(
@@ -1679,16 +1686,18 @@ class CivRuntime:
                             now - last,
                         )
                         quiet_logged = True
-                    continue
-                quiet_logged = False
+                else:
+                    quiet_logged = False
 
                 if stalled:
                     if not recovering:
                         logged_rx = rx_count if rx_count is not None else -1
                         q_size = civ_t._packet_queue.qsize() if civ_t else -1
-                        evidence = (
-                            "port silent" if port_silent else "queries unanswered"
-                        )
+                        evidence = "unrestored CI-V stream"
+                        if port_silent:
+                            evidence = "port silent"
+                        elif unanswered:
+                            evidence = "queries unanswered"
                         logger.warning(
                             "civ-data-watchdog: no CI-V data for %.1fs, "
                             "requesting data start "
@@ -1710,6 +1719,9 @@ class CivRuntime:
                         # quiet and must never escalate on this probe.
                         self._host._civ_stream_ready = False
                         dead = await self._probe_control_session()
+                        if dead != "reject" and self._host._civ_stream_ready:
+                            # The pump restored the stream while the probe waited.
+                            continue
                         if dead == "reject":
                             logger.warning(
                                 "civ-data-watchdog: control session dead "
@@ -1734,11 +1746,9 @@ class CivRuntime:
                     elapsed_recovery = now - recovery_start
                     deadline = (
                         _SILENT_OPENCLOSE_DEADLINE
-                        if port_silent
-                        or self._soft_recovery_epoch == self._host._civ_epoch
+                        if port_silent or recovery_owes_data
                         else _OPENCLOSE_DEADLINE
                     )
-
                     if elapsed_recovery < deadline:
                         try:
                             await self._host._send_open_close(open_stream=True)
@@ -1770,12 +1780,35 @@ class CivRuntime:
                         return
                 else:
                     if recovering:
-                        logger.info("civ-data-watchdog: CI-V data resumed")
+                        logger.info("civ-data-watchdog: CI-V traffic resumed")
                         recovering = False
+                    if (
+                        self._host._civ_recovering
+                        and not recovery_owes_data
+                        and not self._recovery_running()
+                    ):
+                        # Release a stale flag so a later notice can start
+                        # recovery. The pump alone confirms readiness.
                         self._host._civ_recovering = False
-                        self._host._civ_stream_ready = True
         except asyncio.CancelledError:
             pass
+
+    def _recovery_running(
+        self, *, excluding: asyncio.Task[object] | None = None
+    ) -> bool:
+        return any(
+            task is not None and task is not excluding and not task.done()
+            for task in (
+                self._reconnect_task,
+                self._host._session_lifecycle._recover_task,
+            )
+        )
+
+    def _recovery_owes_data(self) -> bool:
+        return self._host._civ_epoch in (
+            self._recovery_frame_epoch,
+            self._soft_recovery_epoch,
+        )
 
     async def _probe_control_session(self) -> str | None:
         """Ask the radio whether the control session is still ours.
@@ -1946,7 +1979,7 @@ class CivRuntime:
                 # full connect() with discovery.
                 self._host._ctrl_transport.remote_id = 0
             await self._host.soft_reconnect()
-            if not escalate:
+            if not escalate and self._recovery_frame_epoch == self._host._civ_epoch:
                 self._soft_recovery_epoch = self._host._civ_epoch
         except asyncio.CancelledError:
             cancelled = True
@@ -1973,13 +2006,9 @@ class CivRuntime:
                 if self._reconnect_task is asyncio.current_task():
                     self._reconnect_task = None
             else:
-                if self._host._conn_state == RadioConnectionState.CONNECTED:
-                    # MOR-4558: this recovery is over. A soft reconnect onto a
-                    # CI-V session the radio no longer serves (back from a
-                    # power cycle) returns with ``_civ_recovering`` still set
-                    # and no data; left set, it refuses the next stall's
-                    # escalation as "already recovering". Readiness stays
-                    # with ``_civ_stream_ready``, which only real data sets.
+                if not self._recovery_running(excluding=asyncio.current_task()):
+                    # The handoff finished, even if the session failed. Do not
+                    # let a stale flag veto the next escalation or notice.
                     self._host._civ_recovering = False
                 self._rearm_data_watchdog_after_recovery()
 
@@ -2035,7 +2064,7 @@ class CivRuntime:
         try:
             self.start_data_watchdog()
         except Exception:
-            logger.debug(
+            logger.warning(
                 "civ-data-watchdog: re-arm after recovery failed",
                 exc_info=True,
             )
@@ -2109,7 +2138,11 @@ class CivRuntime:
         """Continuously consume CI-V transport packets and route events."""
         assert self._host._civ_transport is not None
         self._active_rx_source_generation = source_generation
-        self._host._last_civ_data_received = time.monotonic()
+        if (
+            source_generation == self._host._civ_epoch
+            and self._host._last_civ_data_received is None
+        ):
+            self._host._last_civ_data_received = time.monotonic()
         try:
             while self._host._civ_transport is not None:
                 receiving_transport = self._host._civ_transport
@@ -2133,10 +2166,6 @@ class CivRuntime:
                 for pkt in packets:
                     if len(pkt) <= CIV_HEADER_SIZE:
                         continue
-                    self._host._last_civ_data_received = time.monotonic()
-                    self._soft_recovery_epoch = None
-                    self._host._civ_stream_ready = True
-                    self._host._civ_recovering = False
                     payload = pkt[CIV_HEADER_SIZE:]
                     frames: list[tuple[bytes, CivFrame]] = []
                     for frame_bytes in iter_civ_frames(payload):
@@ -2158,6 +2187,16 @@ class CivRuntime:
                             continue
                         cache[pkt] = now
                     for frame_bytes, frame in frames:
+                        if (
+                            source_generation == self._host._civ_epoch
+                            and frame.from_addr == self._host._radio_addr
+                            and frame.to_addr in (CONTROLLER_ADDR, 0x00)
+                        ):
+                            self._host._last_civ_data_received = time.monotonic()
+                            self._soft_recovery_epoch = None
+                            self._recovery_frame_epoch = None
+                            self._host._civ_stream_ready = True
+                            self._host._civ_recovering = False
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)
                         self.deliver_raw_civ(frame_bytes)
                         try:
