@@ -7,6 +7,7 @@ import pytest
 
 from rigplane.commander import IcomCommander, Priority
 from rigplane.exceptions import ConnectionError
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import CivFrame
 
 
@@ -66,8 +67,10 @@ async def _cleanup_held_commander(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("failure", [False, True], ids=["returns", "raises"])
 async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
+    virtual_clock: VirtualClock,
     failure: bool,
 ) -> None:
     execute = _HeldExecute(fail=failure)
@@ -78,23 +81,34 @@ async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
     send = asyncio.create_task(c.send(b"held"))
     tasks = [send]
     try:
-        await execute.started.wait()
+        await await_until(
+            execute.started.is_set, description="worker dispatches held send"
+        )
         execute_task = execute.task
         assert execute_task is not None
         queued = asyncio.create_task(c.send(b"queued"))
         tasks.append(queued)
-        await asyncio.sleep(0)
+        await await_until(
+            lambda: c._queue is not None and c._queue.qsize() == 1,
+            description="queued send enqueues behind the held execute",
+        )
         stop = asyncio.create_task(_stop_and_check_actual_join(c, worker, execute_task))
         tasks.append(stop)
-        await execute.cancelled.wait()
-        done, _ = await asyncio.wait({stop, worker}, timeout=0.05)
+        await await_until(
+            execute.cancelled.is_set, description="stop cancels the held execute"
+        )
+        await virtual_clock.elapse(0.05)
         if stop.done() and not stop.cancelled():
             stop.result()
         assert not execute_task.done(), "held execute became terminal before release"
-        assert not done, "stop returned before actual execute completed"
+        assert not stop.done() and not worker.done(), (
+            "stop returned before actual execute completed"
+        )
         execute.release.set()
-        _, pending = await asyncio.wait({stop, worker, send, queued}, timeout=1)
-        assert not pending, "cancel-resistant execute left stopping worker parked"
+        await await_until(
+            lambda: stop.done() and worker.done() and send.done() and queued.done(),
+            description="cancel-resistant execute lets the stopping worker settle",
+        )
         stop.result()
         assert worker.done() and execute_task.done()
         assert execute.seen == [b"held"], "stopped queue dispatched a later command"
@@ -107,10 +121,12 @@ async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "cancel_first", [False, True], ids=["concurrent", "cancel-waiter"]
 )
 async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
+    virtual_clock: VirtualClock,
     cancel_first: bool,
 ) -> None:
     execute = _HeldExecute()
@@ -121,19 +137,23 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
     send = asyncio.create_task(c.send(b"held"))
     tasks = [send]
     try:
-        await execute.started.wait()
+        await await_until(
+            execute.started.is_set, description="worker dispatches held send"
+        )
         execute_task = execute.task
         assert execute_task is not None
         first = asyncio.create_task(
             _stop_and_check_actual_join(c, worker, execute_task)
         )
         tasks.append(first)
-        await execute.cancelled.wait()
+        await await_until(
+            execute.cancelled.is_set, description="first stop cancels the held execute"
+        )
         if cancel_first:
             worker_cancels = worker.cancelling()
             execute_cancels = execute_task.cancelling()
             first.cancel()
-            await asyncio.wait({first}, timeout=0.05)
+            await virtual_clock.elapse(0.05)
             if first.done() and not first.cancelled():
                 first.result()
             assert worker.cancelling() == worker_cancels, (
@@ -149,14 +169,18 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
             _stop_and_check_actual_join(c, worker, execute_task)
         )
         tasks.append(second)
-        done, _ = await asyncio.wait({second, worker}, timeout=0.05)
+        await virtual_clock.elapse(0.05)
         if second.done() and not second.cancelled():
             second.result()
         assert not execute_task.done(), "held execute became terminal before release"
-        assert not done, "overlapping stop did not join the held execute"
+        assert not second.done() and not worker.done(), (
+            "overlapping stop did not join the held execute"
+        )
         execute.release.set()
-        _, pending = await asyncio.wait(set(tasks) | {worker}, timeout=1)
-        assert not pending, "overlapping stops did not settle after execute"
+        await await_until(
+            lambda: all(task.done() for task in set(tasks) | {worker}),
+            description="overlapping stops settle after execute",
+        )
         if not first.cancelled():
             first.result()
         second.result()
@@ -170,7 +194,10 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
 
 
 @pytest.mark.asyncio
-async def test_stop_accepts_terminal_execute_without_release() -> None:
+@pytest.mark.timeout(30)
+async def test_stop_accepts_terminal_execute_without_release(
+    virtual_clock: VirtualClock,
+) -> None:
     execute = _HeldExecute()
     c = IcomCommander(execute)
     c.start()
@@ -179,14 +206,21 @@ async def test_stop_accepts_terminal_execute_without_release() -> None:
     send = asyncio.create_task(c.send(b"held"))
     tasks = [send]
     try:
-        await execute.started.wait()
+        await await_until(
+            execute.started.is_set, description="worker dispatches held send"
+        )
         execute_task = execute.task
         assert execute_task is not None
         worker.cancel()
-        await execute.cancelled.wait()
+        await await_until(
+            execute.cancelled.is_set,
+            description="worker cancel reaches the held execute",
+        )
         worker.cancel()
-        _, pending = await asyncio.wait({worker, execute_task, send}, timeout=1)
-        assert not pending, "explicit second cancellation did not finish captured tasks"
+        await await_until(
+            lambda: worker.done() and execute_task.done() and send.done(),
+            description="explicit second cancellation finishes captured tasks",
+        )
         assert worker.result() is None
         assert execute_task.cancelled()
         assert isinstance(send.exception(), ConnectionError)
@@ -199,7 +233,10 @@ async def test_stop_accepts_terminal_execute_without_release() -> None:
 
 
 @pytest.mark.asyncio
-async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
+@pytest.mark.timeout(30)
+async def test_old_stop_preserves_restart_from_worker_done_callback(
+    virtual_clock: VirtualClock,
+) -> None:
     seen = []
 
     async def execute(payload: bytes, wait_response: bool) -> None:
@@ -219,11 +256,13 @@ async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
     # Registered before stop awaits the worker, so restart precedes stop's resume.
     worker.add_done_callback(restart)
     try:
-        await asyncio.sleep(0)
+        await virtual_clock.elapse(0)
         stop = asyncio.create_task(c.stop())
         tasks.append(stop)
-        _, pending = await asyncio.wait({stop, worker}, timeout=1)
-        assert not pending, "old stop did not finish"
+        await await_until(
+            lambda: stop.done() and worker.done(),
+            description="old stop finishes after the restart callback",
+        )
         stop.result()
         replacement, replacement_queue = replacements[0]
         assert replacement is not None and replacement is not worker
@@ -233,8 +272,7 @@ async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
         assert not replacement.done()
         send = asyncio.create_task(c.send(b"current"))
         tasks.append(send)
-        _, pending = await asyncio.wait({send}, timeout=1)
-        assert not pending, "restarted commander did not execute"
+        await await_until(send.done, description="restarted commander executes")
         assert send.result() is None
         assert seen == [b"current"]
     finally:
@@ -249,8 +287,11 @@ async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("state", ["stopping", "dead"])
-async def test_send_refuses_stopping_or_dead_worker(state: str) -> None:
+async def test_send_refuses_stopping_or_dead_worker(
+    virtual_clock: VirtualClock, state: str
+) -> None:
     execute = _HeldExecute()
     c = IcomCommander(execute)
     c.start()
@@ -260,17 +301,20 @@ async def test_send_refuses_stopping_or_dead_worker(state: str) -> None:
     try:
         if state == "stopping":
             tasks.append(asyncio.create_task(c.send(b"held")))
-            await execute.started.wait()
+            await await_until(
+                execute.started.is_set, description="worker dispatches held send"
+            )
             tasks.append(asyncio.create_task(c.stop()))
-            await execute.cancelled.wait()
+            await await_until(
+                execute.cancelled.is_set, description="stop cancels the held execute"
+            )
         else:
-            await asyncio.sleep(0)
+            await virtual_clock.elapse(0)
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
         late = asyncio.create_task(c.send(b"late", wait_dispatch=False))
         tasks.append(late)
-        _, pending = await asyncio.wait({late}, timeout=1)
-        assert not pending, "send waited on an unavailable worker"
+        await await_until(late.done, description="send refuses an unavailable worker")
         result = await asyncio.gather(late, return_exceptions=True)
         assert isinstance(result[0], ConnectionError), (
             "send admitted an unavailable worker"
@@ -303,7 +347,10 @@ async def test_priority_ordering() -> None:
 
 
 @pytest.mark.asyncio
-async def test_normal_command_preempts_queued_backgrounds() -> None:
+@pytest.mark.timeout(30)
+async def test_normal_command_preempts_queued_backgrounds(
+    virtual_clock: VirtualClock,
+) -> None:
     """A NORMAL command enqueued after several BACKGROUND polls must dispatch
     before them (priority preemption, not FIFO).
 
@@ -327,7 +374,7 @@ async def test_normal_command_preempts_queued_backgrounds() -> None:
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker parks on the gate send")
 
         # Several BACKGROUND polls queue first, then one NORMAL command.
         bgs = [
@@ -336,9 +383,15 @@ async def test_normal_command_preempts_queued_backgrounds() -> None:
             )
             for i in range(5)
         ]
-        await asyncio.sleep(0.01)  # let backgrounds enqueue
+        await await_until(
+            lambda: c._queue is not None and c._queue.qsize() == 5,
+            description="backgrounds enqueue behind the gate",
+        )
         normal = asyncio.create_task(c.send(b"normal-1", priority=Priority.NORMAL))
-        await asyncio.sleep(0.01)  # let the normal enqueue
+        await await_until(
+            lambda: c._queue is not None and c._queue.qsize() == 6,
+            description="normal command enqueues behind the backgrounds",
+        )
 
         release.set()
         await asyncio.gather(gate, normal, *bgs)
@@ -355,7 +408,10 @@ async def test_normal_command_preempts_queued_backgrounds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_wait_dispatch_false_returns_before_dispatch() -> None:
+@pytest.mark.timeout(30)
+async def test_send_wait_dispatch_false_returns_before_dispatch(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-497(ii): a fire-and-forget send (wait_dispatch=False) must return
     immediately even while the worker is parked on a prior in-flight item.
 
@@ -378,19 +434,16 @@ async def test_send_wait_dispatch_false_returns_before_dispatch() -> None:
     try:
         # Park the worker on the gate item.
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker parks on the gate send")
 
         # Fire-and-forget background send must return promptly (None), even
         # though the worker is still blocked on `gate` so nothing has
         # actually dispatched the poll yet.
-        result = await asyncio.wait_for(
-            c.send(
-                b"poll",
-                priority=Priority.BACKGROUND,
-                wait_response=False,
-                wait_dispatch=False,
-            ),
-            timeout=0.5,
+        result = await c.send(
+            b"poll",
+            priority=Priority.BACKGROUND,
+            wait_response=False,
+            wait_dispatch=False,
         )
         assert result is None
         assert b"poll" not in dispatched  # did NOT wait for dispatch
@@ -425,7 +478,10 @@ async def test_wait_dispatch_true_still_awaits_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_inflight_cap_bounds_queue() -> None:
+@pytest.mark.timeout(30)
+async def test_background_inflight_cap_bounds_queue(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-497(ii): bounded growth. With the worker gated, enqueuing more than
     ``_MAX_BG_INFLIGHT`` fire-and-forget BACKGROUND sends must drop-newest so
     the commander queue never exceeds the cap (plus the one in-flight item)."""
@@ -445,7 +501,7 @@ async def test_background_inflight_cap_bounds_queue() -> None:
     try:
         # Park the worker so nothing drains.
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker parks on the gate send")
 
         from rigplane.core.exceptions import BackgroundSendDropped
 
@@ -458,11 +514,11 @@ async def test_background_inflight_cap_bounds_queue() -> None:
                 wait_dispatch=False,
             )
             if i < _MAX_BG_INFLIGHT:
-                result = await asyncio.wait_for(send, timeout=0.5)
+                result = await send
                 assert result is None
             else:
                 with pytest.raises(BackgroundSendDropped):
-                    await asyncio.wait_for(send, timeout=0.5)
+                    await send
 
         # Queue holds at most the cap (the gate item is already in-flight,
         # popped off the queue, so it is not counted here).
@@ -476,7 +532,10 @@ async def test_background_inflight_cap_bounds_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key() -> None:
+@pytest.mark.timeout(30)
+async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key(
+    virtual_clock: VirtualClock,
+) -> None:
     """A fire-and-forget send with a key still registers in ``_pending_by_key``
     and is cleaned up by the worker — dedupe bookkeeping is unaffected."""
     started = asyncio.Event()
@@ -492,7 +551,7 @@ async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key() -> Non
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker parks on the gate send")
 
         await c.send(
             b"poll",
@@ -506,9 +565,11 @@ async def test_dedupe_with_wait_dispatch_false_registers_and_cleans_key() -> Non
 
         release.set()
         await asyncio.gather(gate)
-        # Let the worker drain the background item and run its finally cleanup.
-        await asyncio.sleep(0.02)
-        assert "meter" not in c._pending_by_key
+        # The worker drains the background item and runs its finally cleanup.
+        await await_until(
+            lambda: "meter" not in c._pending_by_key,
+            description="worker drains the background item and cleans its key",
+        )
     finally:
         await c.stop()
 
@@ -543,12 +604,16 @@ async def test_transaction_restores_on_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dedupe_returns_existing_future() -> None:
+@pytest.mark.timeout(30)
+async def test_dedupe_returns_existing_future(
+    virtual_clock: VirtualClock,
+) -> None:
     count = 0
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         nonlocal count
         count += 1
+        # A virtual timer, driven by the elapse below — never wall time.
         await asyncio.sleep(0.02)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
@@ -561,7 +626,12 @@ async def test_dedupe_returns_existing_future() -> None:
         t2 = asyncio.create_task(
             c.send(b"poll", priority=Priority.BACKGROUND, key="meter", dedupe=True)
         )
-        await asyncio.gather(t1, t2)
+        # Drive the in-execute timer; both sends share the one dispatch.
+        await virtual_clock.elapse(0.05)
+        await await_until(
+            lambda: t1.done() and t2.done(),
+            description="deduped sends share the dispatched result",
+        )
     finally:
         await c.stop()
 
@@ -569,41 +639,51 @@ async def test_dedupe_returns_existing_future() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_fails_pending() -> None:
+@pytest.mark.timeout(30)
+async def test_stop_fails_pending(virtual_clock: VirtualClock) -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
+        # A virtual timer, driven by the clock — never wall time.
         await asyncio.sleep(0.5)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
     c = IcomCommander(execute)
     c.start()
     task = asyncio.create_task(c.send(b"long"))
-    await asyncio.sleep(0.01)
+    # Settle the loop so the worker has dispatched into the timed execute.
+    await virtual_clock.elapse(0)
     await c.stop()
     with pytest.raises(ConnectionError):
-        await asyncio.wait_for(task, timeout=0.1)
+        await task
 
 
 @pytest.mark.asyncio
-async def test_stop_fails_inflight_command() -> None:
+@pytest.mark.timeout(30)
+async def test_stop_fails_inflight_command(
+    virtual_clock: VirtualClock,
+) -> None:
     started = asyncio.Event()
 
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         started.set()
+        # A virtual timer the stop preempts — never wall time.
         await asyncio.sleep(10)
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
     c = IcomCommander(execute)
     c.start()
     task = asyncio.create_task(c.send(b"slow"))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await await_until(started.is_set, description="worker dispatches the slow send")
     await c.stop()
 
     with pytest.raises(ConnectionError):
-        await asyncio.wait_for(task, timeout=0.2)
+        await task
 
 
 @pytest.mark.asyncio
-async def test_caller_timeout_cancels_inflight_and_unblocks_queue() -> None:
+@pytest.mark.timeout(30)
+async def test_caller_timeout_cancels_inflight_and_unblocks_queue(
+    virtual_clock: VirtualClock,
+) -> None:
     """A caller-side timeout must cancel the in-flight CI-V command at the
     worker and let queued items proceed.
 
@@ -636,19 +716,25 @@ async def test_caller_timeout_cancels_inflight_and_unblocks_queue() -> None:
     try:
         # First command hangs; caller waits with a tight timeout.
         slow = asyncio.create_task(c.send(b"slow", timeout=0.05))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker dispatches the slow send")
 
         # Enqueue 11 fast followers (no per-call timeout).  Without the
         # fix, these get pre-cancelled while the worker is stuck on
         # ``slow`` — only ``b"slow"`` would land in ``seen``.
         fast = [asyncio.create_task(c.send(f"fast-{i}".encode())) for i in range(11)]
 
-        # Slow command must surface as TimeoutError to the caller.
+        # Drive the clock past the caller timeout; the slow command must
+        # surface as TimeoutError while the worker moves on to the queue.
+        await virtual_clock.elapse(0.05)
         with pytest.raises(asyncio.TimeoutError):
             await slow
 
         # All 11 fast followers must complete normally and reach execute().
-        await asyncio.wait_for(asyncio.gather(*fast), timeout=2.0)
+        await await_until(
+            lambda: all(follower.done() for follower in fast),
+            description="fast followers drain after the caller timeout",
+        )
+        await asyncio.gather(*fast)
     finally:
         block.set()  # unblock any leftover slow execute (defensive)
         await c.stop()
@@ -661,7 +747,10 @@ async def test_caller_timeout_cancels_inflight_and_unblocks_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_queued_request_is_not_executed() -> None:
+@pytest.mark.timeout(30)
+async def test_cancelled_queued_request_is_not_executed(
+    virtual_clock: VirtualClock,
+) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
     seen: list[bytes] = []
@@ -677,19 +766,22 @@ async def test_cancelled_queued_request_is_not_executed() -> None:
     c.start()
     try:
         t1 = asyncio.create_task(c.send(b"block"))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await await_until(started.is_set, description="worker parks on the block send")
 
         t2 = asyncio.create_task(c.send(b"abandoned"))
-        await asyncio.sleep(0.01)  # let request enqueue
+        await await_until(
+            lambda: c._queue is not None and c._queue.qsize() == 1,
+            description="abandoned request enqueues behind the block",
+        )
         t2.cancel()
         with pytest.raises(asyncio.CancelledError):
             await t2
 
         release.set()
-        await asyncio.wait_for(t1, timeout=0.5)
+        await t1
 
-        # Worker must skip cancelled queued request.
-        await asyncio.sleep(0.05)
+        # The worker gets every chance to dispatch, yet must skip it.
+        await virtual_clock.elapse(0.05)
         assert seen == [b"block"]
     finally:
         await c.stop()
@@ -713,8 +805,30 @@ async def _assert_stop_completes(c: IcomCommander) -> None:
         pytest.fail("stop() hung: worker swallowed its own teardown cancel")
 
 
+async def _assert_stop_completes_on_clock(
+    c: IcomCommander, virtual_clock: VirtualClock
+) -> None:
+    """Virtual-clock twin of ``_assert_stop_completes``.
+
+    Same contract (a hung stop fails loudly instead of hanging the suite),
+    but the bound is virtual time: on a virtual loop ``asyncio.wait``'s
+    timeout never advances on its own, so the clock is driven past it
+    instead. A cancel still cascades into the worker for cleanup.
+    """
+    stop_task = asyncio.ensure_future(c.stop())
+    await virtual_clock.elapse(2.0)
+    if not stop_task.done():
+        stop_task.cancel()  # cascade un-wedges the worker for cleanup
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
+        pytest.fail("stop() hung: worker swallowed its own teardown cancel")
+
+
 @pytest.mark.asyncio
-async def test_stop_unblocks_when_caller_cancel_races_teardown() -> None:
+@pytest.mark.timeout(30)
+async def test_stop_unblocks_when_caller_cancel_races_teardown(
+    virtual_clock: VirtualClock,
+) -> None:
     """Worker teardown must win when it races a caller-driven cancel.
 
     A caller timeout/disconnect cancels item.future and, via the worker's
@@ -736,7 +850,7 @@ async def test_stop_unblocks_when_caller_cancel_races_teardown() -> None:
     c.start()
 
     send_task = asyncio.create_task(c.send(b"never-answered"))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await await_until(started.is_set, description="worker dispatches the send")
 
     # Caller goes away: cancels item.future, which propagates into the
     # in-flight execute task via the worker's done-callback.
@@ -746,7 +860,7 @@ async def test_stop_unblocks_when_caller_cancel_races_teardown() -> None:
 
     # No yields between here and stop(): the worker must still be parked
     # on the already-cancelled execute when its own cancel arrives.
-    await _assert_stop_completes(c)
+    await _assert_stop_completes_on_clock(c, virtual_clock)
 
 
 @pytest.mark.asyncio
