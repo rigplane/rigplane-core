@@ -28,7 +28,10 @@ class DXSpot:
     call: str
     comment: str = ""
     time_utc: str = ""
-    timestamp: float = field(default_factory=time.monotonic)
+    # Late-bound on purpose: the module-global lookup lets the shared virtual
+    # clock's scope_to() redirect this read in tests. Production behaviour is
+    # unchanged (module ``time`` is the standard library there).
+    timestamp: float = field(default_factory=lambda: time.monotonic())
 
 
 # Matches the required "DX de SPOTTER: FREQ CALL" prefix.
