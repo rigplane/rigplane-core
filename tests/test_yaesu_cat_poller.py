@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -41,6 +40,7 @@ from rigplane.backends.yaesu_cat.transport import (
 )
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -130,8 +130,10 @@ async def _managed_reconnect_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("late_on", [False, True])
 async def test_managed_reconnect_restores_current_provider_without_replaying_on(
+    virtual_clock: VirtualClock,
     tmp_path: Path,
     late_on: bool,
 ) -> None:
@@ -144,7 +146,11 @@ async def test_managed_reconnect_restores_current_provider_without_replaying_on(
             actuator.finish_on.clear()
         old = await authority.submit_ptt(True, "old-owner")
         assert old.outcome is ManagedTxOutcome.ACCEPTED
-        await asyncio.wait_for(actuator.on_started.wait(), 1)
+        await await_until(
+            lambda: actuator.on_started.is_set(),
+            timeout=5.0,
+            description="PTT_ON actuation to start",
+        )
         if not late_on:
             await old.wait_settlement()
         original_connect = radio._transport.connect
@@ -164,7 +170,9 @@ async def test_managed_reconnect_restores_current_provider_without_replaying_on(
             for _ in range(5):
                 radio._transport._stats.record_error("fixture disconnect")
             radio._transport._last_reconnect = 0
-            await poller._try_reconnect()
+            reconnect = asyncio.ensure_future(poller._try_reconnect())
+            await virtual_clock.elapse(1.0)
+            await reconnect
 
             composition.transport_ready.assert_awaited_with(radio._transport._writer)
             assert composition.transport_ready.await_count == generation
@@ -196,9 +204,10 @@ async def test_managed_reconnect_restores_current_provider_without_replaying_on(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("boundary", ["failure", "provider", "transport", "cooldown"])
 async def test_managed_reconnect_does_not_publish_failed_or_stale_readiness(
-    tmp_path: Path, boundary: str
+    virtual_clock: VirtualClock, tmp_path: Path, boundary: str
 ) -> None:
     radio, poller, store, composition, actuator = await _managed_reconnect_path(
         tmp_path
@@ -217,9 +226,11 @@ async def test_managed_reconnect_does_not_publish_failed_or_stale_readiness(
 
     transport.connect = AsyncMock(side_effect=connect)
     if boundary == "cooldown":
-        transport._last_reconnect = time.monotonic()
+        transport._last_reconnect = virtual_clock.now
     try:
-        await poller._try_reconnect()
+        reconnect = asyncio.ensure_future(poller._try_reconnect())
+        await virtual_clock.elapse(1.0)
+        await reconnect
         composition.transport_ready.assert_not_awaited()
         assert (await composition.authority.snapshot()).provider_generation is None
         assert (
@@ -2467,7 +2478,8 @@ async def test_stop_cancels_tasks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_invokes_callback() -> None:
+@pytest.mark.timeout(30)
+async def test_fast_poll_invokes_callback(virtual_clock: VirtualClock) -> None:
     radio = make_radio(s_meter_main=120)
     calls: list[RadioState] = []
 
@@ -2480,7 +2492,7 @@ async def test_fast_poll_invokes_callback() -> None:
         ema_alpha=1.0,  # no smoothing so raw == smoothed
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     assert len(calls) >= 1
@@ -2489,7 +2501,8 @@ async def test_fast_poll_invokes_callback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_medium_poll_invokes_callback() -> None:
+@pytest.mark.timeout(30)
+async def test_medium_poll_invokes_callback(virtual_clock: VirtualClock) -> None:
     radio = make_radio()
     calls: list[RadioState] = []
 
@@ -2501,14 +2514,15 @@ async def test_medium_poll_invokes_callback() -> None:
         slow_interval=10.0,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     assert len(calls) >= 1
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_invokes_callback() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_invokes_callback(virtual_clock: VirtualClock) -> None:
     radio = make_radio()
     calls: list[RadioState] = []
 
@@ -2520,7 +2534,7 @@ async def test_slow_poll_invokes_callback() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     assert len(calls) >= 1
@@ -2532,7 +2546,8 @@ async def test_slow_poll_invokes_callback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_updates_s_meter() -> None:
+@pytest.mark.timeout(30)
+async def test_fast_poll_updates_s_meter(virtual_clock: VirtualClock) -> None:
     radio = make_radio(s_meter_main=150, s_meter_sub=75)
 
     poller = YaesuCatPoller(
@@ -2544,7 +2559,7 @@ async def test_fast_poll_updates_s_meter() -> None:
         ema_alpha=1.0,  # raw pass-through
     )
     await poller.start()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
     await poller.stop()
 
     assert radio.radio_state.main.s_meter == 150
@@ -2552,7 +2567,8 @@ async def test_fast_poll_updates_s_meter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_medium_poll_updates_freq_mode_ptt() -> None:
+@pytest.mark.timeout(30)
+async def test_medium_poll_updates_freq_mode_ptt(virtual_clock: VirtualClock) -> None:
     radio = make_radio(freq_main=14_074_000, ptt=True)
 
     poller = YaesuCatPoller(
@@ -2563,7 +2579,7 @@ async def test_medium_poll_updates_freq_mode_ptt() -> None:
         slow_interval=10.0,
     )
     await poller.start()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
     await poller.stop()
 
     radio.get_freq.assert_called()
@@ -2981,7 +2997,8 @@ def test_legacy_yaesu_state_writes_are_observed_or_explicit_limitations() -> Non
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_updates_agc_and_levels() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_updates_agc_and_levels(virtual_clock: VirtualClock) -> None:
     radio = make_radio(agc=3, af_level=200, rf_gain=180, squelch=20)
 
     poller = YaesuCatPoller(
@@ -2992,7 +3009,7 @@ async def test_slow_poll_updates_agc_and_levels() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
     await poller.stop()
 
     assert radio.radio_state.main.agc == 3
@@ -3007,7 +3024,8 @@ async def test_slow_poll_updates_agc_and_levels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ema_smoothing_applied() -> None:
+@pytest.mark.timeout(30)
+async def test_ema_smoothing_applied(virtual_clock: VirtualClock) -> None:
     """With alpha=0.5 two identical samples should converge to the value."""
     radio = make_radio(s_meter_main=100)
     states: list[RadioState] = []
@@ -3021,7 +3039,7 @@ async def test_ema_smoothing_applied() -> None:
         ema_alpha=0.5,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     # After several samples of 100, EMA should converge to 100.
@@ -3031,7 +3049,8 @@ async def test_ema_smoothing_applied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ema_zero_alpha_no_smoothing() -> None:
+@pytest.mark.timeout(30)
+async def test_ema_zero_alpha_no_smoothing(virtual_clock: VirtualClock) -> None:
     """alpha=0 means EMA always returns the first sample."""
     radio = make_radio(s_meter_main=77)
     states: list[RadioState] = []
@@ -3045,7 +3064,7 @@ async def test_ema_zero_alpha_no_smoothing() -> None:
         ema_alpha=0,
     )
     await poller.start()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
     await poller.stop()
 
     # alpha=0: formula returns float(raw) on first call, then 0*raw + 1*prev = prev
@@ -3059,7 +3078,8 @@ async def test_ema_zero_alpha_no_smoothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pause_stops_callbacks() -> None:
+@pytest.mark.timeout(30)
+async def test_pause_stops_callbacks(virtual_clock: VirtualClock) -> None:
     radio = make_radio()
     calls: list[RadioState] = []
 
@@ -3071,11 +3091,11 @@ async def test_pause_stops_callbacks() -> None:
         slow_interval=10.0,
     )
     await poller.start()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
 
     before = len(calls)
     await poller.pause()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     after = len(calls)
 
     # At most one in-flight request completes after pause().
@@ -3085,7 +3105,8 @@ async def test_pause_stops_callbacks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_restarts_callbacks() -> None:
+@pytest.mark.timeout(30)
+async def test_resume_restarts_callbacks(virtual_clock: VirtualClock) -> None:
     radio = make_radio()
     calls: list[RadioState] = []
 
@@ -3098,11 +3119,11 @@ async def test_resume_restarts_callbacks() -> None:
     )
     await poller.start()
     await poller.pause()
-    await asyncio.sleep(0.03)
+    await virtual_clock.elapse(0.03)
 
     before = len(calls)
     await poller.resume()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     after = len(calls)
 
     assert after > before
@@ -3116,7 +3137,8 @@ async def test_resume_restarts_callbacks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_continues_after_error() -> None:
+@pytest.mark.timeout(30)
+async def test_fast_poll_continues_after_error(virtual_clock: VirtualClock) -> None:
     """A transient get_s_meter error must not crash the poller."""
     call_count = 0
 
@@ -3140,7 +3162,7 @@ async def test_fast_poll_continues_after_error() -> None:
         ema_alpha=1.0,
     )
     await poller.start()
-    await asyncio.sleep(0.08)
+    await virtual_clock.elapse(0.08)
     await poller.stop()
 
     # Should have recovered and fired callbacks after early errors.
@@ -3148,7 +3170,10 @@ async def test_fast_poll_continues_after_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sub_receiver_unavailable_does_not_crash() -> None:
+@pytest.mark.timeout(30)
+async def test_sub_receiver_unavailable_does_not_crash(
+    virtual_clock: VirtualClock,
+) -> None:
     """If sub S-meter raises, main polling must still work."""
     radio = make_radio()
 
@@ -3169,7 +3194,7 @@ async def test_sub_receiver_unavailable_does_not_crash() -> None:
         ema_alpha=1.0,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     assert len(calls) >= 1
@@ -3177,7 +3202,10 @@ async def test_sub_receiver_unavailable_does_not_crash() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_continues_after_partial_error() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_continues_after_partial_error(
+    virtual_clock: VirtualClock,
+) -> None:
     """Even if get_agc raises, the remaining slow-poll commands run."""
     radio = make_radio(af_level=99)
     radio.get_agc = AsyncMock(side_effect=RuntimeError("agc error"))
@@ -3191,7 +3219,7 @@ async def test_slow_poll_continues_after_partial_error() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     # get_af_level should still have run.
@@ -3287,7 +3315,10 @@ async def test_fast_polls_more_than_slow(
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
+@pytest.mark.timeout(30)
+async def test_fast_poll_reads_tx_meters_when_ptt_active(
+    virtual_clock: VirtualClock,
+) -> None:
     """When PTT is on, fast poll should read ALC, Power, COMP, SWR meters."""
     radio = make_radio(ptt=True)
     radio.radio_state.ptt = True
@@ -3305,7 +3336,7 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
         ema_alpha=1.0,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_alc_meter.assert_called()
@@ -3804,7 +3835,10 @@ async def test_ftx1_vfo_primitive_reread_failure_does_not_fail_the_write() -> No
 
 
 @pytest.mark.asyncio
-async def test_fast_poll_skips_tx_meters_when_ptt_off() -> None:
+@pytest.mark.timeout(30)
+async def test_fast_poll_skips_tx_meters_when_ptt_off(
+    virtual_clock: VirtualClock,
+) -> None:
     """When PTT is off, fast poll should NOT read TX meters."""
     radio = make_radio(ptt=False)
     radio.radio_state.ptt = False
@@ -3818,7 +3852,7 @@ async def test_fast_poll_skips_tx_meters_when_ptt_off() -> None:
         ema_alpha=1.0,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_alc_meter.assert_not_called()
@@ -3826,7 +3860,10 @@ async def test_fast_poll_skips_tx_meters_when_ptt_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tx_meter_partial_failure_does_not_block_others() -> None:
+@pytest.mark.timeout(30)
+async def test_tx_meter_partial_failure_does_not_block_others(
+    virtual_clock: VirtualClock,
+) -> None:
     """If one TX meter fails, the rest must still be polled."""
     radio = make_radio(ptt=True)
     radio.radio_state.ptt = True
@@ -3844,7 +3881,7 @@ async def test_tx_meter_partial_failure_does_not_block_others() -> None:
         ema_alpha=1.0,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     # ALC failed, but power/comp/swr should still have been read
@@ -3862,7 +3899,8 @@ async def test_tx_meter_partial_failure_does_not_block_others() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_reads_cw_params() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_reads_cw_params(virtual_clock: VirtualClock) -> None:
     """Slow poll should read keyer speed, CW pitch (Hz), and break-in when CW capable."""
     radio = make_radio()
     radio.get_keyer_speed = AsyncMock(return_value=25)
@@ -3877,7 +3915,7 @@ async def test_slow_poll_reads_cw_params() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_keyer_speed.assert_called()
@@ -3889,7 +3927,10 @@ async def test_slow_poll_reads_cw_params() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_skips_cw_without_capability() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_skips_cw_without_capability(
+    virtual_clock: VirtualClock,
+) -> None:
     """Without 'cw' capability, CW params should not be polled."""
     radio = make_radio()
     radio.capabilities.discard("cw")
@@ -3902,7 +3943,7 @@ async def test_slow_poll_skips_cw_without_capability() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_keyer_speed.assert_not_called()
@@ -3911,7 +3952,10 @@ async def test_slow_poll_skips_cw_without_capability() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cw_partial_failure_does_not_block_others() -> None:
+@pytest.mark.timeout(30)
+async def test_cw_partial_failure_does_not_block_others(
+    virtual_clock: VirtualClock,
+) -> None:
     """If get_keyer_speed fails, pitch and break-in must still be polled."""
     radio = make_radio()
     radio.get_keyer_speed = AsyncMock(side_effect=RuntimeError("CAT timeout"))
@@ -3926,7 +3970,7 @@ async def test_cw_partial_failure_does_not_block_others() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_cw_pitch.assert_called()
@@ -3941,7 +3985,10 @@ async def test_cw_partial_failure_does_not_block_others() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_reads_sub_levels_when_dual_rx() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_reads_sub_levels_when_dual_rx(
+    virtual_clock: VirtualClock,
+) -> None:
     """Slow poll should read SUB AF/RF/squelch and assign to state."""
     radio = make_radio()
     radio.get_af_level = AsyncMock(side_effect=lambda r=0: 128 if r == 0 else 200)
@@ -3956,7 +4003,7 @@ async def test_slow_poll_reads_sub_levels_when_dual_rx() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     # SUB receiver levels should be polled
@@ -3973,7 +4020,10 @@ async def test_slow_poll_reads_sub_levels_when_dual_rx() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_skips_sub_levels_without_dual_rx() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_skips_sub_levels_without_dual_rx(
+    virtual_clock: VirtualClock,
+) -> None:
     """Without dual_rx, SUB levels should not be polled."""
     radio = make_radio()
     radio.capabilities.discard("dual_rx")
@@ -3986,7 +4036,7 @@ async def test_slow_poll_skips_sub_levels_without_dual_rx() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     # Only receiver=0 calls should exist for all three SUB level methods
@@ -4026,7 +4076,8 @@ def test_new_fields_in_to_dict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_reads_full_cw_block() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_reads_full_cw_block(virtual_clock: VirtualClock) -> None:
     """Slow poll populates key_speed, cw_pitch, break_in, break_in_delay, cw_spot."""
     radio = make_radio()
     radio.get_keyer_speed = AsyncMock(return_value=30)
@@ -4043,7 +4094,7 @@ async def test_slow_poll_reads_full_cw_block() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     assert radio.radio_state.key_speed == 30
@@ -4059,7 +4110,8 @@ async def test_slow_poll_reads_full_cw_block() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_reads_rx_tx_func_mode() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_reads_rx_tx_func_mode(virtual_clock: VirtualClock) -> None:
     """FR/FT polling populates rx_func_mode and tx_func_mode."""
     radio = make_radio()
     radio.get_rx_func = AsyncMock(return_value=1)
@@ -4073,7 +4125,7 @@ async def test_slow_poll_reads_rx_tx_func_mode() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_rx_func.assert_called()
@@ -4084,7 +4136,10 @@ async def test_slow_poll_reads_rx_tx_func_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slow_poll_skips_fr_ft_without_dual_rx() -> None:
+@pytest.mark.timeout(30)
+async def test_slow_poll_skips_fr_ft_without_dual_rx(
+    virtual_clock: VirtualClock,
+) -> None:
     """Without dual_rx capability, FR/FT should not be polled."""
     radio = make_radio()
     radio.capabilities.discard("dual_rx")
@@ -4099,7 +4154,7 @@ async def test_slow_poll_skips_fr_ft_without_dual_rx() -> None:
         slow_interval=0.01,
     )
     await poller.start()
-    await asyncio.sleep(0.05)
+    await virtual_clock.elapse(0.05)
     await poller.stop()
 
     radio.get_rx_func.assert_not_called()
