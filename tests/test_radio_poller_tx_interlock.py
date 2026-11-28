@@ -1,5 +1,4 @@
 import asyncio
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -52,6 +51,7 @@ from rigplane.runtime.tx_interlock import (
     get_tx_interlock_command_family_metadata,
     resolve_rf_state,
 )
+from rigplane.testing.timing import virtual_clock
 from rigplane.web.radio_poller import (
     _WEB_IMMEDIATE_BLOCK_FAMILIES,
     CommandQueue,
@@ -102,7 +102,12 @@ def _observe_ptt(
     observed_at: float | None = None,
     generation: int | None = None,
 ) -> None:
-    observed_at = time.monotonic() if observed_at is None else observed_at
+    # Stamp with the store's own freshness time (MOR-4825): the RF-state age is
+    # recomputed from the snapshot, so a wall-clock read here would put manual
+    # and store clocks on unrelated scales. On a real-clock store this is the
+    # same instant ``time.monotonic()`` would have given.
+    if observed_at is None:
+        observed_at = store.snapshot().generated_at_monotonic
     generation = store.provider_generation if generation is None else generation
     store.apply(
         Observation(
@@ -117,9 +122,15 @@ def _observe_ptt(
 
 
 def _poller() -> tuple[RadioPoller, SimpleNamespace, StateStore]:
-    radio, store = _radio(), StateStore()
+    # One frozen controlled clock (MOR-4075) shared by the store and the
+    # poller: every observation and every snapshot share one scale, so the
+    # RF-state age is exactly 0 and no wall-clock stall can turn fresh
+    # RX/TX into UNKNOWN. Nothing here advances it.
+    clock = FreshnessClock(start=10.0)
+    radio, store = _radio(), StateStore(freshness_clock=clock)
     store.begin_provider_generation()
-    return RadioPoller(radio, CommandQueue(), state_store=store), radio, store
+    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=clock.now)
+    return poller, radio, store
 
 
 def _service(clock: FreshnessClock, store: StateStore) -> CommandService:
@@ -840,21 +851,41 @@ class ConnectVfoRadio(CoreRadio):
         _observe_ptt(self.state_store, False)
 
 
+def _catch_up_to_routed_ptt(store: StateStore, freshness: FreshnessClock) -> None:
+    # Pull the controlled clock up to a CI-V-routed PTT stamp (MOR-4075).
+    # The CI-V ingress stamps wall-clock time inside _civ_rx (a file this
+    # lane cannot touch), so after routing the frozen snapshot would
+    # otherwise predate the observation and read UNKNOWN. Advancing to the
+    # exact routed stamp keeps the RF-state age exactly 0; the wall-clock
+    # read itself cannot change the verdict.
+    stamp = store.snapshot().field(_PTT).last_observed_monotonic
+    if stamp > freshness.now():
+        freshness.advance(stamp - freshness.now())
+
+
 def connect_vfo_poller(
     *, selected: str = "B"
-) -> tuple[RadioPoller, ConnectVfoRadio, StateStore]:
+) -> tuple[RadioPoller, ConnectVfoRadio, StateStore, FreshnessClock]:
+    # MOR-4075: the store and the poller share one frozen controlled clock
+    # starting at 10.0, so _observe_ptt and every snapshot share one scale
+    # and the RF-state age is exactly 0 unless a test moves it. Callers
+    # advance it past a reset or pull it up to a CI-V-routed stamp instead
+    # of letting wall time decide freshness (see _catch_up_to_routed_ptt
+    # and test_connection_reset_requires_new_rx_and_allows_one_new_select).
+    freshness = FreshnessClock(start=10.0)
     radio = ConnectVfoRadio(selected=selected)
+    radio._state_store = StateStore(freshness_clock=freshness)  # noqa: SLF001
     store = radio.state_store
     store.begin_provider_generation()
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    return poller, radio, store
+    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=freshness.now)
+    return poller, radio, store, freshness
 
 
 @pytest.mark.parametrize("selected", ("A", "B"))
 async def test_application_connect_selects_a_once_and_binds_real_wire(
     selected: str,
 ) -> None:
-    poller, radio, store = connect_vfo_poller(selected=selected)
+    poller, radio, store, _freshness = connect_vfo_poller(selected=selected)
     _observe_ptt(store, False)
     await poller.select_vfo_a_on_connect(read_only=False)
     await poller.select_vfo_a_on_connect(read_only=False)
@@ -886,12 +917,13 @@ async def test_application_connect_selects_a_once_and_binds_real_wire(
     "state", ("read_only", "tx", "unknown", "stale", "old_generation")
 )
 async def test_application_connect_refuses_without_fresh_rx(state: str) -> None:
-    poller, radio, store = connect_vfo_poller()
+    poller, radio, store, _freshness = connect_vfo_poller()
     if state != "unknown":
         _observe_ptt(
             store,
             state == "tx",
-            observed_at=time.monotonic() - (5 if state == "stale" else 0),
+            observed_at=store.snapshot().generated_at_monotonic
+            - (5 if state == "stale" else 0),
         )
     if state == "old_generation":
         store.begin_provider_generation()
@@ -915,7 +947,7 @@ async def test_application_connect_leaves_other_topologies_alone(
 ) -> None:
     from dataclasses import replace
 
-    poller, radio, store = connect_vfo_poller()
+    poller, radio, store, _freshness = connect_vfo_poller()
     poller._profile = replace(poller._profile, **overrides)
     radio.send_civ = AsyncMock()
     _observe_ptt(store, False)
@@ -928,7 +960,7 @@ async def test_application_connect_leaves_other_topologies_alone(
 async def test_application_connect_ack_is_honest_and_inflight_calls_do_not_resend(
     reject: bool,
 ) -> None:
-    poller, radio, store = connect_vfo_poller()
+    poller, radio, store, _freshness = connect_vfo_poller()
     _observe_ptt(store, False)
     radio.ack.clear()
     radio.reject = reject
@@ -945,10 +977,14 @@ async def test_application_connect_ack_is_honest_and_inflight_calls_do_not_resen
 
 
 async def test_connection_reset_requires_new_rx_and_allows_one_new_select() -> None:
-    poller, radio, store = connect_vfo_poller()
+    poller, radio, store, freshness = connect_vfo_poller()
     _observe_ptt(store, False)
     await poller.select_vfo_a_on_connect(read_only=False)
     radio._civ_epoch += 1
+    # The recovery lands after the last proof: move the controlled clock
+    # past it so the retry sees the proof predate the connection (as wall
+    # time did before) and rechecks instead of reselecting.
+    freshness.advance(0.1)
     poller.reset_vfo_session(connection_recovery=True)
     await poller.select_vfo_a_on_connect(read_only=False)
     assert len(radio.wire.sent_frames) == 5
@@ -985,13 +1021,16 @@ async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
     value: bool | None,
     stale_ptt: bool,
 ) -> None:
-    poller, radio, store = connect_vfo_poller()
-    _observe_ptt(store, stale_ptt, observed_at=time.monotonic() - 5.0)
+    poller, radio, store, freshness = connect_vfo_poller()
+    _observe_ptt(
+        store, stale_ptt, observed_at=store.snapshot().generated_at_monotonic - 5.0
+    )
 
     async def read(command: int, **kwargs: object) -> bool:
         assert command == 0x1C
         assert kwargs == {"sub": 0, "data": b"", "wait_response": True}
         await observe_connect_ptt_read(radio, value)
+        _catch_up_to_routed_ptt(store, freshness)
         return False
 
     radio.send_civ = AsyncMock(side_effect=read)
@@ -1006,8 +1045,11 @@ async def test_connect_rechecks_genuine_ptt_after_one_bounded_read(
 
 
 @pytest.mark.parametrize("outcome", ("timeout", "new_generation"))
-async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) -> None:
-    poller, radio, store = connect_vfo_poller()
+@virtual_clock
+async def test_connect_read_timeout_or_epoch_change_never_selects(
+    clock, outcome: str
+) -> None:
+    poller, radio, store, freshness = connect_vfo_poller()
     entered, release = asyncio.Event(), asyncio.Event()
     radio.send_civ = AsyncMock()
 
@@ -1019,6 +1061,7 @@ async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) 
         radio._civ_epoch += 1
         store.begin_provider_generation()
         await observe_connect_ptt_read(radio, False)
+        _catch_up_to_routed_ptt(store, freshness)
 
     radio.send_civ.side_effect = read
     poller._VFO_CONNECT_PTT_TIMEOUT = 0.01
@@ -1026,6 +1069,10 @@ async def test_connect_read_timeout_or_epoch_change_never_selects(outcome: str) 
     await asyncio.wait_for(entered.wait(), timeout=0.5)
     await poller.select_vfo_a_on_connect(read_only=False)
     release.set()
+    # The virtual loop fires no timer on its own: move past the 0.01 s
+    # connection-PTT bound so the parked "timeout" read settles the same way
+    # the wall clock did; the "new_generation" read already resumed above.
+    await clock.elapse(0.05)
     await task
     radio.send_civ.assert_awaited_once()
     assert all(frame[4] != 0x07 for frame in radio.wire.sent_frames)
