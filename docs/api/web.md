@@ -331,7 +331,8 @@ fields or infer a selected path from SDP or TURN configuration. The producer's
 
 The initiating reason survives later peer-close callbacks. These reason strings
 are stable public API; receivers retain unknown future `reason` and `path` values
-as strings and ignore unknown event fields:
+as strings. `WebRtcSessionEnded.from_json()` retains unknown event fields in
+`extra`, and `to_json()` re-emits them:
 
 | Reason | Meaning |
 |--------|---------|

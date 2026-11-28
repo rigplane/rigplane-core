@@ -236,12 +236,32 @@ def test_session_ended_contract_preserves_future_reason_and_path(
         "reason": "future_reason",
         "ever_connected": False,
         "path": path,
+        **extra,
     }
-    event = rigplane.WebRtcSessionEnded.from_json({**wire, **extra})
+    event = rigplane.WebRtcSessionEnded.from_json(wire)
     assert event.to_json() == wire
+    assert event.extra == extra
     assert event.reason == "future_reason"
     assert event.path == path
     assert type(event.ended_at) is int
+
+
+def test_session_ended_producer_emits_only_known_fields() -> None:
+    event = rigplane.WebRtcSessionEnded(
+        correlation_id="peer",
+        ended_at=1795737600,
+        reason="close_requested",
+        ever_connected=False,
+        path="unknown",
+    )
+    assert event.extra == {}
+    assert event.to_json() == {
+        "correlation_id": "peer",
+        "ended_at": 1795737600,
+        "reason": "close_requested",
+        "ever_connected": False,
+        "path": "unknown",
+    }
 
 
 @pytest.mark.parametrize(

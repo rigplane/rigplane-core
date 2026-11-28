@@ -165,9 +165,11 @@ class WebRtcSessionEnded:
     reason: str
     ever_connected: bool
     path: str
+    extra: Mapping[str, object] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
+            **self.extra,
             "correlation_id": self.correlation_id,
             "ended_at": self.ended_at,
             "reason": self.reason,
@@ -197,6 +199,18 @@ class WebRtcSessionEnded:
             reason=reason,
             ever_connected=ever_connected,
             path=path,
+            extra={
+                key: value
+                for key, value in payload.items()
+                if key
+                not in {
+                    "correlation_id",
+                    "ended_at",
+                    "reason",
+                    "ever_connected",
+                    "path",
+                }
+            },
         )
 
 
