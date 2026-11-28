@@ -22,11 +22,15 @@ timer — the watchdog checks, reconnect backoffs, simulator events,
 keepalives, the poller — follows the test's clock and ``clock.elapse`` moves
 it, while real socket I/O still drains in the settles between timers. Only
 the modules' own ``time`` reads are redirected at the clock (their
-``asyncio`` stays real so sleeps keep following the loop); recovery waits use
-the documented concurrent pattern of ``rigplane.testing.timing`` — a driver
-task advances the clock while ``await_until`` watches the usable-session
-condition on real poll timers. Budgets keep their real-time values as virtual
-seconds, and every assertion keeps its meaning.
+``asyncio`` stays real so sleeps keep following the loop). One task advances
+the clock: each step moves virtual time a little, then parks on a shared
+real-event ``await_until`` wait (virtual time frozen, loop turning, kernel
+bytes landing) before the next timers fire, and the predicate is sampled in
+that same task — never by a racing driver while a sampler polls on real
+time. The same discipline paces the observation soak (each step waits for a
+real poller round-trip) and every frequency read (the advancer stays active
+through the read). Budgets keep their real-time values as virtual seconds,
+and every assertion keeps its meaning.
 
 ``_Run.report`` prints the state sequence, reconnect-status callbacks,
 counters and the first log lines when an assert fails.
@@ -158,14 +162,50 @@ class _Run:
         )
 
 
-async def _ask_freq(radio: IcomRadio, timeout: float) -> int | str:
+async def _ask_freq(
+    radio: IcomRadio,
+    timeout: float,
+    clock: VirtualClock | None = None,
+    *,
+    description: str = "frequency read",
+    report: Callable[[], str] | None = None,
+) -> int | str:
     """The answer to ``get_freq()``, or text saying why there is none.
 
     The call runs in its own task, so a cancelled request is reported as an
-    answer here instead of cancelling the caller.
+    answer here instead of cancelling the caller. With ``clock`` given, this
+    test's single advancer stays active through the read: virtual time keeps
+    moving through the CI-V pacing gap and the product response timeout while
+    socket completion is synchronized with the shared helper, and on failure
+    the request is cancelled and awaited before answering. Without ``clock``
+    (the background poller, which must never advance the clock itself) the
+    read waits on the virtual timeout the advancer drives.
     """
     ask = asyncio.ensure_future(radio.get_freq())
     ask.add_done_callback(lambda t: t.cancelled() or t.exception())  # mark retrieved
+    if clock is not None:
+        detail = report if report is not None else (lambda: "no extra context")
+        try:
+            await _drive_clock_until(
+                clock,
+                ask.done,
+                budget_s=timeout,
+                step_s=_FREQ_READ_STEP_S,
+                description=description,
+                report=detail,
+            )
+        except asyncio.CancelledError:
+            ask.cancel()
+            raise
+        except AssertionError:
+            ask.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ask
+            return f"no answer in {timeout} s"
+        if ask.cancelled():
+            return "cancelled"
+        error = ask.exception()
+        return repr(error) if error is not None else ask.result()
     try:
         done, _ = await asyncio.wait({ask}, timeout=timeout)
         if not done:
@@ -180,11 +220,21 @@ async def _ask_freq(radio: IcomRadio, timeout: float) -> int | str:
     return repr(error) if error is not None else ask.result()
 
 
-async def _poll(radio: IcomRadio, interval: float = 0.5) -> None:
-    """Ask for the frequency in a loop, standing in for the web layer's poller."""
+async def _poll(
+    radio: IcomRadio,
+    rounds: list[int] | None = None,
+) -> None:
+    """Ask for the frequency in a loop, standing in for the web layer's poller.
+
+    Each finished round (answer or virtual timeout) is counted in ``rounds``
+    when given, giving the observation soak a real socket-completion signal
+    to pace its virtual steps on. The poller never advances the clock.
+    """
     while True:
         await _ask_freq(radio, 1.0)
-        await asyncio.sleep(interval)
+        if rounds is not None:
+            rounds.append(1)
+        await asyncio.sleep(0.5)
 
 
 def _is_rigplane(record: logging.LogRecord) -> bool:
@@ -223,15 +273,20 @@ def _scope_virtual_time(
         monkeypatch.setattr(module, "asyncio", asyncio)
 
 
-async def _elapse_loop(
-    clock: VirtualClock,
-    start: float,
-    budget_s: float,
-    step_s: float,
-) -> None:
-    """Advance ``clock`` toward ``start + budget_s`` in ``step_s`` increments."""
-    while clock.now - start < budget_s:
-        await clock.elapse(min(step_s, budget_s - (clock.now - start)))
+# Real-time budgets for the parks between virtual steps: each park lets
+# kernel bytes land and peer tasks answer (the loop keeps turning) while the
+# virtual clock is frozen, so virtual timers never run ahead of real delivery.
+# Parks return at once when their condition holds; the full budget is paid
+# only while genuinely waiting.
+_REAL_DELIVERY_S = 0.2
+_REAL_DELIVERY_POLL_S = 0.01
+# The observation soak pays its park on almost every 0.1 s virtual step (a
+# poll round takes longer than one step), so its breath stays short.
+_REAL_BREATH_S = 0.02
+_REAL_BREATH_POLL_S = 0.005
+# Virtual step for driven frequency reads: small, since nothing after a read
+# depends on how far the clock moved through it.
+_FREQ_READ_STEP_S = 0.1
 
 
 async def _drive_clock_until(
@@ -245,30 +300,34 @@ async def _drive_clock_until(
 ) -> None:
     """Advance virtual time until ``cond()`` holds; fail with ``report()`` past the budget.
 
-    A driver task moves ``clock`` forward in ``step_s`` increments while
-    ``await_until`` watches ``cond()`` on real poll timers (the concurrent
-    pattern documented in ``rigplane.testing.timing``): real socket I/O
-    drains in the settles between virtual timers. Only the virtual budget
-    bounds the wait; the failure carries the run report, not a bare timeout.
+    One task advances the clock: each ``step_s`` increment is followed by a
+    shared real-event ``await_until`` wait for ``cond()`` with the virtual
+    clock parked, so the predicate is sampled in the advancing task right
+    after the timers it depends on fired — recovery is observed on the first
+    step where it holds instead of being skipped past while a separate
+    sampler polls on real time. Only the virtual budget bounds the wait; the
+    failure carries the run report, not a bare timeout.
     """
     start = clock.now
-    driver = asyncio.create_task(_elapse_loop(clock, start, budget_s, step_s))
-    try:
-        await await_until(
-            cond,
-            timeout=budget_s,
-            interval=0.02,
-            description=description,
-            clock=clock,
-        )
-    except AssertionError:
-        raise AssertionError(
-            f"{description} within {budget_s} s of virtual time\n{report()}"
-        )
-    finally:
-        driver.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await driver
+    while True:
+        if cond():
+            return
+        if clock.now - start >= budget_s:
+            raise AssertionError(
+                f"{description} within {budget_s} s of virtual time\n{report()}"
+            )
+        await clock.elapse(min(step_s, budget_s - (clock.now - start)))
+        # The timers above may have sent datagrams; let the kernel deliver
+        # them and the peer tasks answer before the next timers fire.
+        try:
+            await await_until(
+                cond,
+                timeout=_REAL_DELIVERY_S,
+                interval=_REAL_DELIVERY_POLL_S,
+                description=description,
+            )
+        except AssertionError:
+            pass  # delivery still in flight; the next virtual step follows
 
 
 async def _observe_stable(
@@ -276,13 +335,31 @@ async def _observe_stable(
     radio: IcomRadio,
     states: list[RadioConnectionState],
     duration_s: float,
+    rounds: list[int],
     *,
     step_s: float = 0.1,
 ) -> None:
-    """Advance virtual time, sampling ``conn_state`` changes at each step."""
+    """Advance virtual time, sampling ``conn_state`` changes at each step.
+
+    The same delivery discipline as the recovery waits: after each virtual
+    step the clock is parked for one real poller round-trip (a finished
+    ``_poll`` round is a completed socket round-trip), so keepalives and poll
+    replies land before the watchdog's virtual timers advance. ``rounds`` is
+    the poller's counter.
+    """
     start = clock.now
     while clock.now - start < duration_s:
+        mark = len(rounds)
         await clock.elapse(min(step_s, duration_s - (clock.now - start)))
+        try:
+            await await_until(
+                lambda: len(rounds) > mark,
+                timeout=_REAL_BREATH_S,
+                interval=_REAL_BREATH_POLL_S,
+                description="poller round-trip during observation",
+            )
+        except AssertionError:
+            pass  # no round finished this step; the breath was still real
         state = radio.conn_state
         if states[-1] is not state:
             states.append(state)
@@ -304,6 +381,7 @@ async def _run_scenario(
     radio: IcomRadio,
     schedule: Callable[[MockIcomRadio], None],
     recovery_budget_s: float,
+    rounds: list[int],
 ) -> _Run:
     """Schedule the event, recover on the virtual clock, then observe.
 
@@ -350,14 +428,20 @@ async def _run_scenario(
     after = len(caplog.records)
     opens_at_recovery = sim.openclose_open_count
     run.states_after.append(radio.conn_state)
-    await _observe_stable(clock, radio, run.states_after, _OBSERVE_S)
+    await _observe_stable(clock, radio, run.states_after, _OBSERVE_S, rounds)
     run.opens_after = sim.openclose_open_count - opens_at_recovery
     run.storm_lines = [
         record.getMessage()
         for record in caplog.records[after:]
         if _is_rigplane(record) and _STORM_MARKER in record.getMessage()
     ]
-    run.freq = await _ask_freq(radio, 5.0)
+    run.freq = await _ask_freq(
+        radio,
+        5.0,
+        clock,
+        description="post-recovery frequency read",
+        report=run.report,
+    )
     run.sim_token = sim.token
     run.logins = sim.login_count - logins0
     run.opens = sim.openclose_open_count - opens0
@@ -384,7 +468,8 @@ async def test_session_drop_with_notice_recovers_with_one_login(
     with fast_connect():
         radio = _client(sim)
         await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
+        rounds: list[int] = []
+        poller = asyncio.create_task(_poll(radio, rounds=rounds))
         try:
             async with VirtualClock.on_running_loop() as clock:
                 run = await _run_scenario(
@@ -395,6 +480,7 @@ async def test_session_drop_with_notice_recovers_with_one_login(
                     radio,
                     lambda s: s.drop_session(at=_EVENT_AT_S, notice=True),
                     _RECOVERY_S,
+                    rounds,
                 )
         finally:
             await _stop_watching(poller, radio)
@@ -498,7 +584,13 @@ async def test_two_session_drops_with_notices_recover_with_two_logins(
                         report=report,
                     )
                     recovered_after = clock.now - (t0 + drop_offset)
-                    freq = await _ask_freq(radio, 5.0)
+                    freq = await _ask_freq(
+                        radio,
+                        5.0,
+                        clock,
+                        description=f"{what} post-recovery frequency read",
+                        report=report,
+                    )
                     assert freq == _FREQ_HZ, report()
                     assert recovered_after <= 1.5, report()
                     return sim.token
@@ -551,7 +643,8 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     with fast_connect():
         radio = _client(sim)
         await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
+        rounds: list[int] = []
+        poller = asyncio.create_task(_poll(radio, rounds=rounds))
         try:
             async with VirtualClock.on_running_loop() as clock:
                 run = await _run_scenario(
@@ -562,6 +655,7 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
                     radio,
                     lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
                     _SILENT_DROP_RECOVERY_S,
+                    rounds,
                 )
         finally:
             await _stop_watching(poller, radio)
@@ -601,7 +695,8 @@ async def test_silent_drop_with_default_patience_recovers_within_10s(
     with fast_connect():
         radio = _client(sim)
         await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
+        rounds: list[int] = []
+        poller = asyncio.create_task(_poll(radio, rounds=rounds))
         try:
             async with VirtualClock.on_running_loop() as clock:
                 run = await _run_scenario(
@@ -612,6 +707,7 @@ async def test_silent_drop_with_default_patience_recovers_within_10s(
                     radio,
                     lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
                     _FAST_SILENT_RECOVERY_S,
+                    rounds,
                 )
         finally:
             await _stop_watching(poller, radio)
@@ -652,7 +748,8 @@ async def test_long_civ_silence_with_live_control_never_reconnects(
     radio = _client(sim)
     with fast_connect():
         await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
+        rounds: list[int] = []
+        poller = asyncio.create_task(_poll(radio, rounds=rounds))
         try:
             logins0 = sim.login_count
             async with VirtualClock.on_running_loop() as clock:
@@ -661,7 +758,24 @@ async def test_long_civ_silence_with_live_control_never_reconnects(
                 sim.civ_standby(True)
 
                 states: list[RadioConnectionState] = [radio.conn_state]
-                await _observe_stable(clock, radio, states, _LONG_CIV_SILENCE_S + 3.0)
+
+                def report() -> str:
+                    head = [
+                        f"{record.levelname} {record.name}: {record.getMessage()}"
+                        for record in caplog.records[first_record:]
+                        if _is_rigplane(record)
+                    ][:30]
+                    return "\n".join(
+                        [
+                            f"states={[s.value for s in states]}",
+                            f"logins={sim.login_count - logins0}",
+                            *head,
+                        ]
+                    )
+
+                await _observe_stable(
+                    clock, radio, states, _LONG_CIV_SILENCE_S + 3.0, rounds
+                )
 
                 dead_lines = [
                     record.getMessage()
@@ -682,7 +796,16 @@ async def test_long_civ_silence_with_live_control_never_reconnects(
                 assert sim.login_count == logins0
 
                 sim.civ_standby(False)
-                assert await _ask_freq(radio, 5.0) == _FREQ_HZ
+                assert (
+                    await _ask_freq(
+                        radio,
+                        5.0,
+                        clock,
+                        description="post-standby frequency read",
+                        report=report,
+                    )
+                    == _FREQ_HZ
+                )
                 assert radio.conn_state is _CONNECTED
         finally:
             await _stop_watching(poller, radio)
@@ -712,7 +835,8 @@ async def test_power_off_with_notice_recovers_with_one_login(
     with fast_connect():
         radio = _client(sim)
         await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
+        rounds: list[int] = []
+        poller = asyncio.create_task(_poll(radio, rounds=rounds))
         try:
             async with VirtualClock.on_running_loop() as clock:
                 run = await _run_scenario(
@@ -728,6 +852,7 @@ async def test_power_off_with_notice_recovers_with_one_login(
                         notice=True,
                     ),
                     _EVENT_AT_S + _DOWN_FOR_S + _BUSY_FOR_S + _RECOVERY_S,
+                    rounds,
                 )
         finally:
             await _stop_watching(poller, radio)
