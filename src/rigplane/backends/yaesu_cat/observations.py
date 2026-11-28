@@ -23,7 +23,11 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     startup_critical_path,
 )
-from rigplane.core.startup_read_notes import StartupReadNote, record_direct_read_outcome
+from rigplane.core.startup_read_notes import (
+    StartupReadNote,
+    StartupReadOutcome,
+    record_direct_read_outcome,
+)
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -567,17 +571,21 @@ class YaesuObservationAdapter:
                     # only and records nothing).
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
+                    command = getattr(reading, "command", "") or ""
+                    outcome: StartupReadOutcome
+                    if reading.failure == "timeout":
+                        outcome = "timeout"
+                    elif command:
+                        outcome = "refused"
+                    else:
+                        outcome = "malformed"
                     record_direct_read_outcome(
                         self.radio,
                         StartupReadNote(
                             label="ptt",
                             path=_PTT,
-                            command=getattr(reading, "command", "") or "",
-                            outcome=(
-                                "timeout"
-                                if reading.failure == "timeout"
-                                else "refused"
-                            ),
+                            command=command,
+                            outcome=outcome,
                         ),
                         now=self.clock(),
                     )
@@ -2243,6 +2251,22 @@ class YaesuObservationAdapter:
         elif isinstance(exc, CatTimeoutError):
             command = exc.command
             reason = "timeout"
+        now = self.clock()
+        if reason in ("refused", "malformed"):
+            for path in paths:
+                record_direct_read_outcome(
+                    self.radio,
+                    StartupReadNote(
+                        label=label,
+                        path=path,
+                        command=command,
+                        outcome=reason,
+                        frame=frame,
+                        detail=str(exc),
+                    ),
+                    now=now,
+                )
+            return True
         defect = DeclaredCommandDefect(
             label=label,
             paths=paths,
@@ -2250,7 +2274,7 @@ class YaesuObservationAdapter:
             frame=frame,
             detail=str(exc),
         )
-        scheduler.record_declared_read_failure(defect, reason=reason, now=self.clock())
+        scheduler.record_declared_read_failure(defect, reason=reason, now=now)
         return True
 
     def _log_field_skip(

@@ -2795,6 +2795,98 @@ async def test_split_refusal_records_no_defect_and_stays_in_cycle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_split_malformed_records_no_defect_and_files_malformed_note() -> None:
+    """MOR-4481: a malformed split reply files a malformed note without a defect."""
+    from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(side_effect=CatParseError("ST{mode};", "ST", "invalid split")),
+    )
+    observations = await YaesuObservationAdapter(
+        radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_tx_controls()
+    assert radio.read_split.await_count == 1
+    paths = {item.path for item in observations}
+    assert _SPLIT not in paths
+    assert _RIT_ON in paths
+    assert radio._critical_read_timeouts == {}
+    assert scheduler.startup_defect is None
+    assert _SPLIT in scheduler.refused_paths()
+    note = radio._startup_read_notes[_SPLIT]
+    assert note.command == "ST{mode};"
+    assert note.outcome == "malformed"
+    refusal = scheduler.declared_read_refusals()[_SPLIT]
+    assert "invalid reply" in refusal["message"]
+
+
+@pytest.mark.asyncio
+async def test_ptt_malformed_and_refused_through_real_primitive_preserve_outcome() -> None:
+    """MOR-4481: real YaesuCatRadio + adapter keeps malformed distinct from refused."""
+    from rigplane.backends.yaesu_cat.observations import _PTT
+    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+    profile = _profile_state_acquisition()
+
+    malformed_scheduler = AcquisitionScheduler(profile=profile)
+    malformed_radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    malformed_radio._transport._connected = True
+    malformed_radio._acquisition_scheduler = malformed_scheduler  # type: ignore[attr-defined]
+
+    async def _malformed_query(cmd: str, *args: object, **kwargs: object) -> str:
+        if cmd == "TX;":
+            return "TX"
+        if cmd == "FA;":
+            return "FA014074000"
+        if cmd == "MD0;":
+            return "MD02"
+        if cmd == "SH0;":
+            return "SH0015"
+        raise AssertionError(f"unexpected command {cmd!r}")
+
+    malformed_radio._transport.query = _malformed_query  # type: ignore[method-assign]
+    await YaesuObservationAdapter(
+        malformed_radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_medium()
+    malformed_note = malformed_radio._startup_read_notes[_PTT]  # type: ignore[attr-defined]
+    assert malformed_note.outcome == "malformed"
+    assert "invalid reply" in malformed_scheduler.declared_read_refusals()[_PTT]["message"]
+
+    refused_scheduler = AcquisitionScheduler(profile=profile)
+    refused_radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    refused_radio._transport._connected = True
+    refused_radio._acquisition_scheduler = refused_scheduler  # type: ignore[attr-defined]
+
+    async def _refused_query(cmd: str, *args: object, **kwargs: object) -> str:
+        if cmd == "TX;":
+            raise CatCommandRejected("?;", command="TX;")
+        if cmd == "FA;":
+            return "FA014074000"
+        if cmd == "MD0;":
+            return "MD02"
+        if cmd == "SH0;":
+            return "SH0015"
+        raise AssertionError(f"unexpected command {cmd!r}")
+
+    refused_radio._transport.query = _refused_query  # type: ignore[method-assign]
+    await YaesuObservationAdapter(
+        refused_radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_medium()
+    refused_note = refused_radio._startup_read_notes[_PTT]  # type: ignore[attr-defined]
+    assert refused_note.outcome == "refused"
+    assert refused_note.command == "TX;"
+    assert "refused" in refused_scheduler.declared_read_refusals()[_PTT]["message"]
+
+
+@pytest.mark.asyncio
 async def test_split_transport_failure_still_raises() -> None:
     """MOR-4456: only timeouts are contained — a split transport failure raises."""
     profile = _profile_state_acquisition()

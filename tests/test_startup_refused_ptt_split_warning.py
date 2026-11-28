@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +38,7 @@ from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import TxStateReading
 from rigplane.profiles import RadioProfile
 from rigplane.radio_state import RadioState
+from rigplane.testing.timing import Clock, ManualClock, VirtualClock, virtual_clock
 from rigplane.web import web_startup
 from rigplane.web.server import WebConfig, WebServer
 
@@ -70,11 +70,14 @@ class _RefusedTxPoller:
         callback: Callable[[Sequence[Observation]], None],
         radio: object,
         profile: RadioAcquisitionProfile,
+        *,
+        clock: Clock,
         extra: Callable[[], Sequence[Observation]] | None = None,
     ) -> None:
         self._callback = callback
         self._radio = radio
         self._profile = profile
+        self._clock = clock
         self._extra = extra or (lambda: ())
 
     async def start(self) -> None:
@@ -82,6 +85,7 @@ class _RefusedTxPoller:
             adapter = YaesuObservationAdapter(
                 self._radio,  # type: ignore[arg-type]
                 profile=self._profile,
+                clock=self._clock,
             )
             batch = [
                 *await adapter.poll_medium(),
@@ -106,7 +110,8 @@ class _RefusedTransmitRadio:
     capabilities = {"split"}
     connected = control_connected = radio_ready = True
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Clock | None = None) -> None:
+        self._clock = clock if clock is not None else ManualClock(start=100.0)
         self.radio_state = RadioState()
         self._state_store = StateStore()
         self._acquisition_scheduler = AcquisitionScheduler(profile=_tx_profile())
@@ -139,7 +144,12 @@ class _RefusedTransmitRadio:
     def create_observation_poller(
         self, *, callback: Callable[[Sequence[Observation]], None], **_kwargs: object
     ) -> object:
-        return _RefusedTxPoller(callback, self, self._acquisition_scheduler._profile)
+        return _RefusedTxPoller(
+            callback,
+            self,
+            self._acquisition_scheduler._profile,
+            clock=self._clock,
+        )
 
     async def __aenter__(self) -> "_RefusedTransmitRadio":
         return self
@@ -165,9 +175,11 @@ def _gated_config() -> WebConfig:
     )
 
 
-@pytest.mark.asyncio
+@virtual_clock
 @pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_yaesu_refused_ptt_and_split_bind_with_named_warning(
+    clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Refused ``TX;``/``ST;`` bind the server with a naming WARNING.
@@ -177,7 +189,8 @@ async def test_yaesu_refused_ptt_and_split_bind_with_named_warning(
     and the release WARNING names each path with its real wire command
     and its ``refused Nx`` cause. No startup defect is recorded.
     """
-    radio = _RefusedTransmitRadio()
+    clock.scope_to(monkeypatch, web_startup)
+    radio = _RefusedTransmitRadio(clock=clock)
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     binds: list[str] = []
@@ -191,7 +204,7 @@ async def test_yaesu_refused_ptt_and_split_bind_with_named_warning(
         caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
     ):
         try:
-            await asyncio.wait_for(server.start(), timeout=30.0)
+            await server.start()
             assert binds == ["bind"]
             assert scheduler.startup_defect is None
             assert scheduler.consecutive_refusals(PTT) >= 1
@@ -308,13 +321,13 @@ def test_direct_outcome_without_scheduler_stashes_only() -> None:
     assert radio._startup_read_notes[PTT].command == "TX;"
 
 
-def _scope_edge_observation() -> Observation:
+def _scope_edge_observation(clock: Clock) -> Observation:
     """A valid observed scope edge (slot 2, fresh) for the P1 regression."""
 
     return Observation(
         path=FieldPath.scope_control("display", "edge"),
         value=2,
-        timestamp_monotonic=time.monotonic(),
+        timestamp_monotonic=clock(),
         source=SourceMetadata(source="poll_response", provider="yaesu_cat"),
     )
 
@@ -328,8 +341,8 @@ class _ScopedRefusedTransmitRadio(_RefusedTransmitRadio):
     profile.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, clock: Clock | None = None) -> None:
+        super().__init__(clock=clock)
         self._profile = RadioProfile(
             id="test-scoped-rig",
             model="FAKE-SCOPED-TX",
@@ -346,13 +359,16 @@ class _ScopedRefusedTransmitRadio(_RefusedTransmitRadio):
             callback,
             self,
             self._acquisition_scheduler._profile,
-            extra=lambda: (_scope_edge_observation(),),
+            clock=self._clock,
+            extra=lambda: (_scope_edge_observation(self._clock),),
         )
 
 
-@pytest.mark.asyncio
+@virtual_clock
 @pytest.mark.usefixtures("isolated_eibi_cache")
 async def test_refused_tx_with_scope_edge_binds_with_named_warning(
+    clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A valid scope edge plus refused TX reads still binds with a warning.
@@ -364,7 +380,8 @@ async def test_refused_tx_with_scope_edge_binds_with_named_warning(
     the release WARNING must still name the refused paths with their real
     commands and causes.
     """
-    radio = _ScopedRefusedTransmitRadio()
+    clock.scope_to(monkeypatch, web_startup)
+    radio = _ScopedRefusedTransmitRadio(clock=clock)
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     binds: list[str] = []
@@ -378,7 +395,7 @@ async def test_refused_tx_with_scope_edge_binds_with_named_warning(
         caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
     ):
         try:
-            await asyncio.wait_for(server.start(), timeout=30.0)
+            await server.start()
             assert binds == ["bind"]
             assert scheduler.startup_defect is None
             assert scheduler.consecutive_refusals(PTT) >= 1
@@ -483,7 +500,7 @@ async def test_gate_empty_outstanding_with_refused_record_still_warns(
         Observation(
             path=FREQ,
             value=14_074_000,
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=10.0,
             source=SourceMetadata(source="poll_response", provider="test_provider"),
         )
     )
@@ -496,6 +513,8 @@ async def test_gate_empty_outstanding_with_refused_record_still_warns(
     server = SimpleNamespace(
         _radio=radio,
         command_state_store=store,
+        _config=_gated_config(),
+        _served_without_port=False,
     )
 
     with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):

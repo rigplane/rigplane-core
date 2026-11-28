@@ -80,7 +80,7 @@ def test_retired_tx_authority_module_does_not_resolve() -> None:
 
 def test_tx_observation_contract_is_pinned() -> None:
     reading_fields = fields(TxStateReading)
-    expected_fields = "value attributed source verified_readback failure".split()
+    expected_fields = "value attributed source verified_readback failure command".split()
     assert [field.name for field in reading_fields] == expected_fields
     assert get_type_hints(TxStateReading) == {
         "value": bool | None,
@@ -88,6 +88,7 @@ def test_tx_observation_contract_is_pinned() -> None:
         "source": str | None,
         "verified_readback": bool,
         "failure": str | None,
+        "command": str,
     }
     assert [field.default for field in reading_fields] == [
         MISSING,
@@ -95,6 +96,7 @@ def test_tx_observation_contract_is_pinned() -> None:
         None,
         False,
         None,
+        "",
     ]
 
     reading = TxStateReading(value=False)
