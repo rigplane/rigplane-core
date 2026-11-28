@@ -24,8 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Coroutine
 from pathlib import Path
+from typing import Any, TypeVar
 
 import pytest
 
@@ -37,6 +38,7 @@ pytestmark = pytest.mark.mock_integration
 
 from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import VirtualClock, await_until  # noqa: E402
 from rigplane.types import AgcMode, AudioPeakFilter, BreakInMode  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
@@ -386,10 +388,54 @@ async def toggle_radio(toggle_mock: ToggleMockRadio) -> AsyncGenerator[IcomRadio
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Virtual-clock step driver
 # ---------------------------------------------------------------------------
 
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
+T = TypeVar("T")
+
+
+async def _bounded(
+    clock: VirtualClock,
+    step: str,
+    coro: Coroutine[Any, Any, T],
+    budget_s: float,
+    granule_s: float = 0.1,
+) -> T:
+    """Drive ``clock`` until ``coro`` finishes or ``budget_s`` virtual seconds pass.
+
+    Same contract as the MOR-4436 LAN journey driver: the coroutine runs as
+    a task while the clock advances in ``granule_s`` steps (each
+    :meth:`VirtualClock.elapse` fires every timer on the way and settles
+    loop callbacks, so real localhost I/O interleaves with timer progress).
+    Awaiting the task directly would freeze on a missing reply: the radio's
+    internal timeouts run on this clock and nothing else moves it. Only an
+    exhausted budget raises ``AssertionError``; the step task is cancelled
+    first so nothing keeps running into teardown.
+    """
+    task = asyncio.create_task(coro)
+    spent = 0.0
+    try:
+        while not task.done():
+            if spent >= budget_s:
+                break
+            await clock.elapse(min(granule_s, budget_s - spent))
+            spent += granule_s
+        if task.done():
+            return task.result()
+    except BaseException:  # noqa: BLE001 — must free the orphaned step task
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        raise
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    raise AssertionError(f"{step} did not finish within {budget_s:g} virtual s")
 
 
 # ---------------------------------------------------------------------------
@@ -404,19 +450,31 @@ class TestAgcToggle:
         mode = await toggle_radio.get_agc()
         assert mode == AgcMode.FAST
 
+    @pytest.mark.timeout(60)
     async def test_agc_cycle_fast_mid_slow(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """AGC: FAST → MID → SLOW → FAST full cycle."""
         for target in (AgcMode.MID, AgcMode.SLOW, AgcMode.FAST):
-            await toggle_radio.set_agc(target)
-            await asyncio.sleep(_SETTLE)
-            got = await toggle_radio.get_agc()
+            await _bounded(virtual_clock, "set_agc", toggle_radio.set_agc(target), 30.0)
+            await await_until(
+                lambda: toggle_mock._agc == int(target),
+                timeout=5.0,
+                description=f"mock applies AGC SET {target}",
+            )
+            got = await _bounded(virtual_clock, "get_agc", toggle_radio.get_agc(), 30.0)
             assert got == target, f"AGC: expected {target}, got {got}"
             assert toggle_mock._agc == int(target)
 
+    @pytest.mark.timeout(60)
     async def test_agc_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Radio sends unsolicited AGC change; _notify_change fires."""
         events: list[tuple[str, dict]] = []
@@ -431,7 +489,11 @@ class TestAgcToggle:
             data=bytes([_bcd(int(AgcMode.SLOW))]),
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "agc_changed" for name, _ in events),
+            timeout=5.0,
+            description="agc_changed event after unsolicited AGC frame",
+        )
 
         assert any(name == "agc_changed" for name, _ in events), (
             f"agc_changed not fired; got {[n for n, _ in events]}"
@@ -482,36 +544,89 @@ class TestAudioPeakFilterToggle:
         mode = await toggle_radio.get_audio_peak_filter(receiver=RECEIVER_MAIN)
         assert mode == AudioPeakFilter.OFF
 
+    @pytest.mark.timeout(60)
     async def test_apf_cycle_off_wide_nar(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """APF: OFF → WIDE → NAR → OFF on MAIN."""
         for target in (AudioPeakFilter.WIDE, AudioPeakFilter.NAR, AudioPeakFilter.OFF):
-            await toggle_radio.set_audio_peak_filter(target, receiver=RECEIVER_MAIN)
-            await asyncio.sleep(_SETTLE)
-            got = await toggle_radio.get_audio_peak_filter(receiver=RECEIVER_MAIN)
+            await _bounded(
+                virtual_clock,
+                "set_audio_peak_filter",
+                toggle_radio.set_audio_peak_filter(target, receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            await await_until(
+                lambda: toggle_mock._apf[RECEIVER_MAIN] == int(target),
+                timeout=5.0,
+                description=f"mock applies APF SET {target}",
+            )
+            got = await _bounded(
+                virtual_clock,
+                "get_audio_peak_filter",
+                toggle_radio.get_audio_peak_filter(receiver=RECEIVER_MAIN),
+                30.0,
+            )
             assert got == target, f"APF MAIN: expected {target}, got {got}"
             assert toggle_mock._apf[RECEIVER_MAIN] == int(target)
 
+    @pytest.mark.timeout(60)
     async def test_apf_main_sub_independent(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """APF MAIN and SUB states are independent."""
-        await toggle_radio.set_audio_peak_filter(
-            AudioPeakFilter.WIDE, receiver=RECEIVER_MAIN
+        await _bounded(
+            virtual_clock,
+            "set_apf_main",
+            toggle_radio.set_audio_peak_filter(
+                AudioPeakFilter.WIDE, receiver=RECEIVER_MAIN
+            ),
+            30.0,
         )
-        await toggle_radio.set_audio_peak_filter(
-            AudioPeakFilter.NAR, receiver=RECEIVER_SUB
+        await _bounded(
+            virtual_clock,
+            "set_apf_sub",
+            toggle_radio.set_audio_peak_filter(
+                AudioPeakFilter.NAR, receiver=RECEIVER_SUB
+            ),
+            30.0,
         )
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                toggle_mock._apf[RECEIVER_MAIN] == int(AudioPeakFilter.WIDE)
+                and toggle_mock._apf[RECEIVER_SUB] == int(AudioPeakFilter.NAR)
+            ),
+            timeout=5.0,
+            description="mock applies APF MAIN/SUB SETs",
+        )
 
-        main = await toggle_radio.get_audio_peak_filter(receiver=RECEIVER_MAIN)
-        sub = await toggle_radio.get_audio_peak_filter(receiver=RECEIVER_SUB)
+        main = await _bounded(
+            virtual_clock,
+            "get_apf_main",
+            toggle_radio.get_audio_peak_filter(receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        sub = await _bounded(
+            virtual_clock,
+            "get_apf_sub",
+            toggle_radio.get_audio_peak_filter(receiver=RECEIVER_SUB),
+            30.0,
+        )
         assert main == AudioPeakFilter.WIDE
         assert sub == AudioPeakFilter.NAR
 
+    @pytest.mark.timeout(60)
     async def test_apf_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited APF change is dispatched as audio_peak_filter_changed."""
         events: list[tuple[str, dict]] = []
@@ -526,7 +641,11 @@ class TestAudioPeakFilterToggle:
             data=bytes([int(AudioPeakFilter.MID)]),
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "audio_peak_filter_changed" for name, _ in events),
+            timeout=5.0,
+            description="audio_peak_filter_changed event after unsolicited APF frame",
+        )
 
         assert any(name == "audio_peak_filter_changed" for name, _ in events), (
             f"audio_peak_filter_changed not fired; got {[n for n, _ in events]}"
@@ -545,33 +664,112 @@ class TestAutoNotchToggle:
         state = await toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN)
         assert state is False
 
+    @pytest.mark.timeout(60)
     async def test_auto_notch_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Auto notch: off → on → off on MAIN."""
-        await toggle_radio.set_auto_notch(True, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN) is True
+        await _bounded(
+            virtual_clock,
+            "set_auto_notch_on",
+            toggle_radio.set_auto_notch(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._auto_notch[RECEIVER_MAIN] == 1,
+            timeout=5.0,
+            description="mock applies auto-notch SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_auto_notch_on",
+                toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
         assert toggle_mock._auto_notch[RECEIVER_MAIN] == 1
 
-        await toggle_radio.set_auto_notch(False, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN) is False
+        await _bounded(
+            virtual_clock,
+            "set_auto_notch_off",
+            toggle_radio.set_auto_notch(False, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._auto_notch[RECEIVER_MAIN] == 0,
+            timeout=5.0,
+            description="mock applies auto-notch SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_auto_notch_off",
+                toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is False
+        )
         assert toggle_mock._auto_notch[RECEIVER_MAIN] == 0
 
+    @pytest.mark.timeout(60)
     async def test_auto_notch_main_sub_independent(
-        self, toggle_radio: IcomRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Auto notch MAIN and SUB are toggled independently."""
-        await toggle_radio.set_auto_notch(True, receiver=RECEIVER_MAIN)
-        await toggle_radio.set_auto_notch(False, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await _bounded(
+            virtual_clock,
+            "set_auto_notch_main",
+            toggle_radio.set_auto_notch(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await _bounded(
+            virtual_clock,
+            "set_auto_notch_sub",
+            toggle_radio.set_auto_notch(False, receiver=RECEIVER_SUB),
+            30.0,
+        )
+        await await_until(
+            lambda: (
+                toggle_mock._auto_notch[RECEIVER_MAIN] == 1
+                and toggle_mock._auto_notch[RECEIVER_SUB] == 0
+            ),
+            timeout=5.0,
+            description="mock applies auto-notch MAIN/SUB SETs",
+        )
 
-        assert await toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN) is True
-        assert await toggle_radio.get_auto_notch(receiver=RECEIVER_SUB) is False
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_auto_notch_main",
+                toggle_radio.get_auto_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_auto_notch_sub",
+                toggle_radio.get_auto_notch(receiver=RECEIVER_SUB),
+                30.0,
+            )
+            is False
+        )
 
+    @pytest.mark.timeout(60)
     async def test_auto_notch_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited auto-notch frame fires auto_notch_changed."""
         events: list[tuple[str, dict]] = []
@@ -586,7 +784,11 @@ class TestAutoNotchToggle:
             data=b"\x01",
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "auto_notch_changed" for name, _ in events),
+            timeout=5.0,
+            description="auto_notch_changed event after unsolicited auto-notch frame",
+        )
 
         assert any(name == "auto_notch_changed" for name, _ in events), (
             f"auto_notch_changed not fired; got {[n for n, _ in events]}"
@@ -606,21 +808,54 @@ class TestCompressorToggle:
     async def test_compressor_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_compressor() is False
 
+    @pytest.mark.timeout(60)
     async def test_compressor_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
-        await toggle_radio.set_compressor(True)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_compressor() is True
+        await _bounded(
+            virtual_clock, "set_compressor_on", toggle_radio.set_compressor(True), 30.0
+        )
+        await await_until(
+            lambda: toggle_mock._compressor == 1,
+            timeout=5.0,
+            description="mock applies compressor SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_compressor_on", toggle_radio.get_compressor(), 30.0
+            )
+            is True
+        )
         assert toggle_mock._compressor == 1
 
-        await toggle_radio.set_compressor(False)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_compressor() is False
+        await _bounded(
+            virtual_clock,
+            "set_compressor_off",
+            toggle_radio.set_compressor(False),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._compressor == 0,
+            timeout=5.0,
+            description="mock applies compressor SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_compressor_off", toggle_radio.get_compressor(), 30.0
+            )
+            is False
+        )
         assert toggle_mock._compressor == 0
 
+    @pytest.mark.timeout(60)
     async def test_compressor_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited compressor frame fires compressor_changed."""
         events: list[tuple[str, dict]] = []
@@ -634,7 +869,11 @@ class TestCompressorToggle:
             data=b"\x01",
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "compressor_changed" for name, _ in events),
+            timeout=5.0,
+            description="compressor_changed event after unsolicited compressor frame",
+        )
 
         assert any(name == "compressor_changed" for name, _ in events), (
             f"compressor_changed not fired; got {[n for n, _ in events]}"
@@ -654,21 +893,51 @@ class TestMonitorToggle:
     async def test_monitor_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_monitor() is False
 
+    @pytest.mark.timeout(60)
     async def test_monitor_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
-        await toggle_radio.set_monitor(True)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_monitor() is True
+        await _bounded(
+            virtual_clock, "set_monitor_on", toggle_radio.set_monitor(True), 30.0
+        )
+        await await_until(
+            lambda: toggle_mock._monitor == 1,
+            timeout=5.0,
+            description="mock applies monitor SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_monitor_on", toggle_radio.get_monitor(), 30.0
+            )
+            is True
+        )
         assert toggle_mock._monitor == 1
 
-        await toggle_radio.set_monitor(False)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_monitor() is False
+        await _bounded(
+            virtual_clock, "set_monitor_off", toggle_radio.set_monitor(False), 30.0
+        )
+        await await_until(
+            lambda: toggle_mock._monitor == 0,
+            timeout=5.0,
+            description="mock applies monitor SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_monitor_off", toggle_radio.get_monitor(), 30.0
+            )
+            is False
+        )
         assert toggle_mock._monitor == 0
 
+    @pytest.mark.timeout(60)
     async def test_monitor_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited monitor frame fires monitor_changed."""
         events: list[tuple[str, dict]] = []
@@ -678,7 +947,11 @@ class TestMonitorToggle:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_PREAMP, sub=_SUB_MONITOR, data=b"\x01"
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "monitor_changed" for name, _ in events),
+            timeout=5.0,
+            description="monitor_changed event after unsolicited monitor frame",
+        )
 
         assert any(name == "monitor_changed" for name, _ in events), (
             f"monitor_changed not fired; got {[n for n, _ in events]}"
@@ -696,21 +969,43 @@ class TestVoxToggle:
     async def test_vox_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_vox() is False
 
+    @pytest.mark.timeout(60)
     async def test_vox_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
-        await toggle_radio.set_vox(True)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_vox() is True
+        await _bounded(virtual_clock, "set_vox_on", toggle_radio.set_vox(True), 30.0)
+        await await_until(
+            lambda: toggle_mock._vox == 1,
+            timeout=5.0,
+            description="mock applies VOX SET on",
+        )
+        assert (
+            await _bounded(virtual_clock, "get_vox_on", toggle_radio.get_vox(), 30.0)
+            is True
+        )
         assert toggle_mock._vox == 1
 
-        await toggle_radio.set_vox(False)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_vox() is False
+        await _bounded(virtual_clock, "set_vox_off", toggle_radio.set_vox(False), 30.0)
+        await await_until(
+            lambda: toggle_mock._vox == 0,
+            timeout=5.0,
+            description="mock applies VOX SET off",
+        )
+        assert (
+            await _bounded(virtual_clock, "get_vox_off", toggle_radio.get_vox(), 30.0)
+            is False
+        )
         assert toggle_mock._vox == 0
 
+    @pytest.mark.timeout(60)
     async def test_vox_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited VOX frame fires vox_changed."""
         events: list[tuple[str, dict]] = []
@@ -720,7 +1015,11 @@ class TestVoxToggle:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_PREAMP, sub=_SUB_VOX, data=b"\x01"
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "vox_changed" for name, _ in events),
+            timeout=5.0,
+            description="vox_changed event after unsolicited VOX frame",
+        )
 
         assert any(name == "vox_changed" for name, _ in events), (
             f"vox_changed not fired; got {[n for n, _ in events]}"
@@ -739,19 +1038,35 @@ class TestBreakInToggle:
         mode = await toggle_radio.get_break_in()
         assert mode == BreakInMode.OFF
 
+    @pytest.mark.timeout(60)
     async def test_break_in_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Break-in: OFF → SEMI → FULL → OFF."""
         for target in (BreakInMode.SEMI, BreakInMode.FULL, BreakInMode.OFF):
-            await toggle_radio.set_break_in(target)
-            await asyncio.sleep(_SETTLE)
-            got = await toggle_radio.get_break_in()
+            await _bounded(
+                virtual_clock, "set_break_in", toggle_radio.set_break_in(target), 30.0
+            )
+            await await_until(
+                lambda: toggle_mock._break_in == int(target),
+                timeout=5.0,
+                description=f"mock applies break-in SET {target}",
+            )
+            got = await _bounded(
+                virtual_clock, "get_break_in", toggle_radio.get_break_in(), 30.0
+            )
             assert got == target, f"Break-in: expected {target}, got {got}"
             assert toggle_mock._break_in == int(target)
 
+    @pytest.mark.timeout(60)
     async def test_break_in_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited break-in frame fires break_in_changed."""
         events: list[tuple[str, dict]] = []
@@ -765,7 +1080,11 @@ class TestBreakInToggle:
             data=bytes([_bcd(int(BreakInMode.SEMI))]),
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "break_in_changed" for name, _ in events),
+            timeout=5.0,
+            description="break_in_changed event after unsolicited break-in frame",
+        )
 
         assert any(name == "break_in_changed" for name, _ in events), (
             f"break_in_changed not fired; got {[n for n, _ in events]}"
@@ -783,33 +1102,112 @@ class TestManualNotchToggle:
     async def test_manual_notch_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN) is False
 
+    @pytest.mark.timeout(60)
     async def test_manual_notch_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Manual notch: off → on → off on MAIN."""
-        await toggle_radio.set_manual_notch(True, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN) is True
+        await _bounded(
+            virtual_clock,
+            "set_manual_notch_on",
+            toggle_radio.set_manual_notch(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._manual_notch[RECEIVER_MAIN] == 1,
+            timeout=5.0,
+            description="mock applies manual-notch SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_manual_notch_on",
+                toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
         assert toggle_mock._manual_notch[RECEIVER_MAIN] == 1
 
-        await toggle_radio.set_manual_notch(False, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN) is False
+        await _bounded(
+            virtual_clock,
+            "set_manual_notch_off",
+            toggle_radio.set_manual_notch(False, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._manual_notch[RECEIVER_MAIN] == 0,
+            timeout=5.0,
+            description="mock applies manual-notch SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_manual_notch_off",
+                toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is False
+        )
         assert toggle_mock._manual_notch[RECEIVER_MAIN] == 0
 
+    @pytest.mark.timeout(60)
     async def test_manual_notch_main_sub_independent(
-        self, toggle_radio: IcomRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Manual notch MAIN and SUB states are independent."""
-        await toggle_radio.set_manual_notch(True, receiver=RECEIVER_MAIN)
-        await toggle_radio.set_manual_notch(False, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await _bounded(
+            virtual_clock,
+            "set_manual_notch_main",
+            toggle_radio.set_manual_notch(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await _bounded(
+            virtual_clock,
+            "set_manual_notch_sub",
+            toggle_radio.set_manual_notch(False, receiver=RECEIVER_SUB),
+            30.0,
+        )
+        await await_until(
+            lambda: (
+                toggle_mock._manual_notch[RECEIVER_MAIN] == 1
+                and toggle_mock._manual_notch[RECEIVER_SUB] == 0
+            ),
+            timeout=5.0,
+            description="mock applies manual-notch MAIN/SUB SETs",
+        )
 
-        assert await toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN) is True
-        assert await toggle_radio.get_manual_notch(receiver=RECEIVER_SUB) is False
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_manual_notch_main",
+                toggle_radio.get_manual_notch(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_manual_notch_sub",
+                toggle_radio.get_manual_notch(receiver=RECEIVER_SUB),
+                30.0,
+            )
+            is False
+        )
 
+    @pytest.mark.timeout(60)
     async def test_manual_notch_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited manual-notch frame fires manual_notch_changed."""
         events: list[tuple[str, dict]] = []
@@ -824,7 +1222,11 @@ class TestManualNotchToggle:
             data=b"\x01",
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "manual_notch_changed" for name, _ in events),
+            timeout=5.0,
+            description="manual_notch_changed event after unsolicited manual-notch frame",
+        )
 
         assert any(name == "manual_notch_changed" for name, _ in events), (
             f"manual_notch_changed not fired; got {[n for n, _ in events]}"
@@ -842,33 +1244,112 @@ class TestTwinPeakFilterToggle:
     async def test_twin_peak_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN) is False
 
+    @pytest.mark.timeout(60)
     async def test_twin_peak_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Twin peak: off → on → off on MAIN."""
-        await toggle_radio.set_twin_peak_filter(True, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN) is True
+        await _bounded(
+            virtual_clock,
+            "set_twin_peak_on",
+            toggle_radio.set_twin_peak_filter(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._twin_peak[RECEIVER_MAIN] == 1,
+            timeout=5.0,
+            description="mock applies twin-peak SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_twin_peak_on",
+                toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
         assert toggle_mock._twin_peak[RECEIVER_MAIN] == 1
 
-        await toggle_radio.set_twin_peak_filter(False, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN) is False
+        await _bounded(
+            virtual_clock,
+            "set_twin_peak_off",
+            toggle_radio.set_twin_peak_filter(False, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await await_until(
+            lambda: toggle_mock._twin_peak[RECEIVER_MAIN] == 0,
+            timeout=5.0,
+            description="mock applies twin-peak SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_twin_peak_off",
+                toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is False
+        )
         assert toggle_mock._twin_peak[RECEIVER_MAIN] == 0
 
+    @pytest.mark.timeout(60)
     async def test_twin_peak_main_sub_independent(
-        self, toggle_radio: IcomRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Twin peak MAIN and SUB states are independent."""
-        await toggle_radio.set_twin_peak_filter(True, receiver=RECEIVER_MAIN)
-        await toggle_radio.set_twin_peak_filter(False, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await _bounded(
+            virtual_clock,
+            "set_twin_peak_main",
+            toggle_radio.set_twin_peak_filter(True, receiver=RECEIVER_MAIN),
+            30.0,
+        )
+        await _bounded(
+            virtual_clock,
+            "set_twin_peak_sub",
+            toggle_radio.set_twin_peak_filter(False, receiver=RECEIVER_SUB),
+            30.0,
+        )
+        await await_until(
+            lambda: (
+                toggle_mock._twin_peak[RECEIVER_MAIN] == 1
+                and toggle_mock._twin_peak[RECEIVER_SUB] == 0
+            ),
+            timeout=5.0,
+            description="mock applies twin-peak MAIN/SUB SETs",
+        )
 
-        assert await toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN) is True
-        assert await toggle_radio.get_twin_peak_filter(receiver=RECEIVER_SUB) is False
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_twin_peak_main",
+                toggle_radio.get_twin_peak_filter(receiver=RECEIVER_MAIN),
+                30.0,
+            )
+            is True
+        )
+        assert (
+            await _bounded(
+                virtual_clock,
+                "get_twin_peak_sub",
+                toggle_radio.get_twin_peak_filter(receiver=RECEIVER_SUB),
+                30.0,
+            )
+            is False
+        )
 
+    @pytest.mark.timeout(60)
     async def test_twin_peak_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited twin-peak frame fires twin_peak_filter_changed."""
         events: list[tuple[str, dict]] = []
@@ -883,7 +1364,11 @@ class TestTwinPeakFilterToggle:
             data=b"\x01",
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "twin_peak_filter_changed" for name, _ in events),
+            timeout=5.0,
+            description="twin_peak_filter_changed event after unsolicited twin-peak frame",
+        )
 
         assert any(name == "twin_peak_filter_changed" for name, _ in events), (
             f"twin_peak_filter_changed not fired; got {[n for n, _ in events]}"
@@ -901,21 +1386,51 @@ class TestDialLockToggle:
     async def test_dial_lock_default_off(self, toggle_radio: IcomRadio) -> None:
         assert await toggle_radio.get_dial_lock() is False
 
+    @pytest.mark.timeout(60)
     async def test_dial_lock_on_off_cycle(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
-        await toggle_radio.set_dial_lock(True)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_dial_lock() is True
+        await _bounded(
+            virtual_clock, "set_dial_lock_on", toggle_radio.set_dial_lock(True), 30.0
+        )
+        await await_until(
+            lambda: toggle_mock._dial_lock == 1,
+            timeout=5.0,
+            description="mock applies dial-lock SET on",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_dial_lock_on", toggle_radio.get_dial_lock(), 30.0
+            )
+            is True
+        )
         assert toggle_mock._dial_lock == 1
 
-        await toggle_radio.set_dial_lock(False)
-        await asyncio.sleep(_SETTLE)
-        assert await toggle_radio.get_dial_lock() is False
+        await _bounded(
+            virtual_clock, "set_dial_lock_off", toggle_radio.set_dial_lock(False), 30.0
+        )
+        await await_until(
+            lambda: toggle_mock._dial_lock == 0,
+            timeout=5.0,
+            description="mock applies dial-lock SET off",
+        )
+        assert (
+            await _bounded(
+                virtual_clock, "get_dial_lock_off", toggle_radio.get_dial_lock(), 30.0
+            )
+            is False
+        )
         assert toggle_mock._dial_lock == 0
 
+    @pytest.mark.timeout(60)
     async def test_dial_lock_unsolicited_update(
-        self, toggle_radio: IcomRadio, toggle_mock: ToggleMockRadio
+        self,
+        toggle_radio: IcomRadio,
+        toggle_mock: ToggleMockRadio,
+        virtual_clock: VirtualClock,
     ) -> None:
         """Unsolicited dial-lock frame fires dial_lock_changed."""
         events: list[tuple[str, dict]] = []
@@ -925,7 +1440,11 @@ class TestDialLockToggle:
             _CONTROLLER_ADDR, _RADIO_ADDR, _CMD_PREAMP, sub=_SUB_DIAL_LOCK, data=b"\x01"
         )
         toggle_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "dial_lock_changed" for name, _ in events),
+            timeout=5.0,
+            description="dial_lock_changed event after unsolicited dial-lock frame",
+        )
 
         assert any(name == "dial_lock_changed" for name, _ in events), (
             f"dial_lock_changed not fired; got {[n for n, _ in events]}"
