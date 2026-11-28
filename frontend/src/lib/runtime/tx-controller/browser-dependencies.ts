@@ -12,7 +12,7 @@ import {
   emitLocalNotification, getControlSession, onCommandDelivery, onControlSessionTransition, onMessage, sendCommand,
   type CommandDeliveryEvent, type ControlSessionTransition,
 } from '$lib/transport/ws-client';
-import type { ManagedTxDependencies, PttOperation } from './managed-controller';
+import { LocalTxRefusal, type ManagedTxDependencies, type PttOperation } from './managed-controller';
 import { projectManagedTx } from './managed-state';
 
 type Unsubscribe = () => void;
@@ -121,13 +121,32 @@ export function createManagedBrowserDependencies() {
       }
     },
     onLatchRefusal: (error) => {
-      error ??= latchRefusal;
-      latchRefusal = undefined;
-      const code = error instanceof ManagedTransmitError ? error.code
-        : error === undefined ? 'tx_request_rejected' : 'tx_request_failed';
+      const local = error instanceof LocalTxRefusal ? error : undefined;
+      if (!local) {
+        error ??= latchRefusal;
+        latchRefusal = undefined;
+      }
+      const code = local?.code ?? (error instanceof ManagedTransmitError ? error.code
+        : error === undefined ? 'tx_request_rejected' : 'tx_request_failed');
       console.warn(`[tx] Latch start refused: ${code}`);
-      const toastCode = managedTxRefusalToastCode(code);
-      emitLocalNotification('error', messageFromReasonCode(toastCode), toastCode);
+      const session = getControlSession();
+      const cached = managedTransmitSnapshot();
+      console.info('[tx] Handled start refusal', {
+        operation: local?.operation ?? 'transmit_on', reason: code, source: local ? 'local' : 'command',
+        controlSession: { state: session.state, epoch: session.epoch },
+        cachedDocument: {
+          status: cached?.managedTransmit?.status ?? 'missing',
+          stale: managedTransmitIsStale(), sampledAt: cached?.sampledAt ?? null,
+        },
+        visibility: typeof document === 'undefined' ? 'unknown' : document.visibilityState,
+      });
+      if (local?.code === 'tx_audio_unavailable') {
+        const params = { reason: local.detail ?? 'Audio preparation failed.' };
+        emitLocalNotification('error', messageFromReasonCode('txAudioStartRefused', params), 'txAudioStartRefused', params);
+      } else {
+        const toastCode = managedTxRefusalToastCode(code);
+        emitLocalNotification('error', messageFromReasonCode(toastCode), toastCode);
+      }
     },
     setTot: setManagedTransmitTot,
     onPresentationTick,

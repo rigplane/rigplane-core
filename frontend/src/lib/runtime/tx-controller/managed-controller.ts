@@ -5,12 +5,21 @@ export type ManagedOperation = 'transmit_on' | 'force_off';
 export type PttOperation = 'ptt_on' | 'ptt_off';
 type Outcome = 'accepted' | 'rejected';
 
+export class LocalTxRefusal extends Error {
+  constructor(
+    readonly operation: 'ptt_on' | 'transmit_on',
+    readonly code: 'authority_unavailable' | 'tx_audio_unavailable',
+    readonly detail?: string,
+  ) { super(code); }
+}
+
 export interface ManagedTxDependencies {
   snapshot(): ManagedTxState;
   refresh(): Promise<void>;
   invalidate(): void;
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
+  /** Handles LocalTxRefusal as well as command/transport failures. */
   onLatchRefusal?(error?: unknown): void;
   /** Persists TOT and owns canonical projection invalidation on failure. */
   setTot(configuredSeconds: number | null): Promise<void>;
@@ -37,7 +46,7 @@ export class ManagedTxController {
   #pttAttempted = false;
   #onCycle: OnCycle = null;
   #onCycleSerial = 0;
-  #audioPreparation: Promise<boolean> | null = null;
+  #audioPreparation: Promise<string | null> | null = null;
   #audioNeedsCleanup = false;
   #forceOffInFlight: Promise<void> | null = null;
   #offAudioDied: () => void;
@@ -104,7 +113,12 @@ export class ManagedTxController {
   }
 
   transmitOn(): void {
-    if (!this.dependencies.snapshot().fresh) return;
+    if (!this.dependencies.snapshot().fresh) {
+      this.dependencies.onLatchRefusal?.(new LocalTxRefusal('transmit_on', 'authority_unavailable'));
+      this.#publish();
+      void this.refresh();
+      return;
+    }
     const generation = ++this.#generation;
     this.#flow = 'transmit';
     this.#onCycle = { pending: true };
@@ -181,8 +195,9 @@ export class ManagedTxController {
   }
 
   async #sendPttOn(generation: number): Promise<void> {
-    if (!await this.#prepareAudio()) return;
+    const audioError = await this.#prepareAudio();
     if (generation !== this.#generation || this.#flow !== 'ptt') return;
+    if (audioError !== null) { this.#refuseAudio('ptt_on', audioError); return; }
     this.#pttAttempted = true;
     let outcome: Outcome;
     try { outcome = await this.dependencies.sendPtt('ptt_on'); }
@@ -200,8 +215,9 @@ export class ManagedTxController {
   }
 
   async #sendTransmitOn(generation: number): Promise<void> {
-    if (!await this.#prepareAudio()) return;
+    const audioError = await this.#prepareAudio();
     if (generation !== this.#generation || this.#flow !== 'transmit') return;
+    if (audioError !== null) { this.#refuseAudio('transmit_on', audioError); return; }
     if (this.#pttAttempted) {
       let released: Outcome;
       try { released = await this.dependencies.sendPtt('ptt_off'); }
@@ -247,16 +263,23 @@ export class ManagedTxController {
     this.#publish();
   }
 
-  #prepareAudio(): Promise<boolean> {
+  #refuseAudio(operation: 'ptt_on' | 'transmit_on', detail: string): void {
+    this.#onCycle = null;
+    this.#flow = 'idle';
+    this.dependencies.onLatchRefusal?.(new LocalTxRefusal(operation, 'tx_audio_unavailable', detail));
+    this.#publish();
+  }
+
+  #prepareAudio(): Promise<string | null> {
     if (this.#audioPreparation !== null) return this.#audioPreparation;
     this.#audioNeedsCleanup = true;
     const preparation = (async () => {
-      try { return await this.dependencies.startAudio() === null; }
-      catch { return false; /* local media refusal */ }
-    })().then((ready) => {
+      try { return await this.dependencies.startAudio(); }
+      catch { return 'Audio preparation failed.'; }
+    })().then((error) => {
       // A retired preparation cannot consume a newer attempt's cleanup.
-      if (!ready && this.#audioPreparation === preparation) this.#stopAudio();
-      return ready;
+      if (error !== null && this.#audioPreparation === preparation) this.#stopAudio();
+      return error;
     });
     this.#audioPreparation = preparation;
     return preparation;

@@ -14,7 +14,7 @@
   import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import '../components-v2/controls/control-button.css';
-  import { t } from '$lib/i18n';
+  import { messageFromReasonCode, t } from '$lib/i18n';
   import { renderSlot } from './design-language-renderers';
   import { createPttHold } from '../components-v2/wiring/managed-tx-gesture';
   import type { RadioViewModel } from './radio-view-model';
@@ -62,6 +62,7 @@
   // sentences as the visible list — a raw `field: code` pair never reaches
   // the operator, here or on screen.
   let blockedDescription = $derived([
+    ...(tx.fresh === false ? [messageFromReasonCode('txAuthorityUnavailable')] : []),
     ...blocked.map((code) => blockedLabel(code)),
     ...viewBlocked.map((item) => viewBlockedLabel(item)),
   ].join('; '));
@@ -221,6 +222,11 @@
   </div>
 
   {#if blockedDescription}<span id={blockedId} class="sr-only">{blockedDescription}</span>{/if}
+  {#if tx.fresh === false}
+    <p class="rx-tx-fault" data-reason="authority_unavailable" role="status">
+      {messageFromReasonCode('txAuthorityUnavailable')}
+    </p>
+  {/if}
   <ul class="rx-tx-blocked" class:sr-only={standard} data-testid="rx-tx-blocked">
     {#each visibleBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
     {#each viewBlocked as item (item.field + item.code)}

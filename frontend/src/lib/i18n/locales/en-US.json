@@ -218,6 +218,7 @@
   "core.toast.txAudioCaptureUnsupported": "Microphone capture is not supported by this browser",
   "core.toast.txAudioInsecureContext": "The microphone needs a secure connection. Open this page with https:// (the server's --tls address) or on localhost.",
   "core.toast.txAudioStartFailed": "TX audio could not start",
+  "core.toast.txAudioStartRefused": "Radio was not keyed: TX audio could not start. {reason}",
   "core.toast.rxAudioResumeFailed": "Local audio could not resume. Check application sound permissions and output settings.",
   "core.toast.rxAudioStartFailed": "Radio audio capture could not start. Check the audio diagnostics before retrying.",
   "core.toast.rxAudioDeviceInUse": "The radio's audio input is in use by another program. Close it, then turn the audio on again.",
