@@ -8,7 +8,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 import wave
 from argparse import Namespace
 from collections.abc import Callable
@@ -53,6 +52,7 @@ from rigplane.exceptions import TimeoutError as IcomTimeout
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 from rigplane.runtime.radio import IcomRadio as RuntimeIcomRadio
+from rigplane.testing.timing import VirtualClock, wait_until
 from test_web_recovery_durable_off import _Provider
 
 
@@ -1036,7 +1036,14 @@ def _signal_a_real_ptt_hold(
         def _hung(what: str) -> AssertionError:
             # Stacks first, while the child is still alive to print them.
             proc.send_signal(signal.SIGUSR2)
-            time.sleep(0.5)
+            logged = err_path.stat().st_size if err_path.exists() else 0
+            with contextlib.suppress(AssertionError):
+                wait_until(
+                    lambda: err_path.exists() and err_path.stat().st_size > logged,
+                    timeout=0.5,
+                    description="the child's stacks",
+                    interval=0.05,
+                )
             return AssertionError(
                 f"child {what}; stderr:\n{err_path.read_text()}\n"
                 f"journal: {journal.read_text()!r}"
@@ -1052,14 +1059,27 @@ def _signal_a_real_ptt_hold(
                     return "armed" in journal.read_text()
                 return "Ctrl-C" in err_path.read_text()
 
-            deadline = time.monotonic() + budget_s
-            while not _reached():
-                assert proc.poll() is None, (
-                    f"child exited before reaching the hold: {err_path.read_text()}"
+            class _ExitedEarly(AssertionError):
+                """The child died before the handshake; not a slow runner."""
+
+            def _reached_or_exited() -> bool:
+                if proc.poll() is not None:
+                    raise _ExitedEarly(
+                        f"child exited before reaching the hold: {err_path.read_text()}"
+                    )
+                return _reached()
+
+            try:
+                wait_until(
+                    _reached_or_exited,
+                    timeout=budget_s,
+                    description="the child reaching the hold",
+                    interval=0.02,
                 )
-                if time.monotonic() >= deadline:
-                    raise _hung(f"never reached the hold within {budget_s:g} s")
-                time.sleep(0.02)
+            except _ExitedEarly:
+                raise
+            except AssertionError:
+                raise _hung(f"never reached the hold within {budget_s:g} s") from None
             if before_signal is not None:
                 before_signal()
             proc.send_signal(signum)
@@ -1125,28 +1145,48 @@ def test_real_signal_children_in_parallel_do_not_share_the_radio_lock(
     rendezvous = threading.Barrier(2)
     results: dict[str, tuple[int, list[str], list[str]]] = {}
     errors: list[BaseException] = []
+    a_holding = threading.Event()
+    b_may_start = threading.Event()
 
-    def _run_child(name: str, delay_s: float) -> None:
+    def _run_child(
+        name: str,
+        gate: threading.Event | None,
+        arrived: threading.Event | None,
+    ) -> None:
         try:
-            time.sleep(delay_s)
+            if gate is not None and not gate.wait(timeout=60):
+                raise AssertionError(f"child {name} was never released to start")
             sub = tmp_path / name
             sub.mkdir()
+
+            def _before_signal() -> None:
+                if arrived is not None:
+                    arrived.set()
+                rendezvous.wait(timeout=60)
+
             results[name] = _signal_a_real_ptt_hold(
                 sub,
                 signal.SIGTERM,
                 budget_s=60,
-                before_signal=lambda: rendezvous.wait(timeout=60),
+                before_signal=_before_signal,
             )
         except BaseException as exc:  # noqa: BLE001 — reported by the main thread
             rendezvous.abort()
             errors.append(exc)
 
     threads = [
-        threading.Thread(target=_run_child, args=("a", 0.0)),
-        threading.Thread(target=_run_child, args=("b", 2.0)),
+        threading.Thread(target=_run_child, args=("a", None, a_holding)),
+        threading.Thread(target=_run_child, args=("b", b_may_start, None)),
     ]
     for thread in threads:
         thread.start()
+    try:
+        # Child b starts late so child a has to wait for it at the barrier —
+        # the lateness is the hold itself, observed through its own hook, not
+        # a fixed sleep.
+        assert a_holding.wait(timeout=60), "child a never reached the hold"
+    finally:
+        b_may_start.set()  # never strand child b on its start gate
     for thread in threads:
         thread.join()
 
@@ -1426,13 +1466,16 @@ class _RuntimeRadio:
         self.bare_writes.append(on)
 
 
-async def _ready_runtime(provider: _Provider, target: str) -> ManagedRadioRuntime:
+async def _ready_runtime(
+    provider: _Provider, target: str, clock: VirtualClock
+) -> ManagedRadioRuntime:
     """A real runtime, bound and ready over ``provider``'s wire."""
     runtime = ManagedRadioRuntime(
         target,
         service_factory=managed_tx_effect_service,
         provider_lifecycle=provider,
         tick_interval_seconds=0.01,
+        clock=clock,
     )
     await runtime.replace_provider(ready=True)
     return runtime
@@ -1447,17 +1490,16 @@ async def _process_gone(runtime: ManagedRadioRuntime) -> None:
         await ticker
 
 
-async def _ticker_retired(runtime: ManagedRadioRuntime) -> None:
+async def _ticker_retired(runtime: ManagedRadioRuntime, clock: VirtualClock) -> None:
     """Let the ticker the force armed notice the lease is gone and leave."""
-    deadline = time.monotonic() + 2.0
-    while runtime._tick_task is not None:
-        assert time.monotonic() < deadline, "the ticker never retired"
-        await asyncio.sleep(0.01)
+    await clock.elapse(2.0)
+    assert runtime._tick_task is None, "the ticker never retired"
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(10)
 async def test_an_externally_keyed_rig_refuses_the_key_and_forces_the_unkey(
-    held, capsys
+    held, capsys, virtual_clock: VirtualClock
 ) -> None:
     """The unkey direction loses the observation gate; the key direction keeps it.
 
@@ -1470,7 +1512,7 @@ async def test_an_externally_keyed_rig_refuses_the_key_and_forces_the_unkey(
     log: list[str] = []
     provider = _Provider(log)
     provider._keyed = True  # someone else is transmitting, and this rig says so
-    runtime = await _ready_runtime(provider, "externally-keyed")
+    runtime = await _ready_runtime(provider, "externally-keyed", virtual_clock)
     await runtime.request_fresh_ptt()
     assert runtime.tx_snapshot.phase is TxPhase.EXTERNAL_UNOWNED
     radio = _RuntimeRadio(runtime)
@@ -1489,12 +1531,14 @@ async def test_an_externally_keyed_rig_refuses_the_key_and_forces_the_unkey(
     assert captured.out.splitlines() == ["PTT OFF"]
     assert "Note" in captured.err and "keyed elsewhere" in captured.err
     assert radio.bare_writes == []
-    await _ticker_retired(runtime)
+    await _ticker_retired(runtime, virtual_clock)
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(10)
 async def test_a_second_process_unkeys_a_rig_the_first_left_transmitting(
     capsys,
+    virtual_clock: VirtualClock,
 ) -> None:
     """MOR-1182 end to end: two runtimes, two supervisors, one shared wire.
 
@@ -1508,7 +1552,7 @@ async def test_a_second_process_unkeys_a_rig_the_first_left_transmitting(
     """
     log: list[str] = []
     provider = _Provider(log)
-    runtime_a = await _ready_runtime(provider, "process-a")
+    runtime_a = await _ready_runtime(provider, "process-a", virtual_clock)
     await runtime_a.request_fresh_ptt()
     keying = ManagedTxApi.bind(_RuntimeRadio(runtime_a), TxOwner(TxSource.SDK, "cli-a"))
     assert keying is not None
@@ -1516,7 +1560,9 @@ async def test_a_second_process_unkeys_a_rig_the_first_left_transmitting(
     assert provider._keyed is True
     await _process_gone(runtime_a)
 
-    runtime_b = await _ready_runtime(provider, "process-b")  # never observed
+    runtime_b = await _ready_runtime(
+        provider, "process-b", virtual_clock
+    )  # never observed
     before = runtime_b.tx_snapshot
     assert (before.phase, before.radio_tx) == (TxPhase.IDLE, RadioTx.UNKNOWN)
     radio_b = _RuntimeRadio(runtime_b)
@@ -1532,7 +1578,7 @@ async def test_a_second_process_unkeys_a_rig_the_first_left_transmitting(
     assert "Note" in captured.err and "keyed elsewhere" in captured.err
     assert runtime_b.tx_snapshot.lease_id is None  # the adopted lease self-cleared
     assert radio_b.bare_writes == []
-    await _ticker_retired(runtime_b)
+    await _ticker_retired(runtime_b, virtual_clock)
 
 
 # ---------------------------------------------------------------------------
