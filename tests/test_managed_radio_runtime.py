@@ -23,6 +23,7 @@ from rigplane.runtime.managed_radio_runtime import (
     TxService,
 )
 from rigplane.runtime.radio import CoreRadio
+from rigplane.testing.timing import VirtualClock, await_until
 from test_radio import MockTransport, _ptt_response
 
 
@@ -230,7 +231,9 @@ async def test_request_off_service_error_propagates_and_retains_durable_off() ->
 
 @pytest.mark.timeout(2)
 @pytest.mark.parametrize("replace", [False, True], ids=["ready", "replacement"])
-async def test_shutdown_fences_readiness_and_terminal_reason(replace: bool) -> None:
+async def test_shutdown_fences_readiness_and_terminal_reason(
+    virtual_clock: VirtualClock, replace: bool
+) -> None:
     provider, started, finish = ProviderLifecycle(), asyncio.Event(), asyncio.Event()
     armed = False
 
@@ -254,7 +257,9 @@ async def test_shutdown_fences_readiness_and_terminal_reason(replace: bool) -> N
     )
     shutdown: asyncio.Task[TxTransition] | None = None
     try:
-        await asyncio.wait_for(started.wait(), 0.2)
+        await await_until(
+            lambda: started.is_set(), description="shutdown write to start"
+        )
         shutdown = asyncio.create_task(
             rt.shutdown(release_provider=lambda: asyncio.sleep(0))
         )
@@ -275,11 +280,11 @@ async def test_shutdown_fences_readiness_and_terminal_reason(replace: bool) -> N
             for item in late
         )
         finish.set()
-        assert (await asyncio.wait_for(readiness, 0.5)).outcome is TxOutcome.NOT_READY
+        await await_until(lambda: readiness.done(), description="readiness to settle")
+        assert (await readiness).outcome is TxOutcome.NOT_READY
         assert shutdown is not None
-        assert (
-            await asyncio.wait_for(shutdown, 0.5)
-        ).snapshot.phase is TxPhase.RELEASE_REQUIRED
+        await await_until(lambda: shutdown.done(), description="shutdown to settle")
+        assert (await shutdown).snapshot.phase is TxPhase.RELEASE_REQUIRED
     finally:
         finish.set()
         for task in (readiness, shutdown):
@@ -295,7 +300,10 @@ async def test_shutdown_fences_readiness_and_terminal_reason(replace: bool) -> N
     "error", [RuntimeError("dekey failed"), asyncio.CancelledError("retire-cancelled")]
 )
 @pytest.mark.asyncio
-async def test_shutdown_error_is_shared(error: BaseException) -> None:
+@pytest.mark.timeout(10)
+async def test_shutdown_error_is_shared(
+    virtual_clock: VirtualClock, error: BaseException
+) -> None:
     provider = ProviderLifecycle()
     provider.retire_error = error
     provider.retire_release.clear()
@@ -310,7 +318,10 @@ async def test_shutdown_error_is_shared(error: BaseException) -> None:
         raise AssertionError("shutdown did not propagate retirement failure")
 
     waiter = asyncio.create_task(rt.shutdown(release_provider=lambda: asyncio.sleep(0)))
-    await provider.retire_started.wait()
+    await await_until(
+        lambda: provider.retire_started.is_set(),
+        description="retirement to start",
+    )
     assert waiter.cancel()
     await asyncio.gather(waiter, return_exceptions=True)
     errors = asyncio.gather(capture(), capture())
@@ -424,7 +435,10 @@ async def test_factory_clock_capture_and_stale_host_are_generation_safe() -> Non
 
 
 @pytest.mark.asyncio
-async def test_blocked_service_does_not_hold_lifecycle_lock() -> None:
+@pytest.mark.timeout(10)
+async def test_blocked_service_does_not_hold_lifecycle_lock(
+    virtual_clock: VirtualClock,
+) -> None:
     provider, started, release = ProviderLifecycle(), asyncio.Event(), asyncio.Event()
     armed = False
 
@@ -439,9 +453,9 @@ async def test_blocked_service_does_not_hold_lifecycle_lock() -> None:
     owner, _ = await acquire(rt)
     armed = True
     blocked = asyncio.create_task(rt.request_off(owner, rt.tx_snapshot.lease_id or ""))
-    await asyncio.wait_for(started.wait(), 0.2)
+    await await_until(lambda: started.is_set(), description="blocked service to start")
 
-    changed = await asyncio.wait_for(rt.replace_provider(ready=True), 0.2)
+    changed = await rt.replace_provider(ready=True)
 
     assert changed.snapshot.provider_generation == 2 and not blocked.done()
     assert changed.effects[0].kind is ProviderAttemptKind.WRITE_OFF
@@ -450,7 +464,10 @@ async def test_blocked_service_does_not_hold_lifecycle_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retirement_barrier_is_shared_and_shutdown_wins() -> None:
+@pytest.mark.timeout(10)
+async def test_retirement_barrier_is_shared_and_shutdown_wins(
+    virtual_clock: VirtualClock,
+) -> None:
     provider = ProviderLifecycle()
     failure = RuntimeError("retirement failed")
     provider.retire_error = failure
@@ -459,7 +476,10 @@ async def test_retirement_barrier_is_shared_and_shutdown_wins() -> None:
     await rt.replace_provider(ready=True)
 
     replacement = asyncio.create_task(rt.replace_provider(ready=True))
-    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.retire_started.is_set(),
+        description="retirement to start",
+    )
     assert replacement.cancel()
     waiter = asyncio.create_task(rt.replace_provider(ready=True))
     shutdown = asyncio.create_task(
@@ -483,7 +503,10 @@ async def test_retirement_barrier_is_shared_and_shutdown_wins() -> None:
     "error", [RuntimeError("retire failed"), asyncio.CancelledError("retire cancelled")]
 )
 @pytest.mark.asyncio
-async def test_terminal_retirement_failure_is_latched(error: BaseException) -> None:
+@pytest.mark.timeout(10)
+async def test_terminal_retirement_failure_is_latched(
+    virtual_clock: VirtualClock, error: BaseException
+) -> None:
     provider = ProviderLifecycle()
     provider.retire_error = error
     provider.retire_release.clear()
@@ -496,9 +519,15 @@ async def test_terminal_retirement_failure_is_latched(error: BaseException) -> N
     else:
         provider.read_blocked = True
         pending = asyncio.create_task(rt.request_fresh_ptt())
-        await asyncio.wait_for(provider.read_started.wait(), 0.2)
+        await await_until(
+            lambda: provider.read_started.is_set(),
+            description="fresh read to start",
+        )
         pending.cancel()
-    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.retire_started.is_set(),
+        description="retirement to start",
+    )
     assert not pending.done()
     provider.retire_release.set()
 
@@ -519,7 +548,10 @@ async def test_terminal_retirement_failure_is_latched(error: BaseException) -> N
 
 @pytest.mark.parametrize("shutdown", [False, True])
 @pytest.mark.asyncio
-async def test_fresh_read_replacement_and_shutdown_races(shutdown: bool) -> None:
+@pytest.mark.timeout(10)
+async def test_fresh_read_replacement_and_shutdown_races(
+    virtual_clock: VirtualClock, shutdown: bool
+) -> None:
     provider = ProviderLifecycle()
     provider.read_blocked = True
     if shutdown:
@@ -530,7 +562,9 @@ async def test_fresh_read_replacement_and_shutdown_races(shutdown: bool) -> None
     old_observer(ProviderPttObservation(RadioTx.OFF, generation, 1, 10.0))
 
     read = asyncio.create_task(rt.request_fresh_ptt())
-    await asyncio.wait_for(provider.read_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.read_started.is_set(), description="fresh read to start"
+    )
     raced = (
         asyncio.create_task(rt.shutdown(release_provider=lambda: asyncio.sleep(0)))
         if shutdown
@@ -547,7 +581,10 @@ async def test_fresh_read_replacement_and_shutdown_races(shutdown: bool) -> None
     )
     provider.read_release.set()
     if shutdown:
-        await asyncio.wait_for(provider.read_observed.wait(), 0.2)
+        await await_until(
+            lambda: provider.read_observed.is_set(),
+            description="observed read to land",
+        )
         assert (
             rt.tx_snapshot,
             rt._observation_version,
@@ -573,7 +610,10 @@ async def test_fresh_read_replacement_and_shutdown_races(shutdown: bool) -> None
 
 
 @pytest.mark.asyncio
-async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() -> None:
+@pytest.mark.timeout(10)
+async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane(
+    virtual_clock: VirtualClock,
+) -> None:
     provider = ProviderLifecycle()
     provider.retire_release.clear()
     rt = runtime(lifecycle=provider)
@@ -581,7 +621,10 @@ async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() ->
     provider.read_error = RuntimeError("source epoch changed")
 
     failed = asyncio.create_task(rt.request_fresh_ptt())
-    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.retire_started.is_set(),
+        description="retirement to start",
+    )
     assert not failed.done()
     provider.retire_release.set()
     with pytest.raises(RuntimeError, match="source epoch changed"):
@@ -598,9 +641,14 @@ async def test_failed_and_cancelled_fresh_reads_invalidate_and_release_lane() ->
     provider.retire_release.clear()
     await rt.replace_provider(ready=True)
     pending = asyncio.create_task(rt.request_fresh_ptt())
-    await asyncio.wait_for(provider.read_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.read_started.is_set(), description="fresh read to start"
+    )
     pending.cancel()
-    await asyncio.wait_for(provider.retire_started.wait(), 0.2)
+    await await_until(
+        lambda: provider.retire_started.is_set(),
+        description="retirement to start",
+    )
     assert not pending.done()
     provider.retire_release.set()
     with pytest.raises(asyncio.CancelledError):
