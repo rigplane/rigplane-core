@@ -15,7 +15,10 @@ import asyncio
 import struct
 import time
 
+import pytest
+
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
 
@@ -37,6 +40,8 @@ from testkit.test_simulator_faults import (
 )
 
 _HOST = "127.0.0.1"
+
+pytestmark = pytest.mark.timeout(30)
 
 _PT_DATA = 0x00
 _PT_DISCONNECT = 0x05
@@ -122,8 +127,27 @@ async def _die_with_gap(
         client.close()  # unclean death: no token-remove, no close, no ping
 
 
-async def _wait_hold_released(sim: MockIcomRadio, budget_s: float = 5.0) -> None:
-    """Wait (bounded) until the simulator holds no session."""
+async def _wait_hold_released(sim: MockIcomRadio, clock: VirtualClock) -> None:
+    """Advance past the keepalive hold; the hold must have released.
+
+    The hold timer runs on this loop, so ``elapse`` fires it; the release
+    itself is awaited as a real event.
+    """
+    await clock.elapse(sim.keepalive_hold_s + 0.5)
+    await await_until(
+        lambda: not sim.session_held,
+        timeout=5.0,
+        description="the held session to expire",
+    )
+
+
+async def _wait_hold_released_wall(sim: MockIcomRadio, budget_s: float = 5.0) -> None:
+    """Wait (bounded, wall clock) until the simulator holds no session.
+
+    Only the reboot / unclaimed-expiry tests use this: the simulator
+    stamps the hold refresh, the power-off window and the orphan with
+    ``time.monotonic``, so virtual time cannot release them (see NOTES.md).
+    """
     deadline = time.monotonic() + budget_s
     while sim.session_held:
         assert time.monotonic() < deadline, "held session never expired"
@@ -138,7 +162,44 @@ async def _fresh_stream(sim: MockIcomRadio, *, open_seq: int) -> _UdpClient:
     return client
 
 
-async def _assert_starts_clean(sim: MockIcomRadio) -> None:
+async def _vcollect(
+    client: _UdpClient, duration: float, clock: VirtualClock
+) -> list[bytes]:
+    """Gather arrivals within ``duration`` of virtual time.
+
+    ``_collect`` bounds itself on the wall clock, which stands still while
+    this loop is virtual; racing it with an ``elapse`` turns that bound
+    into a virtual one. Packets delivered during the settle are gathered
+    and the trailing bound trips the collector's own timeout.
+    """
+    task = asyncio.ensure_future(_collect(client, duration))
+    await clock.elapse(duration)
+    if not task.done():
+        await clock.elapse(0.5)
+    assert task.done(), f"collector did not stop after {duration}s of virtual time"
+    return task.result()
+
+
+async def _assert_starts_clean_wall(sim: MockIcomRadio) -> None:
+    """A fresh opener is answered at once and draws no requests (wall clock).
+
+    Same contract as :func:`_assert_starts_clean` for the reboot /
+    unclaimed-expiry tests, which stay on real time (see NOTES.md).
+    """
+    fresh = await _fresh_stream(sim, open_seq=20)
+    try:
+        req = _freq_get(seq=21)
+        fresh.send(req, sim.civ_port)
+        await _recv_data_reply(fresh, req)
+        fresh.send(_close(22), sim.civ_port)
+        await _wait_hold_released_wall(sim)
+        assert sim.civ_gap_open is False
+        assert await _collect(fresh, 0.3) == []
+    finally:
+        fresh.close()
+
+
+async def _assert_starts_clean(sim: MockIcomRadio, clock: VirtualClock) -> None:
     """A fresh opener is answered at once and draws no requests.
 
     Logs out cleanly at once (well within the hold) so no orphan lingers
@@ -150,28 +211,28 @@ async def _assert_starts_clean(sim: MockIcomRadio) -> None:
         fresh.send(req, sim.civ_port)
         await _recv_data_reply(fresh, req)
         fresh.send(_close(22), sim.civ_port)
-        await _wait_hold_released(sim)
+        await _wait_hold_released(sim, clock)
         assert sim.civ_gap_open is False
-        assert await _collect(fresh, 0.3) == []
+        assert await _vcollect(fresh, 0.3, clock) == []
     finally:
         fresh.close()
 
 
-async def _recv_data_reply(
-    client: _UdpClient, request: bytes, budget_s: float = 2.0
-) -> None:
-    """Assert ``request``'s echo and a CI-V reply arrive, skipping requests."""
-    deadline = time.monotonic() + budget_s
+async def _recv_data_reply(client: _UdpClient, request: bytes) -> None:
+    """Assert ``request``'s echo and a CI-V reply arrive, skipping requests.
+
+    Delivery is a real socket event, so each ``recv`` parks until the
+    simulator answers; the module timeout bounds a stuck run.
+    """
     got_echo = got_reply = False
     while not (got_echo and got_reply):
-        pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
+        pkt = await client.recv()
         if _is_echo_of(pkt, request):
             got_echo = True
         elif _is_freq_reply(pkt):
             got_reply = True
         else:
             assert _parse_retransmit(pkt) is not None, "stray packet on the wire"
-    assert time.monotonic() < deadline
 
 
 def _request_runs(packets: list[bytes]) -> list[list[tuple[int, int]]]:
@@ -185,15 +246,24 @@ def _request_runs(packets: list[bytes]) -> list[list[tuple[int, int]]]:
     return runs
 
 
-def _orphan_sim(**kwargs) -> MockIcomRadio:
-    """A single-owner simulator with orphan state on, unless told otherwise."""
+def _orphan_sim(clock: VirtualClock | None = None, **kwargs) -> MockIcomRadio:
+    """A single-owner simulator with orphan state on, unless told otherwise.
+
+    Passing the shared virtual clock drives the retransmit pacing on
+    virtual time; without it the simulator keeps the wall clock (the
+    reboot / unclaimed-expiry tests, which still need real time).
+    """
     kwargs.setdefault("single_owner", True)
     kwargs.setdefault("keepalive_hold_s", 0.25)
     kwargs.setdefault("civ_state_survives_unclean_end", True)
+    if clock is not None:
+        kwargs["clock"] = clock
     return MockIcomRadio(**kwargs)
 
 
-async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
+async def test_inherited_gap_ignores_behind_and_requests_missing(
+    virtual_clock: VirtualClock,
+) -> None:
     """Dead frontier 105 with gap 106-109 seeds the next opener (case a).
 
     Over a second of behind-frontier traffic draws nothing — no echo,
@@ -201,11 +271,11 @@ async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
     110 draws requests naming exactly 106-109; after the fills the held
     110 and later traffic are answered in order and the loop goes silent.
     """
-    sim = _orphan_sim()
+    sim = _orphan_sim(virtual_clock)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
+        await _wait_hold_released(sim, virtual_clock)
         fresh = await _fresh_stream(sim, open_seq=50)
         try:
             # Behind the frontier for over a second: behind packets draw
@@ -213,24 +283,25 @@ async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
             # inherited gap before any packet past the frontier (w50 a).
             sent = sim.civ_retransmit_requests
             logged = len(sim.civ_retransmit_request_log)
-            end = time.monotonic() + 1.1
             seq = 51
-            while time.monotonic() < end:
+            for _ in range(11):  # 1.1 s of behind-frontier traffic at 0.1 s cadence
                 fresh.send(_freq_get(seq=seq), sim.civ_port)
                 seq += 1
-                await asyncio.sleep(0.1)
-            assert await _collect(fresh, 0.2) == []
+                await virtual_clock.elapse(0.1)
+            assert await _vcollect(fresh, 0.2, virtual_clock) == []
             assert sim.civ_retransmit_requests == sent
             assert len(sim.civ_retransmit_request_log) == logged
 
             jumped = _freq_get(seq=110)
             fresh.send(jumped, sim.civ_port)
-            after_jump = await _collect(fresh, 0.3)
+            after_jump = await _vcollect(fresh, 0.3, virtual_clock)
             assert len(after_jump) >= 2
             assert all(r == [(106, 109)] for r in _request_runs(after_jump))
             assert jumped not in after_jump
 
-            await _collect(fresh, 0.2)  # drain pre-fill rounds in flight
+            await _vcollect(  # drain pre-fill rounds in flight
+                fresh, 0.2, virtual_clock
+            )
             for seq in (106, 107, 108, 109):
                 fresh.send(_freq_get(seq=seq), sim.civ_port)
             for seq in (106, 107, 108, 109, 110):
@@ -241,7 +312,7 @@ async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
             fresh.send(req, sim.civ_port)
             await _recv_data_reply(fresh, req)
             quiet = sim.civ_retransmit_requests
-            assert await _collect(fresh, 0.35) == []
+            assert await _vcollect(fresh, 0.35, virtual_clock) == []
             assert sim.civ_retransmit_requests == quiet
         finally:
             fresh.close()
@@ -249,7 +320,7 @@ async def test_inherited_gap_ignores_behind_and_requests_missing() -> None:
         await sim.stop()
 
 
-async def test_clean_logout_clears_orphan() -> None:
+async def test_clean_logout_clears_orphan(virtual_clock: VirtualClock) -> None:
     """A clean logout clears a pending orphan: the next opener is clean (b).
 
     Per clean end (owner close, token-remove, disconnect): A dies with a
@@ -257,12 +328,12 @@ async def test_clean_logout_clears_orphan() -> None:
     at once. The close form needs B to own the stream, so B opens first
     (consuming the orphan) and its owner-close ends the session.
     """
-    sim = _orphan_sim(keepalive_hold_s=0.3)
+    sim = _orphan_sim(virtual_clock, keepalive_hold_s=0.3)
     await sim.start()
     try:
         for logout in ("close", "token_remove", "disconnect"):
             await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-            await _wait_hold_released(sim)
+            await _wait_hold_released(sim, virtual_clock)
             bro = await _make_client()
             try:
                 bro.send(_login(), sim.control_port)
@@ -276,55 +347,66 @@ async def test_clean_logout_clears_orphan() -> None:
                     bro.send(_token_remove(token), sim.control_port)
                 else:
                     bro.send(_disconnect(), sim.control_port)
-                await _wait_hold_released(sim)
+                await _wait_hold_released(sim, virtual_clock)
             finally:
                 bro.close()
 
-            await _assert_starts_clean(sim)
+            await _assert_starts_clean(sim, virtual_clock)
     finally:
         await sim.stop()
 
 
 async def test_reboot_clears_orphan() -> None:
-    """A reboot clears the orphan: a fresh opener is answered at once (c)."""
+    """A reboot clears the orphan: a fresh opener is answered at once (c).
+
+    Still on real time: the simulator stamps the power-off window
+    (``_down_until``) with ``time.monotonic``, so virtual time cannot
+    advance past it (see NOTES.md).
+    """
     sim = _orphan_sim()
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
+        await _wait_hold_released_wall(sim)
         sim.reboot(at=0, down_for=0.2, busy_for=0)
         await asyncio.sleep(0.35)  # outlast the powered-off window
-        await _assert_starts_clean(sim)
+        await _assert_starts_clean_wall(sim)
     finally:
         await sim.stop()
 
 
 async def test_unclaimed_expiry_starts_clean() -> None:
-    """Past the unclaimed expiry a fresh opener is answered at once (d)."""
+    """Past the unclaimed expiry a fresh opener is answered at once (d).
+
+    Still on real time: the simulator stamps and checks the orphan with
+    ``time.monotonic``, so virtual time cannot expire it (see NOTES.md).
+    """
     sim = _orphan_sim(orphan_civ_state_expiry_s=0.4)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
+        await _wait_hold_released_wall(sim)
         await asyncio.sleep(0.5)  # outlast the 0.4 s orphan expiry
-        await _assert_starts_clean(sim)
+        await _assert_starts_clean_wall(sim)
     finally:
         await sim.stop()
 
 
-async def test_default_off_starts_clean() -> None:
+async def test_default_off_starts_clean(virtual_clock: VirtualClock) -> None:
     """With the knob off, an unclean end leaves nothing behind (e)."""
-    sim = _orphan_sim(civ_state_survives_unclean_end=False)
+    sim = _orphan_sim(virtual_clock, civ_state_survives_unclean_end=False)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
-        await _assert_starts_clean(sim)
+        await _wait_hold_released(sim, virtual_clock)
+        await _assert_starts_clean(sim, virtual_clock)
     finally:
         await sim.stop()
 
 
-async def test_production_client_identity_unanswered_behind_frontier() -> None:
+async def test_production_client_identity_unanswered_behind_frontier(
+    virtual_clock: VirtualClock,
+) -> None:
     """Production client after an unclean death: connect returns, deaf (f).
 
     The dead raw client leaves (5001, {5001-5009}); the fresh client's
@@ -341,11 +423,11 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
     """
     from rigplane.core.radio_protocol import RadioIdentityStatus
 
-    sim = _orphan_sim(keepalive_hold_s=0.3)
+    sim = _orphan_sim(virtual_clock, keepalive_hold_s=0.3)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=4980, last_in_order=5000, jump=5010)
-        await _wait_hold_released(sim)
+        await _wait_hold_released(sim, virtual_clock)
         # The production client renews slowly: lengthen the hold so the
         # fresh session stays held through the asserts.
         sim.keepalive_hold_s = 30.0
@@ -375,7 +457,7 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
             # none of it may arm the inherited tracker or draw a request.
             sent = sim.civ_retransmit_requests
             logged = len(sim.civ_retransmit_request_log)
-            await asyncio.sleep(0.5)
+            await virtual_clock.elapse(0.5)
             assert sim.civ_retransmit_requests == sent
             assert len(sim.civ_retransmit_request_log) == logged
             assert tracker.inherited_armed is False
@@ -385,30 +467,31 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
         await sim.stop()
 
 
-async def test_inherited_one_fill_per_round() -> None:
+async def test_inherited_one_fill_per_round(virtual_clock: VirtualClock) -> None:
     """Opt-in: an inherited tracker accepts one fill per 0.1 s round.
 
     The burst 107-109 accepts only the first: requests still name 108-109
     and neither is echoed. Resent on later rounds, both land, and 106 plus
     the drain release everything.
     """
-    sim = _orphan_sim(civ_inherited_fills_per_round=1)
+    sim = _orphan_sim(virtual_clock, civ_inherited_fills_per_round=1)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
+        await _wait_hold_released(sim, virtual_clock)
         fresh = await _fresh_stream(sim, open_seq=50)
         try:
-            await _collect(fresh, 0.25)  # drain loop rounds in flight
+            await _vcollect(fresh, 0.25, virtual_clock)  # drain loop rounds in flight
             jumped = _freq_get(seq=110)
             fresh.send(jumped, sim.civ_port)
-            await _collect(fresh, 0.15)  # the jump's round in flight
+            await _vcollect(fresh, 0.15, virtual_clock)  # the jump's round in flight
             # Sync on a just-sent round so the fills land in one window.
-            for _ in range(2):
-                assert _parse_retransmit(await fresh.recv()) is not None
+            synced = await _vcollect(fresh, 0.15, virtual_clock)
+            assert len(synced) >= 2
+            assert all(_parse_retransmit(p) is not None for p in synced)
             for seq in (107, 108, 109):
                 fresh.send(_freq_get(seq=seq), sim.civ_port)
-            window = await _collect(fresh, 0.35)
+            window = await _vcollect(fresh, 0.35, virtual_clock)
             assert len(window) >= 2
             assert any(r == [(106, 106), (108, 109)] for r in _request_runs(window))
             assert all(r != [(106, 106)] for r in _request_runs(window)), (
@@ -417,12 +500,14 @@ async def test_inherited_one_fill_per_round() -> None:
             assert _freq_get(seq=108) not in window
             assert _freq_get(seq=109) not in window
 
-            await asyncio.sleep(0.15)
+            await virtual_clock.elapse(0.15)
             fresh.send(_freq_get(seq=108), sim.civ_port)
-            await asyncio.sleep(0.15)
+            await virtual_clock.elapse(0.15)
             fresh.send(_freq_get(seq=109), sim.civ_port)
-            await asyncio.sleep(0.15)
-            await _collect(fresh, 0.15)  # drain pre-fill rounds in flight
+            await virtual_clock.elapse(0.15)
+            await _vcollect(  # drain pre-fill rounds in flight
+                fresh, 0.15, virtual_clock
+            )
             # Only 106 is (re)sent: it advances the frontier and the drain
             # releases the already-held 107-110 in order.
             fresh.send(_freq_get(seq=106), sim.civ_port)
@@ -435,30 +520,32 @@ async def test_inherited_one_fill_per_round() -> None:
         await sim.stop()
 
 
-async def test_inherited_drop_unanswered_range() -> None:
+async def test_inherited_drop_unanswered_range(virtual_clock: VirtualClock) -> None:
     """Opt-in: an inherited range with no fills is dropped after N rounds.
 
     With ``civ_inherited_drop_unanswered_rounds=3`` the never-filled 106-109
     stops being requested after ~0.3 s then in-order traffic resumes cleanly.
     """
-    sim = _orphan_sim(civ_inherited_drop_unanswered_rounds=3)
+    sim = _orphan_sim(virtual_clock, civ_inherited_drop_unanswered_rounds=3)
     await sim.start()
     try:
         await _die_with_gap(sim, open_seq=100, last_in_order=105, jump=110)
-        await _wait_hold_released(sim)
+        await _wait_hold_released(sim, virtual_clock)
         fresh = await _fresh_stream(sim, open_seq=50)
         try:
             # Arm the inherited tracker with one packet past the frontier
             # (the loop stays silent until then); the held idle sits past
             # everything the walk below sends, so it never interferes.
             fresh.send(_idle(200), sim.civ_port)
-            first = await _collect(fresh, 0.15)
+            first = await _vcollect(fresh, 0.15, virtual_clock)
             assert len(first) >= 2
             assert all(r == [(106, 109)] for r in _request_runs(first))
-            await asyncio.sleep(0.4)  # three 0.1 s rounds with no fills
-            await _collect(fresh, 0.15)  # drain pre-drop rounds in flight
+            await virtual_clock.elapse(0.4)  # three 0.1 s rounds with no fills
+            await _vcollect(  # drain pre-drop rounds in flight
+                fresh, 0.15, virtual_clock
+            )
             quiet = sim.civ_retransmit_requests
-            assert await _collect(fresh, 0.35) == []
+            assert await _vcollect(fresh, 0.35, virtual_clock) == []
             assert sim.civ_retransmit_requests == quiet
             assert sim.civ_gap_open is False
 
