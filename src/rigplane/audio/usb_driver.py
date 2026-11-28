@@ -2303,9 +2303,14 @@ class UsbAudioDriver:
         absent from, or at a stale position in, that list, so the start that
         follows its return fails until PortAudio is restarted (MOR-4338). The
         re-scan only runs when no stream is open anywhere in the process; a
-        failure that is not about devices (already started, busy device,
-        timeout) is raised unchanged. A stop that arrives while the re-scan
-        runs ends the start: teardown must not be followed by a reopen.
+        failure that is not about devices (already started, timeout) is
+        raised unchanged. A device reported as busy gets the same single
+        re-scan: a device that vanished between the format probe and the open
+        fails both opens with invalid-device/unavailable, which the capture
+        policy reports as busy (MOR-4521) — the retry after the re-scan
+        either opens the returned device or raises the busy error again when
+        the holder is genuine. A stop that arrives while the re-scan runs
+        ends the start: teardown must not be followed by a reopen.
         """
         epoch = self._stop_epoch
         try:
@@ -2315,7 +2320,6 @@ class UsbAudioDriver:
             asyncio.CancelledError,
             AudioAlreadyStartedError,
             AudioCaptureOpenTimeoutError,
-            AudioDeviceBusyError,
         ):
             raise
         except Exception as first:

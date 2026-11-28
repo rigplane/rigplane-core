@@ -51,6 +51,7 @@ from .backend import (
     AudioBackend,
     AudioDeviceId,
     AudioDeviceInfo,
+    DeviceRefreshingBackend,
     DuplexStream,
     PortAudioBackend,
     device_scan_generation,
@@ -964,6 +965,42 @@ class AudioBridge:
                 self._reconnect_loop(), name="bridge-reconnect"
             )
 
+    async def _rescan_devices_for_retry(self) -> None:
+        """Best-effort OS device re-scan in the reconnect idle window (MOR-4521).
+
+        The teardown above closed every bridge stream, so a backend that can
+        re-scan the OS devices (MOR-4338) may now restart PortAudio: a radio
+        that was powered off and on while the bridge was up sits at a stale
+        index (or renumbers the other devices) until then. The scan is
+        declined while another component still streams, and a backend without
+        a scan keeps the previous list — either way the setup below retries
+        exactly as before.
+        """
+        backend = self._backend
+        if not isinstance(backend, DeviceRefreshingBackend):
+            return
+        try:
+            refreshed = await bounded_portaudio_pool.run_bounded(
+                backend.refresh_devices,
+                what="device refresh",
+                direction="bridge",
+                timeout=self._portaudio_timeout,
+            )
+        except Exception:
+            logger.warning(
+                "%s: device re-scan failed; retrying with the previous list",
+                self._label,
+                exc_info=True,
+            )
+            return
+        if refreshed:
+            logger.info("%s: re-scanned audio devices before reconnect", self._label)
+        else:
+            logger.debug(
+                "%s: device re-scan declined; retrying with the previous list",
+                self._label,
+            )
+
     async def _reconnect_loop(self) -> None:
         self._reconnect_attempt = 0
         while self._max_retries == 0 or self._reconnect_attempt < self._max_retries:
@@ -989,6 +1026,7 @@ class AudioBridge:
 
             try:
                 await self._teardown_streams()
+                await self._rescan_devices_for_retry()
                 self._set_state(
                     BridgeState.CONNECTING, "retry", self._reconnect_attempt
                 )
