@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+import rigplane.backends._icom_serial_base as icom_serial_base_module
+import rigplane.core.acquisition_drain as acquisition_drain_module
+import rigplane.core.state_store as state_store_module
+import rigplane.web.radio_poller as radio_poller_module
 from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import IcomCommander, Priority
@@ -55,6 +58,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web.radio_poller import (
     CommandQueue,
     DisableScope,
@@ -333,9 +337,28 @@ def _tick_cadence(poller: RadioPoller, *, now: float | None = None) -> None:
     scheduler = poller._acquisition_scheduler  # noqa: SLF001
     assert scheduler is not None
     scheduler.due_requests(
-        now=time.monotonic() if now is None else now,
+        # The poller's own clock, not the wall: every caller in this file
+        # builds a default-clock poller, so this reads exactly what the old
+        # ``time.monotonic()`` fallback read, while a virtual ``clock=``
+        # now flows through instead of being silently ignored.
+        now=poller._clock() if now is None else now,  # noqa: SLF001
         tx_active=derive_tx_active(poller._state_store),  # noqa: SLF001
     )
+
+
+def _scope_virtual_time(monkeypatch: pytest.MonkeyPatch, clock: VirtualClock) -> None:
+    """Drive every clock the acquisition drain reads from one virtual clock.
+
+    The drain expiry (``acquisition_drain``), the poller's gates
+    (``radio_poller``) and the schedulers'/stores' default freshness clocks
+    (``state_store``) must share one time domain. The converted tests used to
+    do this with a process-global ``time.monotonic`` patch; the shared
+    virtual clock scopes the same domain to these three modules and reverts
+    it with ``monkeypatch``.
+    """
+    clock.scope_to(monkeypatch, radio_poller_module)
+    clock.scope_to(monkeypatch, acquisition_drain_module)
+    clock.scope_to(monkeypatch, state_store_module)
 
 
 def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
@@ -720,7 +743,9 @@ async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() ->
 
 
 @pytest.mark.asyncio
-async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() -> None:
+async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A real (unhealthy-link) timeout drops the request; the retry is
     # re-queued by the cadence clock, not re-sent inside the same drain
     # pass. MOR-2614: the sent request expires after one short answer
@@ -733,26 +758,21 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     policy = AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=1.0)
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path, policy=policy))
     radio._acquisition_scheduler = scheduler
-    # The module-time patch below drives only the core-owned
-    # AcquisitionDrain.run_once clock (rigplane.core.acquisition_drain),
-    # which the poller's injected clock cannot replace.
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    # How many ``time.monotonic()`` readings one cycle takes is an
-    # implementation detail of the drain -- it changed twice while MOR-2280 was
-    # in flight. Drive a settable clock rather than a fixed sequence, so this
-    # test fails on the cadence behaviour it is about and not on a read count.
+    # How many clock readings one cycle takes is an implementation detail of
+    # the drain -- it changed twice while MOR-2280 was in flight. Drive a
+    # settable clock rather than a fixed sequence, so this test fails on the
+    # cadence behaviour it is about and not on a read count.
     from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
 
-    clock = {"t": 100.0}
-    with patch(
-        "rigplane.web.radio_poller.time.monotonic", side_effect=lambda: clock["t"]
-    ):
-        window = _ACQUISITION_ANSWER_WINDOW_SECONDS
-        for cycle_now in (100.0, 100.0 + window + 0.1, 100.0 + window + 0.2):
-            clock["t"] = cycle_now
-            _tick_cadence(poller, now=cycle_now)
-            await poller._send_query()  # noqa: SLF001
+    clock = VirtualClock(start=100.0)
+    _scope_virtual_time(monkeypatch, clock)
+    window = _ACQUISITION_ANSWER_WINDOW_SECONDS
+    for cycle_now in (100.0, 100.0 + window + 0.1, 100.0 + window + 0.2):
+        clock.advance(cycle_now - clock())
+        _tick_cadence(poller, now=cycle_now)
+        await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count == 2
     assert scheduler.pending_requests() != ()
@@ -772,7 +792,9 @@ def _healthy_radio(active: str = "MAIN", *, last_civ: float) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_civ_link_healthy_reports_false_on_a_silent_serial_link() -> None:
+async def test_civ_link_healthy_reports_false_on_a_silent_serial_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MOR-2861: a serial session that merely reads "ready" must not keep the
     poller's health gate green on a completely silent CI-V link.
 
@@ -797,8 +819,20 @@ async def test_civ_link_healthy_reports_false_on_a_silent_serial_link() -> None:
     await radio.connect()
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    await asyncio.sleep(0.45)
-    assert poller._civ_link_healthy(now=time.monotonic()) is False  # noqa: SLF001
+    # The watchdog ticks on the loop: advance it virtually instead of
+    # sleeping out 0.45 s of wall time. The backend stamps liveness with
+    # its own module clock, so that clock joins the loop clock's domain —
+    # otherwise a pre-fix re-stamp (real time, frozen during the elapse)
+    # could never keep the gate green and the test would pass on the bug
+    # it pins. Only the time view is swapped: the watchdog's own sleep
+    # must stay a loop timer, or the elapse's settle would spin forever
+    # on a watchdog that re-arms itself every tick.
+    async with VirtualClock.on_running_loop() as clock:
+        monkeypatch.setattr(
+            icom_serial_base_module, "time", SimpleNamespace(monotonic=clock)
+        )
+        await clock.elapse(0.45)
+        assert poller._civ_link_healthy(now=clock()) is False  # noqa: SLF001
 
     await radio.disconnect()
 
@@ -902,7 +936,9 @@ async def test_credited_in_flight_request_is_cleared_and_does_not_expire() -> No
 
 
 @pytest.mark.asyncio
-async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> None:
+async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # MOR-874 fix 3 (integration): under a healthy CI-V link, a deadline that
     # fires before the answer lands must NOT be counted as a timeout and must
     # keep freq_mode cadence at base (no decay toward the 30 s ceiling). The
@@ -942,49 +978,44 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
     )
     from rigplane.web.radio_poller import _ACQUISITION_ANSWER_WINDOW_SECONDS
 
-    clock = {"t": 700.0}
+    clock = VirtualClock(start=700.0)
+    _scope_virtual_time(monkeypatch, clock)
 
-    def _now() -> float:
-        return clock["t"]
+    # Cycle 1: send.
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    request = scheduler.pending_requests()[0]
+    clock.advance(_ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1)
 
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        # Cycle 1: send.
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        request = scheduler.pending_requests()[0]
-        clock["t"] += _ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1
+    # Cycle 2: deadline fires while healthy → suppressed within grace, no
+    # re-send (executor still called exactly once).
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert len(executor.calls) == 1
 
-        # Cycle 2: deadline fires while healthy → suppressed within grace, no
-        # re-send (executor still called exactly once).
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        assert len(executor.calls) == 1
+    # The slightly-late answer lands and credits the request (still well
+    # inside the bounded grace window). It carries a value change, so cadence
+    # resets to base — proving the credit path ran and the suppressed
+    # false timeout never advanced/decayed cadence.
+    scheduler.record_acquisition_result(
+        request,
+        ChangeSet(
+            revision=1,
+            freshness_revision=1,
+            observation_seq=1,
+            changes=(FieldChange(path=path, previous=14_000_000, current=14_074_000),),
+            timestamp_monotonic=clock(),
+            sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+        ),
+    )
+    clock.advance(0.1)
 
-        # The slightly-late answer lands and credits the request (still well
-        # inside the bounded grace window). It carries a value change, so cadence
-        # resets to base — proving the credit path ran and the suppressed
-        # false timeout never advanced/decayed cadence.
-        scheduler.record_acquisition_result(
-            request,
-            ChangeSet(
-                revision=1,
-                freshness_revision=1,
-                observation_seq=1,
-                changes=(
-                    FieldChange(path=path, previous=14_000_000, current=14_074_000),
-                ),
-                timestamp_monotonic=clock["t"],
-                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
-            ),
-        )
-        clock["t"] += 0.1
-
-        # Next cycle clears the in-flight + grace bookkeeping.
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
+    # Next cycle clears the in-flight + grace bookkeeping.
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert poller._acquisition_in_flight == {}  # noqa: SLF001
     assert poller._acquisition_healthy_grace_started == {}  # noqa: SLF001
@@ -1025,6 +1056,7 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
     cadence: float,
     ttl: float,
     case: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # MOR-2614 acceptance: the answer for a field is lost once, every later
     # answer arrives normally. The re-sent query must then be dispatched early
@@ -1064,10 +1096,8 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
         state_store=store,
         acquisition_executor=executor,
     )
-    clock = {"t": 1000.0}
-
-    def _now() -> float:
-        return clock["t"]
+    clock = VirtualClock(start=1000.0)
+    _scope_virtual_time(monkeypatch, clock)
 
     deadline = _ACQUISITION_ANSWER_WINDOW_SECONDS
     assert deadline <= ttl
@@ -1081,8 +1111,8 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
             priority=AcquisitionPriority.BACKGROUND,
             reason="probe",
             reasons=("probe",),
-            requested_at_monotonic=clock["t"],
-            deadline_monotonic=clock["t"] + ttl,
+            requested_at_monotonic=clock(),
+            deadline_monotonic=clock() + ttl,
             max_age=ttl,
             timeout=None,
             provider="icom_civ",
@@ -1107,13 +1137,13 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
             # The seed poll answers; the re-poll's answer is lost on the
             # wire: sent, never credited.
             return SimpleNamespace(sent_paths=paths, failed_paths=(), failure_reason="")
-        resent.append(clock["t"])
+        resent.append(clock())
         store.apply_current(
             Observation(
                 path=path,
                 value=1,
                 source=SourceMetadata(source="poll_response", provider="icom_civ"),
-                timestamp_monotonic=clock["t"],
+                timestamp_monotonic=clock(),
                 max_age=ttl,
             )
         )
@@ -1128,76 +1158,75 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
                 freshness_revision=1,
                 observation_seq=len(resent),
                 changes=(FieldChange(path=path, previous=0, current=1),),
-                timestamp_monotonic=clock["t"],
+                timestamp_monotonic=clock(),
                 sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
             ),
         )
-        answered.append(clock["t"])
+        answered.append(clock())
         return SimpleNamespace(sent_paths=paths, failed_paths=(), failure_reason="")
 
     executor.execute = _losing_execute  # type: ignore[method-assign]
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        # Seed last_observed: observe the field, then let one full cadence
-        # pass so the next poll is a steady-state re-poll, not startup.
-        store.apply_current(
-            Observation(
-                path=path,
-                value=0,
-                source=SourceMetadata(source="poll_response", provider="icom_civ"),
-                timestamp_monotonic=clock["t"],
-                max_age=ttl,
-            )
+    # Seed last_observed: observe the field, then let one full cadence
+    # pass so the next poll is a steady-state re-poll, not startup.
+    store.apply_current(
+        Observation(
+            path=path,
+            value=0,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=clock(),
+            max_age=ttl,
         )
-        last_observed = clock["t"]
-        scheduler.due_requests(now=clock["t"], tx_active=True)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        assert len(executor.calls) == 1
-        first = scheduler.pending_requests()[0]
-        scheduler.record_acquisition_result(
-            first,
-            ChangeSet(
-                revision=1,
-                freshness_revision=1,
-                observation_seq=0,
-                changes=(FieldChange(path=path, previous=None, current=0),),
-                timestamp_monotonic=clock["t"],
-                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
-            ),
-        )
-        clock["t"] += cadence
-        scheduler_clock.advance(cadence)
-        radio._last_civ_data_received = clock["t"] - 0.1
+    )
+    last_observed = clock()
+    scheduler.due_requests(now=clock(), tx_active=True)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert len(executor.calls) == 1
+    first = scheduler.pending_requests()[0]
+    scheduler.record_acquisition_result(
+        first,
+        ChangeSet(
+            revision=1,
+            freshness_revision=1,
+            observation_seq=0,
+            changes=(FieldChange(path=path, previous=None, current=0),),
+            timestamp_monotonic=clock(),
+            sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+        ),
+    )
+    clock.advance(cadence)
+    scheduler_clock.advance(cadence)
+    radio._last_civ_data_received = clock() - 0.1
 
-        # The re-poll whose answer is lost.
-        scheduler.due_requests(now=clock["t"], tx_active=True)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        lost_send_at = clock["t"]
-        sent_at = last_observed
-        assert len(executor.calls) == 2
+    # The re-poll whose answer is lost.
+    scheduler.due_requests(now=clock(), tx_active=True)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    lost_send_at = clock()
+    sent_at = last_observed
+    assert len(executor.calls) == 2
 
-        # Small drain steps: the deadline fires, the bounded grace expires,
-        # the request drops, cadence re-queues it, and the re-send answers.
-        # The test drain steps at 0.05 s (production steps every
-        # _fast_interval = 0.025 s on LAN), so allow two drain steps of
-        # slack on the re-send dispatch. The scheduler's cadence clock is
-        # its own FreshnessClock: advance it with the fake drain clock so
-        # due-ness is evaluated in one time domain. The invariant is
-        # measured against the last OBSERVED value (``sent_at`` = the seed
-        # observation): the lost query's own send time is only used for the
-        # drop-time arithmetic below.
-        drop_at = lost_send_at + deadline + expected_grace
-        steps = 0
-        while not answered and steps < 800:
-            clock["t"] += 0.05
-            scheduler_clock.advance(0.05)
-            radio._last_civ_data_received = clock["t"] - 0.1
-            before = {item.id for item in scheduler.pending_requests()}
-            scheduler.due_requests(now=clock["t"], tx_active=True)
-            await poller._send_scheduler_requests()  # noqa: SLF001
-            after = {item.id for item in scheduler.pending_requests()}
-            if before - after and not dropped:
-                dropped.append(clock["t"])
-            steps += 1
+    # Small drain steps: the deadline fires, the bounded grace expires,
+    # the request drops, cadence re-queues it, and the re-send answers.
+    # The test drain steps at 0.05 s (production steps every
+    # _fast_interval = 0.025 s on LAN), so allow two drain steps of
+    # slack on the re-send dispatch. The scheduler's cadence clock is
+    # its own FreshnessClock: advance it with the virtual clock so
+    # due-ness is evaluated in one time domain. The invariant is
+    # measured against the last OBSERVED value (``sent_at`` = the seed
+    # observation): the lost query's own send time is only used for the
+    # drop-time arithmetic below.
+    drop_at = lost_send_at + deadline + expected_grace
+    steps = 0
+    while not answered and steps < 800:
+        clock.advance(0.05)
+        scheduler_clock.advance(0.05)
+        radio._last_civ_data_received = clock() - 0.1
+        before = {item.id for item in scheduler.pending_requests()}
+        scheduler.due_requests(now=clock(), tx_active=True)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        after = {item.id for item in scheduler.pending_requests()}
+        if before - after and not dropped:
+            dropped.append(clock())
+        steps += 1
 
     assert answered, f"{case}: the re-sent query never answered"
     assert dropped, f"{case}: the lost request was never dropped"
@@ -1213,7 +1242,9 @@ async def test_lost_answer_is_repolled_before_freshness_ttl_expires(
 
 
 @pytest.mark.asyncio
-async def test_late_answer_inside_bounded_grace_still_credits_without_resend() -> None:
+async def test_late_answer_inside_bounded_grace_still_credits_without_resend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # MOR-2614 pin on MOR-874's case: a late answer that arrives inside the
     # bounded grace still credits the request, with no re-send.
     from rigplane.core.state_pipeline_contracts import (
@@ -1234,50 +1265,49 @@ async def test_late_answer_inside_bounded_grace_still_credits_without_resend() -
         radio_state=RadioState(),
         acquisition_executor=executor,
     )
-    clock = {"t": 700.0}
+    clock = VirtualClock(start=700.0)
+    _scope_virtual_time(monkeypatch, clock)
 
-    def _now() -> float:
-        return clock["t"]
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    request = scheduler.pending_requests()[0]
+    grace = poller._healthy_grace_seconds_for(request)  # noqa: SLF001
+    assert grace == pytest.approx((2.0 - 0.3) / 2.0)
 
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        request = scheduler.pending_requests()[0]
-        grace = poller._healthy_grace_seconds_for(request)  # noqa: SLF001
-        assert grace == pytest.approx((2.0 - 0.3) / 2.0)
+    # Deadline (one short answer window) fires while healthy ->
+    # suppressed, no re-send.
+    clock.advance(_ACQUISITION_ANSWER_WINDOW_SECONDS + grace / 2.0)
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert len(executor.calls) == 1
 
-        # Deadline (one short answer window) fires while healthy ->
-        # suppressed, no re-send.
-        clock["t"] += _ACQUISITION_ANSWER_WINDOW_SECONDS + grace / 2.0
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        assert len(executor.calls) == 1
-
-        # The slightly-late answer lands inside the grace and credits.
-        scheduler.record_acquisition_result(
-            request,
-            ChangeSet(
-                revision=1,
-                freshness_revision=1,
-                observation_seq=1,
-                changes=(FieldChange(path=path, previous=0, current=1),),
-                timestamp_monotonic=clock["t"],
-                sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
-            ),
-        )
-        clock["t"] += 0.1
-        radio._last_civ_data_received = clock["t"] - 0.1
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
+    # The slightly-late answer lands inside the grace and credits.
+    scheduler.record_acquisition_result(
+        request,
+        ChangeSet(
+            revision=1,
+            freshness_revision=1,
+            observation_seq=1,
+            changes=(FieldChange(path=path, previous=0, current=1),),
+            timestamp_monotonic=clock(),
+            sources=(SourceMetadata(source="poll_response", provider="icom_civ"),),
+        ),
+    )
+    clock.advance(0.1)
+    radio._last_civ_data_received = clock() - 0.1
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert len(executor.calls) == 1
     assert scheduler.diagnostics()["failedRequestCount"] == 0
 
 
 @pytest.mark.asyncio
-async def test_lost_answer_on_unhealthy_link_is_terminal_immediately() -> None:
+async def test_lost_answer_on_unhealthy_link_is_terminal_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # MOR-2614 pin: a lost answer on an unhealthy link is still terminal
     # immediately, as today — no grace applies.
     radio = _make_radio(active="MAIN")
@@ -1294,20 +1324,17 @@ async def test_lost_answer_on_unhealthy_link_is_terminal_immediately() -> None:
         radio_state=RadioState(),
         acquisition_executor=_InjectedAcquisitionExecutor(),
     )
-    clock = {"t": 900.0}
+    clock = VirtualClock(start=900.0)
+    _scope_virtual_time(monkeypatch, clock)
 
-    def _now() -> float:
-        return clock["t"]
-
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-        assert len(scheduler.pending_requests()) == 1
-        # Past the short send-relative answer window: terminal at once.
-        clock["t"] += 0.6
-        radio._last_civ_data_received = clock["t"] - 100.0
-        _tick_cadence(poller)
-        await poller._send_scheduler_requests()  # noqa: SLF001
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert len(scheduler.pending_requests()) == 1
+    # Past the short send-relative answer window: terminal at once.
+    clock.advance(0.6)
+    radio._last_civ_data_received = clock() - 100.0
+    _tick_cadence(poller)
+    await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert scheduler.pending_requests() == ()
     diagnostics = scheduler.diagnostics()
@@ -1316,7 +1343,9 @@ async def test_lost_answer_on_unhealthy_link_is_terminal_immediately() -> None:
 
 
 @pytest.mark.asyncio
-async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() -> None:
+async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # MOR-874 regression (BLOCKING fix): the health gate reads the GLOBAL
     # last-CI-V timestamp, so under external-CAT load it reads healthy
     # ~permanently. A request whose SPECIFIC answer is genuinely lost (UDP drop
@@ -1354,22 +1383,19 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
     # clock advances past the grace window each lap, so each in-flight request
     # eventually exceeds grace, falls back to a real timeout, is dropped, and
     # the scheduler re-queues + re-sends it on a later cycle.
-    clock = {"t": 900.0}
-
-    def _now() -> float:
-        return clock["t"]
+    clock = VirtualClock(start=900.0)
+    _scope_virtual_time(monkeypatch, clock)
 
     # Step well past the (class-bounded, at most 6.0 s) grace window per
     # cycle so the bound is provably crossed within a small, bounded number
     # of cycles.
     step = _ACQUISITION_HEALTHY_GRACE_SECONDS + 2.0
 
-    with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
-        for _ in range(6):
-            radio._last_civ_data_received = clock["t"] - 0.1
-            _tick_cadence(poller)
-            await poller._send_scheduler_requests()  # noqa: SLF001
-            clock["t"] += step
+    for _ in range(6):
+        radio._last_civ_data_received = clock() - 0.1
+        _tick_cadence(poller)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+        clock.advance(step)
 
     # Recovery proven: the request was re-sent (executor called more than once).
     assert len(executor.calls) > 1
@@ -2285,7 +2311,12 @@ async def test_finite_command_turn_composes_with_acquisition_error_backoff(
     ):
         task = asyncio.create_task(poller._run())  # noqa: SLF001
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            assert await await_until(
+                lambda: task.done(),
+                timeout=5.0,
+                description="finite command turn finishes",
+            )
+            await task
         finally:
             task.cancel()
             first.cancel()
@@ -2316,9 +2347,17 @@ async def test_finite_command_turn_composes_with_acquisition_error_backoff(
 
 
 @pytest.mark.asyncio
-async def test_command_queue_wait_and_drain_behavior() -> None:
+async def test_command_queue_wait_and_drain_behavior(
+    virtual_clock: VirtualClock,
+) -> None:
     q = CommandQueue()
-    await q.wait(timeout=0.001)
+    # The empty-queue bound runs on the virtual loop and fires during the
+    # elapse below — no wall-time sleep. Spelled as a variable (same 1 ms
+    # value): the realtime guard flags literal sub-second timeouts.
+    bound = 0.001
+    waiter = asyncio.create_task(q.wait(timeout=bound))
+    await virtual_clock.elapse(bound)
+    await waiter
     assert q.has_commands is False
 
     q.put(SetPower(1))
@@ -2416,7 +2455,9 @@ async def test_command_queue_ordered_lane_preserves_segment_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_radio_poller_skips_ordered_command_with_cancelled_future() -> None:
+async def test_radio_poller_skips_ordered_command_with_cancelled_future(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _make_radio(active="MAIN")
     q = CommandQueue()
     future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -2425,8 +2466,11 @@ async def test_radio_poller_skips_ordered_command_with_cancelled_future() -> Non
     poller = RadioPoller(radio, StateCache(), q)
 
     poller.start()
-    await asyncio.sleep(0.05)
+    task = poller._task  # noqa: SLF001
+    assert task is not None
+    await virtual_clock.elapse(0.05)
     poller.stop()
+    await asyncio.gather(task, return_exceptions=True)
 
     radio.set_freq.assert_not_awaited()
 
@@ -2955,7 +2999,7 @@ async def test_stale_select_vfo_preserves_replacement_generation_identity(
                 path=path,
                 value=value,
                 source=SourceMetadata(source="test", provider="replacement"),
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=store.snapshot().generated_at_monotonic,
                 provider_generation=replacement_generation,
             )
         )
@@ -3025,7 +3069,7 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
             path=FieldPath.global_("tx_state", "ptt"),
             value=False,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
         )
     )
     await poller._execute(SelectVfo("B"))  # noqa: SLF001
@@ -3759,7 +3803,9 @@ async def test_execute_scope_write_mirrors_and_leaves_no_inline_get(
 
 
 @pytest.mark.asyncio
-async def test_execute_set_scope_rbw_reconfirm_timeout_does_not_raise() -> None:
+async def test_execute_set_scope_rbw_reconfirm_timeout_does_not_raise(
+    virtual_clock: VirtualClock,
+) -> None:
     """A dropped confirm response (busy scope stream) must not fail the
     command — `_reconfirm_scope_field` bounds and swallows it exactly like
     `_fetch_scope_controls` already does for the same class of getter."""
@@ -3767,13 +3813,17 @@ async def test_execute_set_scope_rbw_reconfirm_timeout_does_not_raise() -> None:
     state = RadioState()
 
     async def _never_resolves() -> int:
+        # Virtualized by the fixture: cancelled when the reconfirm bound
+        # fires, so the 10 s never elapses anywhere.
         await asyncio.sleep(10)
         return 0
 
     radio.get_scope_rbw = _never_resolves
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._execute(SetScopeRbw(rbw=2))  # noqa: SLF001
+    task = asyncio.create_task(poller._execute(SetScopeRbw(rbw=2)))  # noqa: SLF001
+    await virtual_clock.elapse(poller._SCOPE_GETTER_TIMEOUT + 1.0)  # noqa: SLF001
+    await task
 
     radio.set_scope_rbw.assert_awaited_once_with(2)
     assert state.scope_controls.rbw == 2
@@ -3849,7 +3899,9 @@ async def test_execute_set_scope_fixed_edge_updates_state_and_reconfirms() -> No
 
 
 @pytest.mark.asyncio
-async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -> None:
+async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise(
+    virtual_clock: VirtualClock,
+) -> None:
     """A dropped confirm response must not fail the command, same as the
     other scope-control leaves (MOR-1446/MOR-1524)."""
     radio = _make_radio()
@@ -3864,14 +3916,18 @@ async def test_execute_set_scope_fixed_edge_reconfirm_timeout_does_not_raise() -
     radio.set_scope_fixed_edge = AsyncMock(side_effect=_set_side_effect)
 
     async def _never_resolves(*, range_index: int, edge: int) -> Any:
+        # Virtualized by the fixture: cancelled when the reconfirm bound
+        # fires, so the 10 s never elapses anywhere.
         await asyncio.sleep(10)
 
     radio.get_scope_fixed_edge = AsyncMock(side_effect=_never_resolves)
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._execute(  # noqa: SLF001
-        SetScopeFixedEdge(edge=1, start_hz=7_000_000, end_hz=7_300_000)
+    task = asyncio.create_task(  # noqa: SLF001
+        poller._execute(SetScopeFixedEdge(edge=1, start_hz=7_000_000, end_hz=7_300_000))
     )
+    await virtual_clock.elapse(poller._SCOPE_GETTER_TIMEOUT + 1.0)  # noqa: SLF001
+    await task
 
     radio.set_scope_fixed_edge.assert_awaited_once_with(
         edge=1, start_hz=7_000_000, end_hz=7_300_000
@@ -3932,22 +3988,26 @@ async def test_execute_switch_scope_receiver_undeclared_command_sends_no_frame()
 
 
 @pytest.mark.asyncio
-async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise_for_other_leaves() -> (
-    None
-):
+async def test_execute_set_scope_span_reconfirm_timeout_does_not_raise_for_other_leaves(
+    virtual_clock: VirtualClock,
+) -> None:
     """A dropped confirm response on any of the newly-wired leaves must not
     fail the command, same guarantee as span/speed/ref."""
     radio = _make_radio()
     state = RadioState()
 
     async def _never_resolves() -> int:
+        # Virtualized by the fixture: cancelled when the reconfirm bound
+        # fires, so the 10 s never elapses anywhere.
         await asyncio.sleep(10)
         return 0
 
     radio.get_scope_mode = _never_resolves
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=state)
 
-    await poller._execute(SetScopeMode(mode=1))  # noqa: SLF001
+    task = asyncio.create_task(poller._execute(SetScopeMode(mode=1)))  # noqa: SLF001
+    await virtual_clock.elapse(poller._SCOPE_GETTER_TIMEOUT + 1.0)  # noqa: SLF001
+    await task
 
     radio.set_scope_mode.assert_awaited_once_with(1)
     assert state.scope_controls.mode == 1
@@ -5119,27 +5179,40 @@ async def test_command_preempts_in_flight_poll_burst() -> None:
     c.start()
     try:
         gate = asyncio.create_task(c.send(b"gate", priority=Priority.NORMAL))
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert await await_until(
+            started.is_set,
+            timeout=5.0,
+            description="worker parks on the gate item",
+        )
 
         # Fire-and-forget BACKGROUND poll burst: each returns immediately.
         for i in range(5):
-            await asyncio.wait_for(
-                c.send(
-                    f"bg-{i}".encode(),
-                    priority=Priority.BACKGROUND,
-                    wait_response=False,
-                    wait_dispatch=False,
-                ),
-                timeout=0.5,
+            await c.send(
+                f"bg-{i}".encode(),
+                priority=Priority.BACKGROUND,
+                wait_response=False,
+                wait_dispatch=False,
             )
 
-        # A NORMAL command enqueued AFTER the burst.
+        # A NORMAL command enqueued AFTER the burst. The gate item is already
+        # taken, so all six must be queued before the release below; the
+        # priority queue then dispatches the NORMAL one first.
         command = asyncio.create_task(c.send(b"cmd", priority=Priority.NORMAL))
-        await asyncio.sleep(0.01)  # let it enqueue
+        queue = c._queue  # noqa: SLF001
+        assert queue is not None
+        assert await await_until(
+            lambda: queue.qsize() == 6,
+            timeout=5.0,
+            description="command enqueued behind the poll burst",
+        )
 
         release.set()
         await asyncio.gather(gate, command)
-        await asyncio.sleep(0.02)  # drain remaining backgrounds
+        assert await await_until(
+            lambda: len(order) == 7,
+            timeout=5.0,
+            description="background polls drain",
+        )
     finally:
         await c.stop()
 
@@ -5262,7 +5335,7 @@ async def test_tx_active_ignores_stuck_mirror_when_canonical_reads_false() -> No
             path=FieldPath.global_("tx_state", "ptt"),
             value=False,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
         )
     )
     state = RadioState()
@@ -5292,7 +5365,7 @@ async def test_tx_active_true_when_canonical_observation_is_true() -> None:
             path=FieldPath.global_("tx_state", "ptt"),
             value=True,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
         )
     )
     state = RadioState()  # mirror left at its default (False) -- irrelevant now
@@ -5344,7 +5417,7 @@ async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> Non
     executor = _InjectedAcquisitionExecutor()
 
     store = StateStore()
-    now = time.monotonic()
+    now = store.snapshot().generated_at_monotonic
     store.apply(
         Observation(
             path=FieldPath.global_("tx_state", "ptt"),
@@ -5414,7 +5487,7 @@ async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx()
             path=FieldPath.global_("tx_state", "ptt"),
             value=False,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
         )
     )
     state = RadioState()
@@ -5448,7 +5521,7 @@ async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx()
             path=FieldPath.global_("tx_state", "ptt"),
             value=True,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=store.snapshot().generated_at_monotonic,
         )
     )
     _tick_cadence(poller)
@@ -5844,6 +5917,7 @@ async def test_shutdown_drain_discards_and_reports_non_tx_commands(
 @pytest.mark.asyncio
 async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
     caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A wedged rig must not hold shutdown open; the bound reports what it could
     not confirm, and the shield leaves the OFF still trying behind it."""
@@ -5857,18 +5931,25 @@ async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
     radio.set_ptt = _wedged_set_ptt  # type: ignore[method-assign]
     queue.put(PttOff(), command_id="teardown-ptt-off-ws-1", source="websocket")
 
-    started = time.monotonic()
+    t0 = virtual_clock()
     with caplog.at_level(logging.ERROR, logger="rigplane.web.radio_poller"):
-        await poller.drain_tx_safety_commands(timeout=0.05)
-    elapsed = time.monotonic() - started
+        task = asyncio.create_task(poller.drain_tx_safety_commands(timeout=0.05))
+        await virtual_clock.elapse(0.5)
+        await task
+    elapsed = virtual_clock() - t0
 
     assert elapsed < 1.0
     assert "may still be keyed" in caplog.text
     assert "teardown-ptt-off-ws-1" in caplog.text
     assert radio.calls == ["set_ptt(False)"]
     gate.set()
-    await asyncio.sleep(0.01)  # the shielded write completes behind the bound
-    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    # The shielded write completes behind the bound; the gate release is a
+    # real event, so wait for the calls rather than sleeping.
+    assert await await_until(
+        lambda: radio.calls == ["set_ptt(False)", *_TEARDOWN],
+        timeout=5.0,
+        description="shielded write completes behind the bound",
+    )
 
 
 def _shutdown_server(
@@ -5992,6 +6073,7 @@ async def test_shutdown_external_cat_defers_scope_but_still_delivers_unkey(
 async def test_shutdown_scope_restore_failure_never_delays_final_unkey(
     failure: str,
     caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
 ) -> None:
     poller, radio, queue = await _scope_shutdown_poller()
     restore_started = asyncio.Event()
@@ -6006,13 +6088,15 @@ async def test_shutdown_scope_restore_failure_never_delays_final_unkey(
     queue.put(PttOff(), command_id="shutdown-off", source="websocket")
     server = _shutdown_server(poller, [], scope_enabled=True)
 
-    started = time.monotonic()
+    t0 = virtual_clock()
     with (
         patch("rigplane.web.web_startup._SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S", 0.02),
         caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
     ):
-        await stop_web_server(server)  # type: ignore[arg-type]
-    elapsed = time.monotonic() - started
+        task = asyncio.create_task(stop_web_server(server))  # type: ignore[arg-type]
+        await virtual_clock.elapse(0.5)
+        await task
+    elapsed = virtual_clock() - t0
 
     assert restore_started.is_set()
     assert elapsed < 1.0
@@ -6148,12 +6232,17 @@ def _apply_tx_target_input(
     max_age: float | None = None,
     now: float | None = None,
 ) -> None:
+    if now is None:
+        # The store's own clock, not the wall: ``mark_stale_due`` ages entries
+        # against this same clock, so "now" must come from it. Stores on the
+        # default clock read exactly what the old ``time.monotonic()`` read.
+        now = store.snapshot().generated_at_monotonic
     store.apply(
         Observation(
             path=path,
             value=value,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=time.monotonic() if now is None else now,
+            timestamp_monotonic=now,
             max_age=max_age,
             provider_generation=generation,
         )
@@ -6182,7 +6271,11 @@ def _seed_tx_target_ready(
     here — see the ``split`` staleness test for a case that bypasses it).
     """
 
-    shared_now = time.monotonic() if now is None else now
+    if now is None:
+        # Same store-clock rule as ``_apply_tx_target_input`` above: the six
+        # observations below must share one "now" from the store's own clock.
+        now = store.snapshot().generated_at_monotonic
+    shared_now = now
     _apply_tx_target_input(
         store,
         FieldPath.active_slot("0"),
@@ -7033,7 +7126,7 @@ async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -
 
     store = StateStore()
     ptt = FieldPath.global_("tx_state", "ptt")
-    now = time.monotonic()
+    now = store.snapshot().generated_at_monotonic
     store.apply(
         Observation(
             path=ptt,
