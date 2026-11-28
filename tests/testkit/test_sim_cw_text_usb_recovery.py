@@ -187,6 +187,13 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
                 refused_at: list[float] = []
                 original_send = radio._send_civ_raw
 
+                # Transparent pass-through wrapper around the real raw-send
+                # seam: every frame is delegated to the original unchanged,
+                # so backend behavior is identical with or without it. The
+                # wrapper only records which CW payloads crossed the seam
+                # (and when the guard refused them), giving the test an
+                # awaitable crossing signal that the CivSerialFake command
+                # log alone cannot provide.
                 async def observe_send(frame: bytes, **kwargs: Any) -> Any:
                     target = frame[4] == 0x17 and frame[5:-1] == _OUTAGE_TEXT.encode()
                     if frame[4] == 0x17 and frame[5:-1] == _AFTER_TEXT.encode():
@@ -208,21 +215,39 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
                 payload_bookmark = len(s.table.payloads)
                 sending = asyncio.create_task(send(_OUTAGE_TEXT))
                 tasks.push_async_callback(_cancel_task, sending)
+                ws_entry = entry in ("websocket", "second_websocket")
                 try:
-                    await await_until(
-                        admitted.is_set,
-                        timeout=5.0,
-                        description=f"{entry} CW never reached the real raw-send seam",
-                    )
-                    issued_at = clock.now
-                    await clock.elapse(0.5)
-                    if refused_at:
+                    if ws_entry:
+                        # The control-seat gate refuses a WS TX start while
+                        # the provider generation is down, before the command
+                        # is ever enqueued: the client gets a typed
+                        # controller_invalid reply while the link is still
+                        # down, and the request never reaches the raw-send
+                        # seam below (admitted stays clear, refused_at stays
+                        # empty) — unlike commands/http, which reach the seam
+                        # and are refused there by the transport guard.
+                        issued_at = clock.now
                         await await_until(
                             sending.done,
                             timeout=5.0,
-                            description="guard refusal never reached the live client",
+                            description=f"{entry} CW never answered during recovery",
                         )
-                    replied_before_restore = sending.done()
+                        replied_before_restore = sending.done()
+                    else:
+                        await await_until(
+                            admitted.is_set,
+                            timeout=5.0,
+                            description=f"{entry} CW never reached the real raw-send seam",
+                        )
+                        issued_at = clock.now
+                        await clock.elapse(0.5)
+                        if refused_at:
+                            await await_until(
+                                sending.done,
+                                timeout=5.0,
+                                description="guard refusal never reached the live client",
+                            )
+                        replied_before_restore = sending.done()
                     restored_at = clock.now
                     # Restore independently of the HTTP/WS result: main can still
                     # have a request waiting in the real 12-second recovery loop.
@@ -273,10 +298,19 @@ async def test_local_cw_issued_during_usb_identity_recovery_never_plays_after_re
                         for p in s.table.payloads[payload_bookmark:]
                         if p != stop_payload
                     ] == [_AFTER_TEXT.encode()]
-                    assert refused_at and issued_at <= refused_at[0] < restored_at
+                    if ws_entry:
+                        # Refused at the ingress, never at the seam: no seam
+                        # crossing, no guard refusal, typed reply instead.
+                        assert not admitted.is_set()
+                        assert refused_at == []
+                        assert outage_body.get("message") == "controller_invalid", (
+                            outage_body
+                        )
+                    else:
+                        assert refused_at and issued_at <= refused_at[0] < restored_at
+                        assert _UNAVAILABLE in str(outage_body)
                     assert replied_before_restore
                     assert not outage_ok, outage_body
-                    assert _UNAVAILABLE in str(outage_body)
                     assert recovered_at - issued_at < 12.0
                     assert radio._owner_stop_epoch == owner_epoch
                     assert s.fake.ptt is False
