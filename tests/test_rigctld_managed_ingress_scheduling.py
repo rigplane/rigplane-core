@@ -16,12 +16,13 @@ from rigplane.rigctld.handler import RigctldHandler, _RigctldCommandExecutor, _R
 from rigplane.rigctld.server import _MAX_PENDING_CLIENT_RESPONSES, RigctldServer
 from rigplane.runtime._poller_types import CommandQueue, execute_command_queue_entry, execute_positive_tx_queue_entry, validate_command_queue_entry_currency
 from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResult, ManagedTxIntentKind, ManagedTxOutcome
+from rigplane.testing.timing import VirtualClock, await_until
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
 from test_controller_authority import Safety
 from test_rigctld_split import _hold_commander_before_set, _pause_mode_preservation
 from test_rigctld_wsjtx_split_mk2 import MODELS, _assert_no_relative_overlays, _client, _exchange, _peer, _rf_state
-_FREQUENCY, _WAIT = 14_074_000, 2.0
+_FREQUENCY = 14_074_000
 class _NoTruthProbe:
     def __bool__(self): raise AssertionError("identity checks must use is None")
 class _Default:
@@ -45,7 +46,7 @@ class _Radio(SerialMockRadio):
     async def set_tuner_status(self, value):
         self.calls.append(("tuner", value))
 @pytest.fixture
-async def managed():
+async def managed(virtual_clock: VirtualClock):
     managed, _, _, _, fence, lane = authority()
     store = StateStore()
     store.apply_current(Observation(path=FieldPath.global_("tx_state", "ptt"), value=False, source=SourceMetadata(source="test", provider="tests"),
@@ -109,7 +110,12 @@ async def _send(rig, *commands):
     rig.writer.write(("\n".join(commands) + "\n").encode())
     await rig.writer.drain()
 async def _replies(rig, count):
-    return [await asyncio.wait_for(rig.reader.readline(), _WAIT) for _ in range(count)]
+    out = []
+    for _ in range(count):
+        reply = asyncio.ensure_future(rig.reader.readline())
+        await await_until(reply.done, timeout=10.0, description="the rigctld reply")
+        out.append(reply.result())
+    return out
 async def _key(rig):
     receipt = await rig.authority.submit_ptt(True, "rigctld-client-1")
     assert receipt.outcome is ManagedTxOutcome.ACCEPTED
@@ -229,7 +235,8 @@ async def test_managed_tuner_normalizes_into_shared_queue_without_direct_admissi
     assert entry.future is not None and not entry.future.done()
     entry.future.set_result(None)
     await task
-async def test_managed_tuner_ignores_observed_rf_and_uses_authority_policy(managed):
+@pytest.mark.timeout(30)
+async def test_managed_tuner_ignores_observed_rf_and_uses_authority_policy(managed, virtual_clock: VirtualClock):
     managed.store.apply_current(Observation(
         path=FieldPath.global_("tx_state", "ptt"), value=True,
         source=SourceMetadata(source="test", provider="tests"),
@@ -245,7 +252,8 @@ async def test_managed_tuner_ignores_observed_rf_and_uses_authority_policy(manag
     assert await _replies(managed, 2) == [b"RPRT -9\n", b"RPRT 0\n"]
     assert managed.radio.calls.count(("tuner", 1)) == before
     assert ("tuner", 0) in managed.radio.calls
-async def test_injected_references_and_per_call_leaf_preserve_shared_default(managed):
+@pytest.mark.timeout(30)
+async def test_injected_references_and_per_call_leaf_preserve_shared_default(managed, virtual_clock: VirtualClock):
     handler = managed.server._rig_handler
     assert (handler._managed_tx_authority, handler._command_service, handler._state_store) == (managed.authority, managed.service, managed.store)
     assert handler._command_queue is managed.queue and managed.server._command_queue is managed.queue
@@ -253,14 +261,14 @@ async def test_injected_references_and_per_call_leaf_preserve_shared_default(man
     await _send(managed, f"F {_FREQUENCY}")
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     assert managed.default.calls == []
-async def test_rigctld_success_waits_for_shared_queue_provider_settlement(managed):
+@pytest.mark.timeout(30)
+async def test_rigctld_success_waits_for_shared_queue_provider_settlement(managed, virtual_clock: VirtualClock):
     gate = managed.lane.block_next()
     submissions, _ = _observe_starts(managed)
     await _send(managed, "T 1")
     reply = asyncio.create_task(_replies(managed, 1))
     try:
-        while not submissions or not submissions[0][0].done():
-            await asyncio.sleep(0)
+        await await_until(lambda: bool(submissions) and submissions[0][0].done(), timeout=10.0, description="the key-down submission")
         assert not submissions[0][0].result().settlement_done and not reply.done()
         gate.set()
         assert await reply == [b"RPRT 0\n"]
@@ -275,33 +283,36 @@ async def test_rigctld_success_waits_for_shared_queue_provider_settlement(manage
         if not reply.done():
             reply.cancel()
         await asyncio.gather(reply, return_exceptions=True)
-async def test_active_owner_off_provider_error_retains_release_debt(managed):
+@pytest.mark.timeout(30)
+async def test_active_owner_off_provider_error_retains_release_debt(managed, virtual_clock: VirtualClock):
     await _key(managed)
     managed.lane.results.append(ActuationResult.UNCERTAIN)
     await _send(managed, "T 0")
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     while (await managed.authority.snapshot()).state.pending_effect is not None:
-        await asyncio.sleep(0)
+        await virtual_clock.elapse(0)
     state = (await managed.authority.snapshot()).state
     assert state.intent.kind is ManagedTxIntentKind.RX and state.release_required
     await _clear_release_debt(managed)
 @pytest.mark.parametrize("result", [ActuationResult.ACCEPTED, ActuationResult.UNCERTAIN])
-async def test_active_owner_off_settles_while_frequency_is_pending(managed, result):
+@pytest.mark.timeout(30)
+async def test_active_owner_off_settles_while_frequency_is_pending(managed, virtual_clock: VirtualClock, result):
     await _key(managed)
     gate = managed.lane.block_next()
     managed.lane.results.append(result)
     await _send(managed, f"F {_FREQUENCY}", "T 0")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
-    await asyncio.wait_for(managed.lane.started.get(), _WAIT)
+    await managed.radio.entered.wait()
+    await managed.lane.started.get()
     assert not managed.radio.finished.is_set() and (await managed.authority.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
     managed.radio.release.set()
     assert await _replies(managed, 2) == [b"RPRT 0\n", b"RPRT 0\n"]
     gate.set()
     if result is ActuationResult.UNCERTAIN:
         while (await managed.authority.snapshot()).state.pending_effect is not None:
-            await asyncio.sleep(0)
+            await virtual_clock.elapse(0)
         await _clear_release_debt(managed)
-async def test_managed_off_execution_keeps_frozen_predecessor_barrier(managed):
+@pytest.mark.timeout(30)
+async def test_managed_off_execution_keeps_frozen_predecessor_barrier(managed, virtual_clock: VirtualClock):
     registered, writes = asyncio.Event(), []
     class ObservedFuture(asyncio.Future):
         def add_done_callback(self, callback, *, context=None):
@@ -332,71 +343,79 @@ async def test_managed_off_execution_keeps_frozen_predecessor_barrier(managed):
         barrier_task.cancel()
         await asyncio.gather(barrier_task, return_exceptions=True)
     assert execution.done() and retirement.done() and writes == [b"RPRT 0\n"]
-async def test_capacity_reserve_admits_off_and_retires_all_prior_error_slots(managed):
+@pytest.mark.timeout(30)
+async def test_capacity_reserve_admits_off_and_retires_all_prior_error_slots(managed, virtual_clock: VirtualClock):
     await _key(managed)
     count = _MAX_PENDING_CLIENT_RESPONSES - 1
     await _send(managed, f"F {_FREQUENCY}", *(["unknown"] * count), "T 0")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
-    await asyncio.wait_for(managed.lane.started.get(), _WAIT)
+    await managed.radio.entered.wait()
+    await managed.lane.started.get()
     assert (await managed.authority.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
     managed.radio.release.set()
     assert await _replies(managed, count + 2) == [b"RPRT 0\n", *([b"RPRT -4\n"] * count), b"RPRT 0\n"]
-async def test_no_non_ptt_queue_or_classification_execution(managed):
+@pytest.mark.timeout(30)
+async def test_no_non_ptt_queue_or_classification_execution(managed, virtual_clock: VirtualClock):
     managed.radio.release.set()
     await _send(managed, f"F {_FREQUENCY}")
     assert await _replies(managed, 1) == [b"RPRT 0\n"] and managed.default.calls == []
     assert managed.server._command_queue is managed.queue and managed.queue.pending_count == 0
-async def test_frequency_provider_rejection_preserves_terminal_error(managed):
+@pytest.mark.timeout(30)
+async def test_frequency_provider_rejection_preserves_terminal_error(managed, virtual_clock: VirtualClock):
     managed.radio.fail_frequency = True
     await _send(managed, f"F {_FREQUENCY}")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
+    await managed.radio.entered.wait()
     managed.radio.release.set()
     assert await _replies(managed, 1) == [b"RPRT -6\n"]
 @pytest.mark.parametrize("vfo", ["VFOA", "VFOB"], ids=["valid-vfo", "invalid-vfo"])
-async def test_pending_on_is_revoked_between_spawn_and_validation(managed, vfo):
+@pytest.mark.timeout(30)
+async def test_pending_on_is_revoked_between_spawn_and_validation(managed, virtual_clock: VirtualClock, vfo):
     managed.radio._profile = SerialMockRadio(model="IC-7300" if vfo == "VFOB" else "IC-7610").profile
     entered, release = _gate_on_handler(managed)
     submissions, _ = _observe_starts(managed)
     await _send(managed, f"T {vfo} 1")
-    await asyncio.wait_for(entered.wait(), _WAIT)
+    await entered.wait()
     await _send(managed, "T 0")
-    while not submissions[0][0].done():
-        await asyncio.sleep(0)
+    await await_until(lambda: submissions[0][0].done(), timeout=10.0, description="the revoked key-down submission")
     assert (submissions[0][0].cancelled() or submissions[0][0].result().outcome is ManagedTxOutcome.REJECTED) and not submissions[0][1].done()
     release.set()
     assert await _replies(managed, 2) == [b"RPRT -9\n", b"RPRT 0\n"] and not submissions[0][1].done()
     assert [effect.operation for effect in managed.lane.effects] == []
 @pytest.mark.parametrize(("outcome", "first"), [(ManagedTxOutcome.ACCEPTED, b"RPRT 0\n"),
     (ManagedTxOutcome.REJECTED, b"RPRT -9\n"), (None, b"RPRT -6\n")], ids=["accepted", "rejected", "authority-error"])
-async def test_revocation_marker_preserves_exact_submission_result(managed, outcome, first):
+@pytest.mark.timeout(30)
+async def test_revocation_marker_preserves_exact_submission_result(managed, virtual_clock: VirtualClock, outcome, first):
     entered, release = _gate_on_handler(managed)
     settle = asyncio.Event()
+    async def _already_settled():
+        return None
     async def controlled():
         await settle.wait()
         if outcome is None:
             raise RuntimeError("injected authority failure")
-        return SimpleNamespace(outcome=outcome, wait_settlement=lambda: asyncio.sleep(0))
+        return SimpleNamespace(outcome=outcome, wait_settlement=_already_settled)
     submissions, off_started = _observe_starts(managed, lambda: asyncio.create_task(controlled()))
     await _send(managed, "T 1")
-    await asyncio.wait_for(entered.wait(), _WAIT)
+    await entered.wait()
     await _send(managed, "T 0")
-    await asyncio.wait_for(off_started.wait(), _WAIT)
+    await off_started.wait()
     settle.set()
     release.set()
     assert await _replies(managed, 2) == [first, b"RPRT 0\n"] and not submissions[0][1].done()
-async def test_invalid_validation_committed_before_off_preserves_evfo(managed):
+@pytest.mark.timeout(30)
+async def test_invalid_validation_committed_before_off_preserves_evfo(managed, virtual_clock: VirtualClock):
     managed.radio._profile = SerialMockRadio(model="IC-7300").profile
     committed, release = _gate_on_handler(managed, after=True)
     submissions, off_started = _observe_starts(managed)
     await _send(managed, "T VFOB 1")
-    await asyncio.wait_for(committed.wait(), _WAIT)
+    await committed.wait()
     assert submissions[0][1].validation_committed and not submissions[0][1].done()
     await _send(managed, "T 0")
-    await asyncio.wait_for(off_started.wait(), _WAIT)
+    await off_started.wait()
     release.set()
     assert await _replies(managed, 2) == [b"RPRT -16\n", b"RPRT 0\n"]
     assert len(submissions) == 1 and not submissions[0][1].done() and managed.lane.effects == []
-async def test_unkey_after_queue_unbind_still_releases(managed):
+@pytest.mark.timeout(30)
+async def test_unkey_after_queue_unbind_still_releases(managed, virtual_clock: VirtualClock):
     """An unkey never captures the connection generation (P0c fix round).
 
     After the queue consumer unbinds (RadioPoller.stop), T 0 must still
@@ -409,7 +428,8 @@ async def test_unkey_after_queue_unbind_still_releases(managed):
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     state = (await managed.authority.snapshot()).state
     assert state.intent.kind is ManagedTxIntentKind.RX
-async def test_pending_on_defers_handler_state_evaluation_until_predecessor(managed):
+@pytest.mark.timeout(30)
+async def test_pending_on_defers_handler_state_evaluation_until_predecessor(managed, virtual_clock: VirtualClock):
     handler, seen = managed.server._rig_handler, []
     execute = handler.execute
     async def observed(cmd, **kwargs):
@@ -418,14 +438,15 @@ async def test_pending_on_defers_handler_state_evaluation_until_predecessor(mana
         return await execute(cmd, **kwargs)
     handler.execute = observed
     await _send(managed, f"F {_FREQUENCY}", "T 1")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
-    await asyncio.sleep(0)
+    await managed.radio.entered.wait()
+    await virtual_clock.elapse(0)
     assert seen == []
     managed.radio.release.set()
     assert await _replies(managed, 2) == [b"RPRT 0\n"] * 2
     assert seen == [True]
 @pytest.mark.parametrize("provider_error", [False, True])
-async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, provider_error):
+@pytest.mark.timeout(30)
+async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, virtual_clock: VirtualClock, provider_error):
     await _key(managed)
     later_on_received = asyncio.Event()
     start, execute = managed.authority.start_ptt_submission, managed.server._rig_handler.execute
@@ -436,23 +457,24 @@ async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, p
         return submission
     async def gated(cmd, **kwargs):
         if cmd.long_cmd == "set_ptt" and not int(cmd.args[0]):
-            await asyncio.wait_for(later_on_received.wait(), _WAIT)
+            await later_on_received.wait()
         return await execute(cmd, **kwargs)
     managed.authority.start_ptt_submission = observed
     managed.server._rig_handler.execute = gated
     managed.radio.fail_frequency = provider_error
     await _send(managed, f"F {_FREQUENCY}", "T 0", "T 1")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
-    await asyncio.wait_for(managed.lane.started.get(), _WAIT)
+    await managed.radio.entered.wait()
+    await managed.lane.started.get()
     assert [effect.operation for effect in managed.lane.effects] == [ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE]
     managed.radio.release.set()
     first = b"RPRT -6\n" if provider_error else b"RPRT 0\n"
     assert await _replies(managed, 3) == [first, b"RPRT 0\n", b"RPRT 0\n"]
     assert managed.lane.effects[-1].operation is ActuationOperation.PTT_ON
 @pytest.mark.parametrize("ending", ["eof", "server-stop"])
-async def test_disconnect_revokes_pending_on(managed, ending):
+@pytest.mark.timeout(30)
+async def test_disconnect_revokes_pending_on(managed, virtual_clock: VirtualClock, ending):
     await _send(managed, f"F {_FREQUENCY}", "T 1")
-    await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
+    await managed.radio.entered.wait()
     connections = tuple(managed.server._client_tasks)
     if ending == "eof":
         unregister, closed = managed.queue.unregister_session, asyncio.Event()
@@ -465,13 +487,14 @@ async def test_disconnect_revokes_pending_on(managed, ending):
         # The case is a disconnect the server has seen: the FIN reaches its
         # reader only once delivered (later on WSL2 mirrored loopback), so
         # release the radio only after the server retired the connection.
-        await asyncio.wait_for(closed.wait(), _WAIT)
+        await closed.wait()
     else:
         await managed.server.stop()
     managed.radio.release.set()
     await asyncio.gather(*connections, return_exceptions=True)
     assert all(task.done() for task in connections) and managed.lane.effects == []
-async def test_sequential_frequency_then_ptt_preserves_wire_order(managed):
+@pytest.mark.timeout(30)
+async def test_sequential_frequency_then_ptt_preserves_wire_order(managed, virtual_clock: VirtualClock):
     managed.radio.release.set()
     for command in (f"F {_FREQUENCY}", "T 1", "T 0"):
         await _send(managed, command)
@@ -489,11 +512,12 @@ async def _cancel_and_join(*tasks):
         if not task.done():
             task.cancel()
     gathered = asyncio.gather(*owned, return_exceptions=True)
-    results = await asyncio.wait_for(asyncio.shield(gathered), _WAIT)
+    results = await asyncio.shield(gathered)
     for result in results:
         if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
             raise result
-async def test_cancelled_shield_wait_still_settles_both_futures_and_unblocks_successor(managed):
+@pytest.mark.timeout(30)
+async def test_cancelled_shield_wait_still_settles_both_futures_and_unblocks_successor(managed, virtual_clock: VirtualClock):
     registered = asyncio.Event()
     class ObservedFuture(asyncio.Future):
         def add_done_callback(self, callback, *, context=None):
@@ -520,24 +544,25 @@ async def test_cancelled_shield_wait_still_settles_both_futures_and_unblocks_suc
         execution=execution, retirement=retirement)
     successor_task = None
     try:
-        await asyncio.wait_for(registered.wait(), _WAIT)
+        await registered.wait()
         command_task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(command_task, _WAIT)
+            await command_task
         assert command_task.cancelled() and writes == [] and calls == []
         assert execution.done() and retirement.done()
         assert not predecessor_execution.done() and not predecessor_execution.cancelled()
         successor_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=successor_command,
             predecessor_execution=execution, predecessor_retirement=retirement,
             execution=successor_execution, retirement=successor_retirement)
-        await asyncio.wait_for(successor_task, _WAIT)
+        await successor_task
         assert successor_execution.done() and successor_retirement.done()
         assert calls == [successor_command] and writes == [_FREQ_LINE]
     finally:
         if not predecessor_execution.done():
             predecessor_execution.set_result(None)
         await _cancel_and_join(command_task, successor_task)
-async def test_cancelled_handler_execution_still_settles_both_futures_and_unblocks_successor(managed):
+@pytest.mark.timeout(30)
+async def test_cancelled_handler_execution_still_settles_both_futures_and_unblocks_successor(managed, virtual_clock: VirtualClock):
     entered, release, exited, calls = asyncio.Event(), asyncio.Event(), asyncio.Event(), []
     async def gated_handler(*args, **kwargs):
         calls.append(args[0] if args else kwargs.get("cmd"))
@@ -566,25 +591,26 @@ async def test_cancelled_handler_execution_still_settles_both_futures_and_unbloc
         execution=execution, retirement=retirement)
     successor_task = None
     try:
-        await asyncio.wait_for(entered.wait(), _WAIT)
+        await entered.wait()
         command_task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(command_task, _WAIT)
+            await command_task
         assert command_task.cancelled()
-        await asyncio.wait_for(exited.wait(), _WAIT)
+        await exited.wait()
         assert writes == [] and len(calls) == 1
         assert execution.done() and retirement.done()
         assert predecessor_execution.done() and not predecessor_execution.cancelled()
         successor_task = _spawn_slot(managed.server, writer=writer, session=session, cmd=successor_command,
             predecessor_execution=execution, predecessor_retirement=retirement,
             execution=successor_execution, retirement=successor_retirement)
-        await asyncio.wait_for(successor_task, _WAIT)
+        await successor_task
         assert successor_execution.done() and successor_retirement.done()
         assert len(calls) == 2 and writes == [_FREQ_LINE]
     finally:
         release.set()
         await _cancel_and_join(command_task, successor_task)
-async def test_pre_start_cancelled_response_task_still_retires_successor(managed, monkeypatch):
+@pytest.mark.timeout(30)
+async def test_pre_start_cancelled_response_task_still_retires_successor(managed, virtual_clock: VirtualClock, monkeypatch):
     loop = asyncio.get_running_loop()
     seen = []
     real_create_task = type(loop).create_task
@@ -605,7 +631,8 @@ async def test_pre_start_cancelled_response_task_still_retires_successor(managed
     (fourth,) = await _replies(managed, 1)
     assert fourth == expected
 @pytest.mark.parametrize("cancel_phase", ["handler", "retirement"])
-async def test_cancelled_slot_does_not_let_successor_bypass_earlier_retirement(managed, cancel_phase):
+@pytest.mark.timeout(30)
+async def test_cancelled_slot_does_not_let_successor_bypass_earlier_retirement(managed, virtual_clock: VirtualClock, cancel_phase):
     entered_b, release_b, exited_b, calls = asyncio.Event(), asyncio.Event(), asyncio.Event(), []
     drain_entered, drain_release = asyncio.Event(), asyncio.Event()
     b_waiting_retirement, c_waiting_retirement = asyncio.Event(), asyncio.Event()
@@ -650,30 +677,30 @@ async def test_cancelled_slot_does_not_let_successor_bypass_earlier_retirement(m
         execution=execution_a, retirement=retirement_a)
     task_b, task_c = None, None
     try:
-        await asyncio.wait_for(drain_entered.wait(), _WAIT)
+        await drain_entered.wait()
         assert writes == [_FREQ_LINE] and not task_a.done() and not retirement_a.done()
         task_b = _spawn_slot(managed.server, writer=writer_after, session=session, cmd=command_b,
             predecessor_execution=execution_a, predecessor_retirement=retirement_a,
             execution=execution_b, retirement=retirement_b)
-        await asyncio.wait_for(entered_b.wait(), _WAIT)
+        await entered_b.wait()
         if cancel_phase == "retirement":
             release_b.set()
-            await asyncio.wait_for(b_waiting_retirement.wait(), _WAIT)
+            await b_waiting_retirement.wait()
         assert calls == [command_a, command_b]
         task_b.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task_b, _WAIT)
+            await task_b
         assert exited_b.is_set() and execution_b.done() and not retirement_b.done()
         task_c = _spawn_slot(managed.server, writer=writer_after, session=session, cmd=command_c,
             predecessor_execution=execution_b, predecessor_retirement=retirement_b,
             execution=execution_c, retirement=retirement_c)
-        await asyncio.wait_for(c_waiting_retirement.wait(), _WAIT)
+        await c_waiting_retirement.wait()
         assert execution_c.done() and not retirement_c.done() and not task_c.done()
         assert not retirement_a.done() and not retirement_b.done()
         assert calls == [command_a, command_b, command_c] and writes == [_FREQ_LINE]
         drain_release.set()
-        await asyncio.wait_for(task_a, _WAIT)
-        await asyncio.wait_for(task_c, _WAIT)
+        await task_a
+        await task_c
         assert task_b.cancelled()
         assert execution_a.done() and retirement_a.done()
         assert execution_b.done() and retirement_b.done()
@@ -683,7 +710,8 @@ async def test_cancelled_slot_does_not_let_successor_bypass_earlier_retirement(m
         drain_release.set()
         release_b.set()
         await _cancel_and_join(task_a, task_b, task_c)
-async def test_repeated_cancellation_waits_for_owned_handler_cleanup(managed):
+@pytest.mark.timeout(30)
+async def test_repeated_cancellation_waits_for_owned_handler_cleanup(managed, virtual_clock: VirtualClock):
     entered, cleanup_entered, cleanup_release, exited = (asyncio.Event() for _ in range(4))
     async def gated_handler(*args, **kwargs):
         entered.set()
@@ -708,19 +736,20 @@ async def test_repeated_cancellation_waits_for_owned_handler_cleanup(managed):
         predecessor_execution=predecessor_execution, predecessor_retirement=predecessor_retirement,
         execution=execution, retirement=retirement)
     try:
-        await asyncio.wait_for(entered.wait(), _WAIT)
+        await entered.wait()
         task.cancel()
-        await asyncio.wait_for(cleanup_entered.wait(), _WAIT)
+        await cleanup_entered.wait()
         task.cancel()
         cleanup_release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, _WAIT)
+            await task
         assert exited.is_set() and task.cancelled() and writes == []
         assert execution.done() and retirement.done()
     finally:
         cleanup_release.set()
         await _cancel_and_join(task)
-async def test_pre_start_cancelled_response_drains_fake_submission_before_disconnect(managed, monkeypatch):
+@pytest.mark.timeout(30)
+async def test_pre_start_cancelled_response_drains_fake_submission_before_disconnect(managed, virtual_clock: VirtualClock, monkeypatch):
     cleanup_entered, cleanup_release, exited = (asyncio.Event() for _ in range(3))
     submissions, responses = [], []
     async def fake_submission():
@@ -754,24 +783,25 @@ async def test_pre_start_cancelled_response_drains_fake_submission_before_discon
     clients = ()
     try:
         await _send(managed, "T 1")
-        await asyncio.wait_for(cleanup_entered.wait(), _WAIT)
+        await cleanup_entered.wait()
         assert len(responses) == 1 and responses[0].cancelled()
         clients = tuple(managed.server._client_tasks)
         assert len(clients) == 1
         await _send(managed, "q")
-        await asyncio.wait_for(retirement_entered.wait(), _WAIT)
+        await retirement_entered.wait()
         assert submissions[0] in retiring_tasks
         assert not clients[0].done() and not submissions[0].done() and not exited.is_set()
         assert managed.lane.effects == []
         cleanup_release.set()
-        await asyncio.wait_for(asyncio.gather(*clients), _WAIT)
+        await asyncio.gather(*clients)
         assert exited.is_set() and submissions[0].cancelled()
-        assert await asyncio.wait_for(managed.reader.read(), _WAIT) == b""
+        assert await managed.reader.read() == b""
         assert managed.lane.effects == []
     finally:
         cleanup_release.set()
         await _cancel_and_join(*responses, *submissions, *clients)
-async def test_managed_vox_on_is_refused_while_another_owner_holds_tx(managed):
+@pytest.mark.timeout(30)
+async def test_managed_vox_on_is_refused_while_another_owner_holds_tx(managed, virtual_clock: VirtualClock):
     # MOR-3534: VOX arms keying, so it is a TX start a non-holder may not issue.
     receipt = await managed.authority.submit_ptt(True, "websocket-1")
     assert receipt.outcome is ManagedTxOutcome.ACCEPTED
@@ -792,7 +822,7 @@ async def test_managed_vox_on_is_refused_while_another_owner_holds_tx(managed):
 
 
 @pytest.fixture(params=MODELS)
-async def managed_split(request):
+async def managed_split(request, virtual_clock: VirtualClock):
     queue = CommandQueue()
     queue.bind_connection_generation(lambda: "split-connection")
     refs = {}
@@ -866,10 +896,11 @@ async def _drain_split_entry(rig, entry):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("managed_split", ["IC-7300", "IC-9700"], indirect=True)
 @pytest.mark.parametrize("db,index", [(12, 1), (20, 2)])
 async def test_managed_preamp_same_socket_reads_pending_native_index(
-    managed_split, monkeypatch, db, index
+    managed_split, virtual_clock: VirtualClock, monkeypatch, db, index
 ):
     rig = managed_split
     setter = AsyncMock(spec=rig.radio.set_preamp)
@@ -888,9 +919,23 @@ async def test_managed_preamp_same_socket_reads_pending_native_index(
         )
     )
 
-    reply = await _exchange(
-        rig.writer, rig.reader, f"L PREAMP {db}\nl PREAMP\n".encode(), lines=2
+    # The managed_split fixture freezes the loop clock, which also freezes the
+    # 2 s wait_for inside _exchange: a missing PREAMP answer would hang past
+    # CI instead of failing. Bound the socket read in real time and join it.
+    exchange = asyncio.create_task(
+        _exchange(
+            rig.writer, rig.reader, f"L PREAMP {db}\nl PREAMP\n".encode(), lines=2
+        )
     )
+    try:
+        await await_until(
+            exchange.done, timeout=10.0, description="the preamp exchange reply"
+        )
+        reply = exchange.result()
+    finally:
+        if not exchange.done():
+            exchange.cancel()
+        await asyncio.gather(exchange, return_exceptions=True)
 
     assert reply == f"RPRT 0\n{db}\n".encode()
     setter.assert_awaited_once_with(index)
@@ -913,12 +958,13 @@ async def test_managed_preamp_same_socket_reads_pending_native_index(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X PKTUSB 2400\n"])
 @pytest.mark.parametrize(
     "change", [None, "authority", "provider", "session", "deadline"]
 )
 async def test_managed_split_currency_change_while_commander_queued_never_sets(
-    managed_split, monkeypatch, command, change
+    managed_split, virtual_clock: VirtualClock, monkeypatch, command, change
 ):
     rig = managed_split
     before = dict(rig.peer.slots)
@@ -933,7 +979,7 @@ async def test_managed_split_currency_change_while_commander_queued_never_sets(
             entry = rig.queue.take_entry()
             assert entry is not None and entry.future is not None
             drain = asyncio.create_task(_drain_split_entry(rig, entry))
-            await asyncio.wait_for(queued.wait(), 1)
+            await queued.wait()
             assert rig.radio._commander._queue.qsize() == 1
             assert not entry.future.done()
             if change == "authority":
@@ -949,13 +995,21 @@ async def test_managed_split_currency_change_while_commander_queued_never_sets(
                 rig.clock = lambda: entry.expires_at_monotonic + 1
             assert not entry.future.done()
             release.set()
-            await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+            await asyncio.gather(drain, return_exceptions=True)
             if change is None:
-                assert await reply == b"RPRT 0\n"
+                await await_until(
+                    reply.done, timeout=10.0, description="the split write reply"
+                )
+                assert reply.result() == b"RPRT 0\n"
                 assert rig.peer.slots["B"] != before["B"]
             else:
                 expected = b"RPRT -22\n" if change == "authority" else b"RPRT -11\n"
-                assert await reply == expected
+                await await_until(
+                    reply.done,
+                    timeout=10.0,
+                    description="the refused split write reply",
+                )
+                assert reply.result() == expected
                 assert not any(
                     cmd in (0x25, 0x26) and len(data) > 1
                     for cmd, _sub, data in rig.peer.requests
@@ -977,9 +1031,10 @@ async def test_managed_split_currency_change_while_commander_queued_never_sets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_managed_split_selection_change_after_preservation_never_sets(
-    managed_split, monkeypatch, command
+    managed_split, virtual_clock: VirtualClock, monkeypatch, command
 ):
     rig = managed_split
     before = dict(rig.peer.slots)
@@ -992,15 +1047,18 @@ async def test_managed_split_selection_change_after_preservation_never_sets(
         assert entry is not None
         rig.ordered.assert_called_once()
         drain = asyncio.create_task(_drain_split_entry(rig, entry))
-        await asyncio.wait_for(read_done.wait(), 1)
+        await read_done.wait()
         async with _client(rig.server) as (other_reader, other_writer):
             assert (
                 await _exchange(other_writer, other_reader, b"V VFOB\n") == b"RPRT 0\n"
             )
         assert rig.peer.selected == "B"
         release.set()
-        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
-        assert await reply == b"RPRT -9\n"
+        await asyncio.gather(drain, return_exceptions=True)
+        await await_until(
+            reply.done, timeout=10.0, description="the refused split write reply"
+        )
+        assert reply.result() == b"RPRT -9\n"
         assert not any(
             cmd == 0x26 and len(data) > 1 for cmd, _sub, data in rig.peer.requests
         )
@@ -1021,12 +1079,14 @@ async def test_managed_split_selection_change_after_preservation_never_sets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("command", "name"),
     [(b"I 14080100\n", "set_split_freq"), (b"X PKTUSB 2400\n", "set_split_mode")],
 )
+@pytest.mark.timeout(30)
 async def test_managed_split_writes_use_one_shared_ordered_entry(
-    managed_split, command, name
+    managed_split, virtual_clock: VirtualClock, command, name
 ):
     rig = managed_split
     _rf_state(rig.server, True)
@@ -1046,7 +1106,8 @@ async def test_managed_split_writes_use_one_shared_ordered_entry(
         assert not rig.peer.requests
         assert not reply.done()
         await _drain_split_entry(rig, entry)
-        assert await reply == b"RPRT 0\n"
+        await await_until(reply.done, timeout=10.0, description="the split write reply")
+        assert reply.result() == b"RPRT 0\n"
         if name == "set_split_freq":
             assert rig.peer.slots["B"][0] == 14_080_100
         else:
@@ -1076,10 +1137,11 @@ def _shield_split_completion_wait(monkeypatch, rig):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("command", [b"I 14080100\n", b"X USB 2400\n"])
 @pytest.mark.parametrize("ending", ["timeout", "disconnect"])
 async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
-    managed_split, monkeypatch, command, ending
+    managed_split, virtual_clock: VirtualClock, monkeypatch, command, ending
 ):
     rig = managed_split
     _shield_split_completion_wait(monkeypatch, rig)
@@ -1092,14 +1154,18 @@ async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
         assert entry is not None and entry.future is not None
         rig.ordered.assert_called_once()
         if ending == "timeout":
-            assert await reply == b"RPRT -5\n"
+            # The 0.05 s command timeout runs on the virtual clock: it fires
+            # only when the test moves time past it, after the entry proves
+            # the server is parked on the handler.
+            await virtual_clock.elapse(0.1)
+            await await_until(
+                reply.done, timeout=10.0, description="the timed-out split reply"
+            )
+            assert reply.result() == b"RPRT -5\n"
         else:
             rig.writer.close()
             await rig.writer.wait_closed()
-            await asyncio.wait_for(
-                asyncio.gather(*tuple(rig.server._client_tasks)),
-                2,
-            )
+            await asyncio.gather(*tuple(rig.server._client_tasks))
         assert entry.future.cancelled()
         await _drain_split_entry(rig, entry)
         assert rig.peer.slots == before
@@ -1114,8 +1180,9 @@ async def test_managed_split_cancelled_or_timed_out_entry_never_mutates_late(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["timeout", "disconnect"])
+@pytest.mark.timeout(30)
 async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
-    managed_split, monkeypatch, ending
+    managed_split, virtual_clock: VirtualClock, monkeypatch, ending
 ):
     rig = managed_split
     _shield_split_completion_wait(monkeypatch, rig)
@@ -1129,17 +1196,24 @@ async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
         entry = rig.queue.take_entry()
         assert entry is not None and entry.future is not None
         drain = asyncio.create_task(_drain_split_entry(rig, entry))
-        await asyncio.wait_for(rig.peer.relative_mode_read.wait(), 1)
+        await rig.peer.relative_mode_read.wait()
         assert rig.peer.slots == before
         if ending == "timeout":
-            assert await reply == b"RPRT -5\n"
+            # The 0.05 s command timeout runs on the virtual clock: it fires
+            # only when the test moves time past it, after the drain proves
+            # it is parked in the preservation read.
+            await virtual_clock.elapse(0.1)
+            await await_until(
+                reply.done, timeout=10.0, description="the timed-out split reply"
+            )
+            assert reply.result() == b"RPRT -5\n"
         else:
             rig.writer.close()
             await rig.writer.wait_closed()
-            await asyncio.wait_for(asyncio.gather(*tuple(rig.server._client_tasks)), 2)
+            await asyncio.gather(*tuple(rig.server._client_tasks))
         assert entry.future.cancelled()
         gate.set()
-        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
+        await asyncio.gather(drain, return_exceptions=True)
         assert not any(
             command == 0x26 and len(data) > 1
             for command, _sub, data in rig.peer.requests
@@ -1159,9 +1233,10 @@ async def test_managed_split_mode_cancelled_during_preservation_read_never_sets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("command", [b"X USB\n", b"X USB 0\n"])
 async def test_managed_split_mode_authority_change_during_preservation_never_sets(
-    managed_split, command
+    managed_split, virtual_clock: VirtualClock, command
 ):
     rig = managed_split
     before = dict(rig.peer.slots)
@@ -1173,11 +1248,14 @@ async def test_managed_split_mode_authority_change_during_preservation_never_set
         entry = rig.queue.take_entry()
         assert entry is not None and entry.controller_ticket is not None
         drain = asyncio.create_task(_drain_split_entry(rig, entry))
-        await asyncio.wait_for(rig.peer.relative_mode_read.wait(), 1)
+        await rig.peer.relative_mode_read.wait()
         await rig.radio._controller_authority.set_mode("remote")
         gate.set()
-        await asyncio.wait_for(asyncio.gather(drain, return_exceptions=True), 2)
-        assert await reply == b"RPRT -22\n"
+        await asyncio.gather(drain, return_exceptions=True)
+        await await_until(
+            reply.done, timeout=10.0, description="the refused split write reply"
+        )
+        assert reply.result() == b"RPRT -22\n"
         assert not any(
             cmd == 0x26 and len(data) > 1 for cmd, _sub, data in rig.peer.requests
         )
