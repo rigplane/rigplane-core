@@ -73,15 +73,22 @@ from __future__ import annotations
 
 import asyncio
 import struct
-import time
 from pathlib import Path
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import TypeVar
 
 import pytest
 
+from rigplane.testing.timing import VirtualClock, await_until
+
 # All tests in this module use MockIcomRadio and require no real hardware.
-pytestmark = pytest.mark.mock_integration
+# The virtual-clock fixture below parks every loop timer; the real-time
+# timeout is only the last-resort watchdog for a test that stops making
+# progress (all bounded waits use await_until on real events instead).
+pytestmark = [pytest.mark.mock_integration, pytest.mark.timeout(120)]
+
+_T = TypeVar("_T")
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame  # noqa: E402
 from rigplane.commands._frame import decode_wire_tuple  # noqa: E402
@@ -101,18 +108,18 @@ from test_tx_under_fault_matrix import (  # noqa: E402
 from test_multi_session_tx_lanes import _Arena  # noqa: E402
 
 # Bounded waits: every event, reply line and wire observation the tests
-# await uses these budgets (asyncio.wait_for / monotonic deadlines).
+# await uses these budgets (``await_until`` real-time deadlines).
 _EVENT_WAIT_S = 5.0
 _WIRE_WAIT_S = 5.0
-
-# A held round nobody releases (a lost test) must not wedge the simulator
-# past teardown: the deferred reply is dropped after this bound.
-_HOLD_RELEASE_TIMEOUT_S = 10.0
 
 # After the acquisition stand-down, the wire must stay silent this long
 # before a scenario starts: polls already dispatched when the pause hit
 # drain within this window, so the first asserted frame is never theirs.
+# The drain below polls the capture every ``_DRAIN_POLL_S`` and needs this
+# many consecutive unchanged polls to cover the window.
 _WIRE_QUIET_S = 0.15
+_DRAIN_POLL_S = 0.02
+_DRAIN_QUIET_POLLS = 8  # 8 * 0.02 s covers the quiet window above
 
 # FE FE <addr> E0 26 01 FD — the unselected-receiver mode GET.
 _GET_LEN = 7
@@ -239,20 +246,31 @@ def _pause_acquisition(arena: _Arena) -> None:
 async def _drain_in_flight_polls(arena: _Arena) -> None:
     """Bounded wait until polls dispatched before the pause have drained."""
     sim = arena.sim
-    deadline = time.monotonic() + _WIRE_WAIT_S
-    quiet_from = time.monotonic() + _WIRE_QUIET_S
     last_seen = len(sim.civ_frames_received)
-    while time.monotonic() < quiet_from:
-        if time.monotonic() >= deadline:
-            raise AssertionError(
-                "the simulator wire never went quiet after the "
-                f"acquisition pause; {_frames_debug(sim)}"
-            )
-        await asyncio.sleep(0.02)
+    quiet_polls = 0
+
+    def quiet() -> bool:
+        nonlocal last_seen, quiet_polls
         seen = len(sim.civ_frames_received)
         if seen != last_seen:
             last_seen = seen
-            quiet_from = time.monotonic() + _WIRE_QUIET_S
+            quiet_polls = 0
+            return False
+        quiet_polls += 1
+        return quiet_polls >= _DRAIN_QUIET_POLLS
+
+    try:
+        await await_until(
+            quiet,
+            timeout=_WIRE_WAIT_S,
+            interval=_DRAIN_POLL_S,
+            description="the simulator wire to go quiet after the acquisition pause",
+        )
+    except AssertionError:
+        raise AssertionError(
+            "the simulator wire never went quiet after the "
+            f"acquisition pause; {_frames_debug(sim)}"
+        ) from None
 
 
 class _SplitModeFrameHold:
@@ -299,10 +317,11 @@ class _SplitModeFrameHold:
                     round_.received.set()
 
                     async def deliver() -> None:
+                        # The test always releases every round in its
+                        # ``finally`` (``release_all``), so this resolves;
+                        # a lost test round must not wedge teardown.
                         try:
-                            await asyncio.wait_for(
-                                round_.release.wait(), _HOLD_RELEASE_TIMEOUT_S
-                            )
+                            await round_.release.wait()
                             original(data, addr, sender_id, proto)
                         except Exception:
                             pass  # a lost test round must not wedge teardown
@@ -316,8 +335,12 @@ class _SplitModeFrameHold:
     async def wait_read(self, ordinal: int) -> None:
         """Bounded wait for the held frame at ``ordinal`` to arrive."""
         try:
-            await asyncio.wait_for(self.rounds[ordinal].received.wait(), _EVENT_WAIT_S)
-        except asyncio.TimeoutError:
+            await await_until(
+                self.rounds[ordinal].received.is_set,
+                timeout=_EVENT_WAIT_S,
+                description=f"held frame #{ordinal} to reach the simulator",
+            )
+        except AssertionError:
             raise AssertionError(
                 f"held frame #{ordinal} never reached the simulator; "
                 f"{_frames_debug(self._sim)}"
@@ -362,26 +385,43 @@ class _CommanderEnqueueProbe:
 async def _await_probe(event: asyncio.Event, sim: MockIcomRadio, claim: str) -> None:
     """Bounded probe wait; a timeout reports the whole wire."""
     try:
-        await asyncio.wait_for(event.wait(), _EVENT_WAIT_S)
-    except asyncio.TimeoutError:
+        await await_until(event.is_set, timeout=_EVENT_WAIT_S, description=claim)
+    except AssertionError:
         raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
 
 
 async def _await_wire_frame(sim: MockIcomRadio, frame: bytes, claim: str) -> None:
     """Bounded wait until ``frame`` is captured by the simulator."""
-    deadline = time.monotonic() + _WIRE_WAIT_S
-    while frame not in sim.civ_frames_received:
-        if time.monotonic() >= deadline:
-            raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
-        await asyncio.sleep(0.02)
+    try:
+        await await_until(
+            lambda: frame in sim.civ_frames_received,
+            timeout=_WIRE_WAIT_S,
+            description=claim,
+        )
+    except AssertionError:
+        raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
+
+
+async def _await_task(task: asyncio.Task[_T], sim: MockIcomRadio, claim: str) -> _T:
+    """Bounded wait for a reply task; a timeout settles it and reports the wire."""
+    try:
+        await await_until(task.done, timeout=_EVENT_WAIT_S, description=claim)
+    except AssertionError:
+        await _settle(task)
+        raise AssertionError(f"{claim}; {_frames_debug(sim)}") from None
+    return task.result()
 
 
 async def _await_line(task: asyncio.Task[str], sim: MockIcomRadio, claim: str) -> str:
     """Bounded reply wait; a timeout reports the whole wire."""
     try:
-        return await asyncio.wait_for(task, _EVENT_WAIT_S)
-    except asyncio.TimeoutError:
+        await await_until(
+            task.done, timeout=_EVENT_WAIT_S, description=f"{claim} reply"
+        )
+    except AssertionError:
+        await _settle(task)
         raise AssertionError(f"{claim} never replied; {_frames_debug(sim)}") from None
+    return task.result()
 
 
 def _seed_unselected(
@@ -418,7 +458,7 @@ def _split_mode_frames(sim: MockIcomRadio, start: int = 0) -> list[bytes]:
     ]
 
 
-async def _settle(task: asyncio.Task[str]) -> None:  # type: ignore[type-arg]
+async def _settle(task: asyncio.Task[_T]) -> None:  # type: ignore[type-arg]
     """Cancel-and-drain a reply task a failing test may have left pending."""
     if not task.done():
         task.cancel()
@@ -467,7 +507,7 @@ async def _control_write(arena: _Arena, rig: _RigctldKeyClient) -> int:
 
 
 async def test_two_rigctld_clients_composing_write_keeps_bs_newer_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """Two rigctld TCP clients: B's write survives A's paused split write.
 
@@ -541,7 +581,7 @@ async def test_two_rigctld_clients_composing_write_keeps_bs_newer_fields(
 
 
 async def test_http_raw_transaction_competitor_keeps_bs_newer_fields(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """Client B competes through ``POST /api/v1/civ/transaction``.
 
@@ -565,25 +605,22 @@ async def test_http_raw_transaction_competitor_keeps_bs_newer_fields(
         reply_a = asyncio.create_task(arena.tcp_line(a, "X RTTY 0"))
         try:
             await hold.wait_read(n)
-            try:
-                status, body = await asyncio.wait_for(
-                    _http_json(
-                        arena.port,
-                        "POST",
-                        "/api/v1/civ/transaction",
-                        {
-                            "command": 0x26,
-                            "data": "01050101",
-                            "expect": "ack",
-                            "timeout_ms": 1000,
-                        },
-                    ),
-                    _EVENT_WAIT_S,
+            http_task = asyncio.create_task(
+                _http_json(
+                    arena.port,
+                    "POST",
+                    "/api/v1/civ/transaction",
+                    {
+                        "command": 0x26,
+                        "data": "01050101",
+                        "expect": "ack",
+                        "timeout_ms": 1000,
+                    },
                 )
-            except asyncio.TimeoutError:
-                raise AssertionError(
-                    f"the HTTP transaction never completed; {_frames_debug(arena.sim)}"
-                ) from None
+            )
+            status, body = await _await_task(
+                http_task, arena.sim, "the HTTP transaction never completed"
+            )
             assert (status, body.get("ok"), body.get("status")) == (
                 200,
                 True,
@@ -617,7 +654,7 @@ async def test_http_raw_transaction_competitor_keeps_bs_newer_fields(
 
 
 async def test_competitor_during_a_held_set_ack_never_buys_a_second_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """A competitor landing while the SET's ACK is pending buys no retry.
 
@@ -678,7 +715,10 @@ async def test_competitor_during_a_held_set_ack_never_buys_a_second_set(
             assert await _await_line(reply_a, arena.sim, "A's write") == "RPRT -6\n", (
                 _frames_debug(arena.sim)
             )
-            status, body = await asyncio.wait_for(competitor, _EVENT_WAIT_S)
+            assert competitor is not None
+            status, body = await _await_task(
+                competitor, arena.sim, "the competitor transaction never completed"
+            )
             assert (status, body.get("ok"), body.get("status")) == (
                 200,
                 True,
@@ -706,7 +746,7 @@ async def test_competitor_during_a_held_set_ack_never_buys_a_second_set(
 
 
 async def test_persistent_interference_fails_the_write_without_a_stale_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """Interference on every attempt: an honest error, never a stale SET.
 
@@ -779,7 +819,7 @@ async def test_persistent_interference_fails_the_write_without_a_stale_set(
 
 
 async def test_unopposed_split_write_reads_once_and_sets_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """Control: with nobody competing, N reads, one SET, one readback.
 
@@ -798,7 +838,7 @@ async def test_unopposed_split_write_reads_once_and_sets_once(
 
 
 async def test_ptt_off_keeps_plain_dispatch_order_across_a_held_split_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     """A scope owner's write changes nothing about dispatch order or priority.
 
@@ -862,12 +902,7 @@ async def test_ptt_off_keeps_plain_dispatch_order_across_a_held_split_write(
                 arena.sim
             )
             hold.release(n)
-            try:
-                await asyncio.wait_for(reply_a, _EVENT_WAIT_S)
-            except asyncio.TimeoutError:
-                raise AssertionError(
-                    f"the owner's write never completed; {_frames_debug(arena.sim)}"
-                ) from None
+            await _await_task(reply_a, arena.sim, "the owner's write never completed")
         finally:
             hold.release_all()
             await _settle(reply_a)  # type: ignore[arg-type]
