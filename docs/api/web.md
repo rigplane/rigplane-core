@@ -332,7 +332,10 @@ fields or infer a selected path from SDP or TURN configuration. The producer's
 The initiating reason survives later peer-close callbacks. These reason strings
 are stable public API; receivers retain unknown future `reason` and `path` values
 as strings. `WebRtcSessionEnded.from_json()` retains unknown event fields in
-`extra`, and `to_json()` re-emits them:
+`extra`, and `to_json()` re-emits them. `extra` is a read-only snapshot:
+mutating the input payload afterwards, or the dict a `to_json()` call
+returned, does not change the event, and unknown fields take no part in
+equality or hashing:
 
 | Reason | Meaning |
 |--------|---------|

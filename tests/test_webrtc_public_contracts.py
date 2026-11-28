@@ -264,6 +264,95 @@ def test_session_ended_producer_emits_only_known_fields() -> None:
     }
 
 
+def _ended_kwargs() -> dict[str, Any]:
+    return {
+        "correlation_id": "peer",
+        "ended_at": 1795737600,
+        "reason": "close_requested",
+        "ever_connected": False,
+        "path": "unknown",
+    }
+
+
+def test_session_ended_event_stays_hashable() -> None:
+    plain = rigplane.WebRtcSessionEnded(**_ended_kwargs())
+    assert hash(plain) == hash(rigplane.WebRtcSessionEnded(**_ended_kwargs()))
+    assert len({plain, rigplane.WebRtcSessionEnded(**_ended_kwargs())}) == 1
+    assert {plain: "event"}[rigplane.WebRtcSessionEnded(**_ended_kwargs())] == "event"
+    with_extras = rigplane.WebRtcSessionEnded.from_json(
+        {**plain.to_json(), "future_field": {"version": 2}}
+    )
+    assert hash(with_extras) == hash(plain)
+    assert len({plain, with_extras}) == 1
+
+
+def test_session_ended_equality_ignores_unknown_fields() -> None:
+    first = rigplane.WebRtcSessionEnded.from_json(
+        {**_ended_kwargs(), "future_field": 1}
+    )
+    second = rigplane.WebRtcSessionEnded.from_json(
+        {**_ended_kwargs(), "other_field": [1, 2]}
+    )
+    assert first == second
+    assert hash(first) == hash(second)
+    assert first != rigplane.WebRtcSessionEnded(
+        **{**_ended_kwargs(), "reason": "peer_failed"}
+    )
+
+
+def test_session_ended_extra_ignores_input_mutation() -> None:
+    wire: dict[str, Any] = {
+        **_ended_kwargs(),
+        "future_field": {"version": 2, "tags": ["a"]},
+    }
+    event = rigplane.WebRtcSessionEnded.from_json(wire)
+    wire["future_field"]["version"] = 3
+    wire["future_field"]["tags"].append("b")
+    wire["another"] = True
+    assert event.to_json() == {
+        **_ended_kwargs(),
+        "future_field": {"version": 2, "tags": ["a"]},
+    }
+
+    supplied: dict[str, Any] = {"future_field": {"version": 2}}
+    explicit = rigplane.WebRtcSessionEnded(**_ended_kwargs(), extra=supplied)
+    supplied["future_field"]["version"] = 3
+    supplied["another"] = True
+    assert explicit.to_json() == {
+        **_ended_kwargs(),
+        "future_field": {"version": 2},
+    }
+
+
+def test_session_ended_to_json_output_mutation_does_not_change_event() -> None:
+    event = rigplane.WebRtcSessionEnded.from_json(
+        {**_ended_kwargs(), "future_field": {"version": 2, "tags": ["a"]}}
+    )
+    snapshot = event.to_json()
+    snapshot["future_field"]["version"] = 3
+    snapshot["future_field"]["tags"].append("b")
+    snapshot["correlation_id"] = "changed"
+    snapshot["injected"] = True
+    assert event.to_json() == {
+        **_ended_kwargs(),
+        "future_field": {"version": 2, "tags": ["a"]},
+    }
+
+
+def test_session_ended_extra_rejects_direct_mutation() -> None:
+    event = rigplane.WebRtcSessionEnded.from_json(
+        {**_ended_kwargs(), "future_field": {"version": 2}}
+    )
+    with pytest.raises(TypeError):
+        event.extra["future_field"] = {"version": 3}  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        event.extra.clear()  # type: ignore[attr-defined]
+    assert event.to_json() == {
+        **_ended_kwargs(),
+        "future_field": {"version": 2},
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

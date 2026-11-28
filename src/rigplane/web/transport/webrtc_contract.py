@@ -11,10 +11,12 @@ from ``rigplane``) speaks exactly what the answerer reads and writes.
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Literal, Self, cast, get_args
 
 from ..channel_attach import RIGCTL_VERSIONS  # noqa: TID251
@@ -165,11 +167,21 @@ class WebRtcSessionEnded:
     reason: str
     ever_connected: bool
     path: str
-    extra: Mapping[str, object] = field(default_factory=dict)
+    # Unknown future wire fields, kept out of equality and hashing so the
+    # event compares and hashes exactly as it did before extras existed.
+    extra: Mapping[str, object] = field(default_factory=dict, compare=False, hash=False)
+
+    def __post_init__(self) -> None:
+        # Snapshot unknown fields: later input or output mutation must not
+        # change the frozen event, so deep-copy the values and expose a
+        # read-only view.
+        object.__setattr__(
+            self, "extra", MappingProxyType(copy.deepcopy(dict(self.extra)))
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
-            **self.extra,
+            **copy.deepcopy(dict(self.extra)),
             "correlation_id": self.correlation_id,
             "ended_at": self.ended_at,
             "reason": self.reason,
