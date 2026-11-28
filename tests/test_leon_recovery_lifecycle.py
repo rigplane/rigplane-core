@@ -1,12 +1,34 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+import struct
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from contextvars import copy_context
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from test_radio import _wrap_civ_in_udp
+from test_radio_connect import (
+    ConnectMockTransport,
+    _build_conninfo,
+    _build_login_response,
+    _build_status,
+    _FakeSocket,
+)
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import ConnectionError
+from rigplane.core.transport import ConnectionState
+from rigplane.core.tx_safety import RadioTx, TxOutcome, TxOwner, TxPhase, TxSource
+from rigplane.runtime import (
+    _civ_rx,
+    _control_phase,
+    managed_radio_runtime,
+    radio as radio_module,
+)
+from rigplane.runtime import session_lifecycle
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.session_lifecycle import LifecycleEvent, LifecycleState
@@ -44,6 +66,320 @@ def _radio(events: list[str]) -> CoreRadio:
 
 class _AncestorCancellationAttempt(BaseException):
     pass
+
+
+class _RecoveryControl(ConnectMockTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self._udp_transport: object | None = None
+        self._conninfo_notice_callback: Callable[[bytes], None] | None = None
+        self.remote_id = 0
+        self.discovery: list[int] = []
+        self.logins: list[int] = []
+
+    async def connect(self, host: str, port: int, **kwargs: object) -> None:
+        self.discovery.append(self.remote_id)
+        if self.remote_id:
+            raise TimeoutError("retired control session")
+        await super().connect(host, port)
+        self.my_id += 1
+        self.remote_id = 0xDEADBEEF
+        self._udp_transport = object()
+
+    async def reconnect(self, host: str, port: int, **kwargs: object) -> None:
+        await self.connect(host, port, **kwargs)
+
+    async def disconnect(self) -> None:
+        await super().disconnect()
+        self.state = ConnectionState.DISCONNECTED
+        self._udp_transport = None
+
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        await super().send_tracked(data, is_current=is_current)
+        if len(data) == 0x80:
+            self.logins.append(self.my_id)
+            self.queue_response(_build_login_response(token=self.my_id))
+            self.queue_response(_build_conninfo())
+        elif len(data) == 0x90:
+            self.queue_response(_build_status())
+
+    def drop_notice(self) -> bytes:
+        data = bytearray(0x90)
+        struct.pack_into("<III", data, 0, len(data), 0, self.remote_id)
+        struct.pack_into("<I", data, 0x0C, self.my_id)
+        return bytes(data)
+
+    def deliver_notice(self, data: bytes) -> None:
+        assert self._conninfo_notice_callback is not None
+        self._conninfo_notice_callback(data)
+
+
+class _RecoveryCiv(ConnectMockTransport):
+    def __init__(self, ptt: list[bool]) -> None:
+        super().__init__()
+        self._udp_transport: object | None = None
+        self._ptt = ptt
+        self.writes: list[bool] = []
+
+    async def connect(
+        self,
+        host: str,
+        port: int,
+        *,
+        local_host: str | None = None,
+        local_port: int = 0,
+        sock: object | None = None,
+    ) -> None:
+        await super().connect(host, port, local_host=local_host, local_port=local_port)
+        if isinstance(sock, _FakeSocket):
+            sock.close()
+        self._udp_transport = object()
+
+    async def disconnect(self) -> None:
+        await super().disconnect()
+        self._udp_transport = None
+
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        await super().send_tracked(data, is_current=is_current)
+        payload = data[_civ_rx.CIV_HEADER_SIZE :]
+        if not payload.startswith(b"\xfe\xfe"):
+            return
+        frame = parse_civ_frame(payload)
+        if (frame.command, frame.sub) != (0x1C, 0x00):
+            return
+        if frame.data:
+            on = bool(frame.data[0])
+            self._ptt[0] = on
+            self.writes.append(on)
+            reply = build_civ_frame(CONTROLLER_ADDR, frame.to_addr, 0xFB)
+        else:
+            reply = build_civ_frame(
+                CONTROLLER_ADDR, frame.to_addr, 0x1C, 0x00, bytes(self._ptt)
+            )
+        self.queue_response(_wrap_civ_in_udp(reply))
+
+
+@asynccontextmanager
+async def _recovery_link(
+    monkeypatch: pytest.MonkeyPatch, clock: VirtualClock
+) -> AsyncIterator[tuple[CoreRadio, _RecoveryControl, list[_RecoveryCiv]]]:
+    for module in (
+        _civ_rx,
+        _control_phase,
+        session_lifecycle,
+        radio_module,
+        managed_radio_runtime,
+    ):
+        clock.scope_to(monkeypatch, module)
+        # Timers run on the virtual loop. Only elapse() should advance it.
+        monkeypatch.setattr(module, "asyncio", asyncio)
+    monkeypatch.setattr(
+        _control_phase,
+        "_socket",
+        SimpleNamespace(
+            AF_INET=2, SOCK_DGRAM=2, socket=lambda *_: _FakeSocket(("192.0.2.2", 50004))
+        ),
+    )
+    radio = CoreRadio("192.0.2.1", model="IC-7610", auto_reconnect=False)
+    control = _RecoveryControl()
+    civ_ports: list[_RecoveryCiv] = []
+    ptt = [False]
+
+    def new_civ() -> _RecoveryCiv:
+        civ = _RecoveryCiv(ptt)
+        civ_ports.append(civ)
+        return civ
+
+    monkeypatch.setattr("rigplane.transport.IcomCivTransport", new_civ)
+    monkeypatch.setattr(
+        radio, "probe_connection_identity", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(radio, "_start_identity_read", lambda: None)
+    monkeypatch.setattr(radio, "_scope_session_ready", AsyncMock())
+    monkeypatch.setattr(radio, "_fetch_initial_state", AsyncMock())
+    monkeypatch.setattr(radio, "_ensure_audio_transport", AsyncMock())
+    radio._ctrl_transport = control  # type: ignore[assignment]
+    connect = asyncio.create_task(radio._control_phase._connect_once())
+    try:
+        await clock.elapse(1)
+        assert connect.done()
+        connect.result()
+        control.discovery.clear()
+        control.logins.clear()
+        yield radio, control, civ_ports
+    finally:
+        if not connect.done():
+            connect.cancel()
+        await asyncio.gather(connect, return_exceptions=True)
+        await radio.disconnect()
+        await radio._control_phase.release()
+
+
+@pytest.mark.timeout(10)
+async def test_session_free_interrupts_fast_watchdog_join_and_confirms_ptt_off(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    monkeypatch.setenv("RIGPLANE_MANAGED_TX", "1")
+    async with _recovery_link(monkeypatch, virtual_clock) as (
+        radio,
+        control,
+        civ_ports,
+    ):
+        arming = asyncio.create_task(radio.rearm_managed_tx())
+        await virtual_clock.elapse(0.2)
+        assert arming.done()
+        arming.result()
+        tx = radio._managed_tx_runtime
+        assert tx is not None
+        keying = asyncio.create_task(tx.request_on(TxOwner(TxSource.SDK, "test")))
+        await virtual_clock.elapse(0.2)
+        assert keying.done()
+        assert keying.result().outcome is TxOutcome.ACCEPTED
+        assert civ_ports[0].writes == [True]
+        assert tx.tx_snapshot.radio_tx is RadioTx.ON
+        radio._last_civ_data_received = None
+
+        runtime = radio._civ_runtime
+        watchdog = radio._civ_data_watchdog_task
+        assert watchdog is not None and not watchdog.done()
+        notice = control.drop_notice()
+        control.state = ConnectionState.DISCONNECTED
+        stop = runtime.stop_data_watchdog
+        full: asyncio.Task[None] | None = None
+
+        def notify_at_join() -> None:
+            nonlocal full
+            assert watchdog.cancelling()
+            control.deliver_notice(notice)
+            full = runtime._reconnect_task
+
+        async def stop_at_join() -> None:
+            if radio._civ_data_watchdog_task is watchdog and not watchdog.cancelling():
+                asyncio.get_running_loop().call_soon(notify_at_join)
+            await stop()
+
+        monkeypatch.setattr(runtime, "stop_data_watchdog", stop_at_join)
+        soft = asyncio.create_task(radio.soft_reconnect())
+        try:
+            await virtual_clock.elapse(2)
+            assert control.discovery == [0], (
+                "the superseded attempt used the old session"
+            )
+            assert soft.done()
+            with pytest.raises(ConnectionError, match="superseded"):
+                soft.result()
+            assert full is not None and full.done()
+            full.result()
+            assert len(control.logins) == 1
+            assert civ_ports[-1].writes == [False]
+            assert tx.tx_snapshot.radio_tx is RadioTx.OFF
+            assert tx.tx_snapshot.phase is TxPhase.IDLE
+        finally:
+            # A stalled baseline can still have both attempts in flight.
+            for task in (soft, full):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (soft, full) if task), return_exceptions=True
+            )
+
+
+@pytest.mark.timeout(10)
+async def test_detached_soft_predecessor_never_joins_full_replacement(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    async with _recovery_link(monkeypatch, virtual_clock) as (
+        radio,
+        control,
+        civ_ports,
+    ):
+        runtime = radio._civ_runtime
+        watchdog = radio._civ_data_watchdog_task
+        assert watchdog is not None and not watchdog.done()
+        notice = control.drop_notice()
+        full: asyncio.Task[None] | None = None
+
+        disconnect = civ_ports[0].disconnect
+
+        async def close_while_superseded() -> None:
+            nonlocal full
+            assert watchdog.done()
+            await disconnect()
+            if full is None:
+                control.deliver_notice(notice)
+                full = runtime._reconnect_task
+                # A predecessor whose close absorbs cancellation still
+                # must never attach to the full handoff waiting for it.
+                with suppress(asyncio.CancelledError):
+                    await asyncio.Future[None]()
+
+        monkeypatch.setattr(civ_ports[0], "disconnect", close_while_superseded)
+        soft = runtime._spawn_recovery_task()
+        try:
+            await virtual_clock.elapse(2)
+            assert full is not None and full is not soft and full.done(), (
+                "full recovery is still waiting for its detached predecessor"
+            )
+            full.result()
+            assert soft.done()
+            assert control.discovery == [0]
+            assert len(control.logins) == 1
+        finally:
+            for task in (soft, full):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (soft, full) if task), return_exceptions=True
+            )
+
+
+@pytest.mark.timeout(10)
+async def test_duplicate_drop_during_connected_tail_keeps_single_full_login(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    async with _recovery_link(monkeypatch, virtual_clock) as (radio, control, _):
+        runtime = radio._civ_runtime
+        entered = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def hold_after_connected() -> bool:
+            entered.set()
+            await finish.wait()
+            return False
+
+        monkeypatch.setattr(radio, "probe_connection_identity", hold_after_connected)
+        retired_notice = control.drop_notice()
+        control.deliver_notice(retired_notice)
+        full = runtime._reconnect_task
+        assert full is not None
+        await virtual_clock.elapse(1)
+        assert entered.is_set() and radio.connected and not full.done()
+
+        control.deliver_notice(retired_notice)
+        control.deliver_notice(bytes(0x90))
+        observed = runtime._reconnect_task
+        finish.set()
+        await virtual_clock.elapse(2)
+        assert observed is full
+        assert full.done()
+        full.result()
+        assert control.discovery == [0]
+        assert len(control.logins) == 1
+
+        control.deliver_notice(retired_notice)
+        assert runtime._reconnect_task is None
+        control.deliver_notice(control.drop_notice())
+        fresh = runtime._reconnect_task
+        assert fresh is not None and fresh is not full
+        await virtual_clock.elapse(2)
+        assert fresh.done()
+        fresh.result()
+        assert control.discovery == [0, 0]
+        assert len(control.logins) == 2
 
 
 @pytest.mark.timeout(10)

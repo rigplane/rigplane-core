@@ -752,14 +752,10 @@ class CivRuntime:
         # awaits the lifecycle's shared recovery.
         self._fast_reconnect_task: asyncio.Task[None] | None = None
         # The live recovery task once it has finished ``_force_cleanup_civ``.
-        # Past that point the host state is not CONNECTED, so "this task is
-        # the recorded one AND the host is CONNECTED again" means the session
-        # is re-established and the task is only running its tail
-        # (TX re-arm, audio re-arm). Cleared when the
-        # recorded task ends. A busy=0 notice in that state means the radio
-        # dropped the session AGAIN, so the tail gives way to a fresh
-        # recovery (MOR-3350); anything earlier is still re-establishing.
+        # A fresh drop can preempt its tail once the host is CONNECTED again
+        # (MOR-3350). The source epoch identifies the drop already covered.
         self._recovery_cleaned_task: asyncio.Task[None] | None = None
+        self._full_recovery_source_epoch: int | None = None
         # Preempt handoff (MOR-3350): the (replacement, predecessor) pair
         # while a tail-parked recovery is being replaced, so the
         # predecessor's teardown leaves the replacement alone.
@@ -1126,13 +1122,17 @@ class CivRuntime:
         soft_reconnect.
         """
         task = getattr(self._host, "_civ_data_watchdog_task", None)
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._host._civ_data_watchdog_task = None
+        try:
+            if task is not None and not task.done():
+                task.cancel()
+                # A child cancellation is a result. Cancellation of this
+                # join still propagates even if the watchdog returns normally.
+                await asyncio.gather(task, return_exceptions=True)
+                if not task.cancelled():
+                    task.result()
+        finally:
+            if getattr(self._host, "_civ_data_watchdog_task", None) is task:
+                self._host._civ_data_watchdog_task = None
 
         rc_task = self._reconnect_task
         # Never cancel the detached recovery task if *it* is the caller.  The
@@ -1708,6 +1708,7 @@ class CivRuntime:
                         # standby radio answers renewals while CI-V stays
                         # quiet and must never escalate on this probe.
                         self._host._civ_stream_ready = False
+                        source_epoch = self._host._civ_epoch
                         dead = await self._probe_control_session()
                         if dead == "reject":
                             logger.warning(
@@ -1716,7 +1717,8 @@ class CivRuntime:
                                 "requesting recovery now"
                             )
                             if self.request_recovery_now(
-                                "control session dead: reject"
+                                "control session dead: reject",
+                                source_epoch=source_epoch,
                             ):
                                 return
                             # Refused (MOR-4558): never exit with nothing
@@ -1832,7 +1834,10 @@ class CivRuntime:
             # Reserve the lifecycle slot in the datagram callback's turn.
             # A fast CI-V caller can otherwise start soft recovery while
             # the full handoff is still closing the old control socket.
-            self._host._session_lifecycle.prioritize_full_recovery(recovery)
+            self._full_recovery_source_epoch = self._host._civ_epoch
+            self._host._session_lifecycle.prioritize_full_recovery(
+                recovery, predecessor=preempt
+            )
             recovery.add_done_callback(self._observe_full_recovery_result)
         return recovery
 
@@ -1847,16 +1852,22 @@ class CivRuntime:
         if not task.cancelled():
             task.exception()
 
-    def request_recovery_now(self, reason: str) -> bool:
+    def request_recovery_now(
+        self, reason: str, *, source_epoch: int | None = None
+    ) -> bool:
         """Request full recovery from a session-free notice or a rejected probe.
 
         Full recovery replaces a pending or running soft recovery. A full
-        recovery already in progress covers duplicate notices until it has
-        re-established the session (MOR-3350).
+        recovery in progress covers duplicates and notices with unknown
+        origin. A drop proven to be from the new epoch can preempt the tail
+        after the session is re-established (MOR-3350).
 
         Returns whether a recovery was started (MOR-4558: the data watchdog
         keeps watching when its own escalation is refused).
         """
+        if source_epoch is not None and source_epoch != self._host._civ_epoch:
+            logger.info("civ-data-watchdog: notice ignored (%s): stale epoch", reason)
+            return False
         state = self._host._conn_state
         lifecycle = self._host._session_lifecycle
         live = self._reconnect_task
@@ -1881,10 +1892,11 @@ class CivRuntime:
             if soft_pending or (
                 live is self._recovery_cleaned_task
                 and state is RadioConnectionState.CONNECTED
+                and source_epoch is not None
+                and source_epoch != self._full_recovery_source_epoch
             ):
                 logger.warning(
-                    "civ-data-watchdog: %s during recovery, "
-                    "restarting the recovery",
+                    "civ-data-watchdog: %s during recovery, restarting the recovery",
                     reason,
                 )
                 self._spawn_recovery_task(full_reconnect_reason=reason, preempt=live)

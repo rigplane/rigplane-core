@@ -1076,13 +1076,16 @@ async def test_plain_recovery_does_not_escalate_before_first_civ_open() -> None:
     runtime = radio._civ_runtime
     order, released = _arm_notice_recovery(radio)
     remote_id = radio._ctrl_transport.remote_id
-    assert radio._civ_epoch == 0
-    assert runtime._soft_recovery_epoch is None
+    try:
+        assert radio._civ_epoch == 0
+        assert runtime._soft_recovery_epoch is None
 
-    await runtime._spawn_recovery_task()
+        await runtime._spawn_recovery_task()
 
-    assert order == ["force_cleanup", "soft_reconnect", f"remote_id={remote_id}"]
-    released.assert_not_awaited()
+        assert order == ["force_cleanup", "soft_reconnect", f"remote_id={remote_id}"]
+        released.assert_not_awaited()
+    finally:
+        await radio.disconnect()
 
 
 async def test_request_recovery_now_starts_one_full_reconnect(
@@ -1175,6 +1178,7 @@ async def test_request_recovery_now_preempts_a_recovery_tail(
     async def tail_soft_reconnect() -> None:
         order.append("soft_reconnect")
         order.append(f"remote_id={radio._ctrl_transport.remote_id}")
+        radio._civ_runtime.advance_generation("test control session re-established")
         radio._conn_state = RadioConnectionState.CONNECTED
         tail_entered.set()
         await asyncio.wait_for(tail_release.wait(), 10.0)
@@ -1195,7 +1199,9 @@ async def test_request_recovery_now_preempts_a_recovery_tail(
             except asyncio.TimeoutError:
                 pytest.fail("the first recovery never reached its tail")
             assert radio._conn_state is RadioConnectionState.CONNECTED
-            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            radio._civ_runtime.request_recovery_now(
+                "busy=0 (second)", source_epoch=radio._civ_epoch
+            )
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first, (
                 "a busy=0 notice during the recovery tail must restart "
@@ -1291,6 +1297,7 @@ def _arm_preempt_race_recovery(radio: IcomRadio) -> _PreemptRaceArm:
     async def parked_tail_attempt() -> None:
         arm.calls.append("soft_reconnect_once")
         if len(arm.calls) == 1:
+            radio._civ_runtime.advance_generation("test control session re-established")
             radio._conn_state = RadioConnectionState.CONNECTED
             arm.entered.set()
             await await_until(
@@ -1346,7 +1353,9 @@ async def test_preempting_recovery_survives_predecessor_teardown(
             # the registered lifecycle waiter and the replacement is
             # not one yet.
             arm.go.set()
-            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            radio._civ_runtime.request_recovery_now(
+                "busy=0 (second)", source_epoch=radio._civ_epoch
+            )
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first, (
                 "a busy=0 notice during the recovery tail must restart "
@@ -1420,6 +1429,7 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
         calls += 1
         if calls == 1:
             # Tail: session re-established, CI-V path still down.
+            radio._civ_runtime.advance_generation("test control session re-established")
             radio._conn_state = RadioConnectionState.CONNECTED
             radio._civ_transport = None
             entered.set()
@@ -1457,7 +1467,9 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
                 )
                 is first
             )
-            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            radio._civ_runtime.request_recovery_now(
+                "busy=0 (second)", source_epoch=radio._civ_epoch
+            )
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first
             # The replacement supersedes the shared tail; the waiter coalesced

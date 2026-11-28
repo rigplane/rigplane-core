@@ -748,10 +748,8 @@ class CoreRadioSessionLifecycle:
         # attempt. Hold the reservation across both stages.
         self._full_recovery_owner: asyncio.Task[None] | None = None
         self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
-        # Recovery runs a preempting replacement cancelled on purpose
-        # (:meth:`supersede_recovery`); lets every coalesced caller tell that
-        # apart from a teardown cancel, however late it resumes (a per-run
-        # mark, not a single slot: a caller that retries starts a new run).
+        # Per-task marks let coalesced callers distinguish supersession from
+        # shutdown and keep a predecessor from waiting on its replacement.
         self._superseded_recoveries: weakref.WeakSet[asyncio.Task[None]] = (
             weakref.WeakSet()
         )
@@ -1300,11 +1298,18 @@ class CoreRadioSessionLifecycle:
             and (full is None or full.done())
         )
 
-    def prioritize_full_recovery(self, owner: asyncio.Task[None]) -> None:
+    def prioritize_full_recovery(
+        self,
+        owner: asyncio.Task[None],
+        *,
+        predecessor: asyncio.Task[None] | None = None,
+    ) -> None:
         """Reserve recovery for the full handoff before it awaits teardown."""
         previous = self._full_recovery_owner
         if previous is not None and previous is not owner and not previous.done():
             self._superseded_recoveries.add(previous)
+        if predecessor is not None:
+            self._superseded_recoveries.add(predecessor)
         self._full_recovery_owner = owner
         self.supersede_recovery()
 
@@ -1335,6 +1340,9 @@ class CoreRadioSessionLifecycle:
 
     async def soft_reconnect(self) -> None:
         caller = asyncio.current_task()
+        if caller is not None and caller in self._superseded_recoveries:
+            # The full handoff may be waiting for this caller to finish.
+            raise asyncio.CancelledError
         full = self._full_recovery_owner
         wait: asyncio.Future[None]
         if full is not None and full is not caller and not full.done():

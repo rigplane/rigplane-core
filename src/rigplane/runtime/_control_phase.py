@@ -1222,13 +1222,21 @@ class ControlPhaseRuntime:
         if busy != 0:
             logger.debug("conninfo notice busy=%d, session left alone", busy)
             return
+        h = self._host
+        (recipient,) = struct.unpack_from("<I", data, 0x0C)
+        client_id = h._ctrl_transport.my_id
+        if recipient and client_id and recipient != client_id:
+            logger.debug("conninfo notice for a retired control session ignored")
+            return
         logger.warning(
             "conninfo notice: radio reported the LAN session free (busy=0), "
             "requesting recovery now"
         )
-        self._host._civ_runtime.request_recovery_now(
-            "radio reported the LAN session free (conninfo busy=0)"
-        )
+        reason = "radio reported the LAN session free (conninfo busy=0)"
+        if recipient and recipient == client_id:
+            h._civ_runtime.request_recovery_now(reason, source_epoch=h._civ_epoch)
+        else:
+            h._civ_runtime.request_recovery_now(reason)
 
     def _on_token_reply(self, data: bytes) -> None:
         """A 0x40 packet on the control port; settles a pending renewal probe.
