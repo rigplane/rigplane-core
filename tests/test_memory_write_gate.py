@@ -25,8 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -39,6 +38,7 @@ from rigplane.core.exceptions import CommandError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.profiles import MemoryWriteUnverifiedError
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import MemoryChannel
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
@@ -55,8 +55,12 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
     radio._connected = True
     # The fields the production fire-and-forget send path checks (same as
     # test_memory_slot_lock's harness) so an accepted write reaches the wire.
+    # No wall-clock read (the realtime guard): a fixed timestamp plus an
+    # infinite idle timeout keeps the link "ready" for the simulator double,
+    # the same convention as test_memory_write_layouts._sim_radio.
     radio._civ_stream_ready = True
-    radio._last_civ_data_received = time.monotonic()
+    radio._last_civ_data_received = 0.0
+    radio._civ_ready_idle_timeout = float("inf")
     return radio
 
 
@@ -79,8 +83,11 @@ def _mem(channel: int = 1) -> MemoryChannel:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
-async def test_layoutless_profiles_refuse_set_memory_contents(model: str) -> None:
+async def test_layoutless_profiles_refuse_set_memory_contents(
+    model: str, virtual_clock: VirtualClock
+) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
     try:
@@ -95,8 +102,11 @@ async def test_layoutless_profiles_refuse_set_memory_contents(model: str) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
-async def test_layoutless_profiles_refuse_memory_clear(model: str) -> None:
+async def test_layoutless_profiles_refuse_memory_clear(
+    model: str, virtual_clock: VirtualClock
+) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
     try:
@@ -109,7 +119,10 @@ async def test_layoutless_profiles_refuse_memory_clear(model: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ic7300_write_side_memory_section_does_not_enable_the_read() -> None:
+@pytest.mark.timeout(30)
+async def test_ic7300_write_side_memory_section_does_not_enable_the_read(
+    virtual_clock: VirtualClock,
+) -> None:
     """IC-7300 declares ``[memory]`` for the WRITE layout only (MOR-3644
     part 2): the 1A 00 read reply is not in the sourced manuals, so the
     radio method refuses and the listing endpoint stays 404 (no
@@ -141,7 +154,10 @@ async def test_ic7300_write_side_memory_section_does_not_enable_the_read() -> No
 
 
 @pytest.mark.asyncio
-async def test_ic7610_set_memory_contents_still_writes_the_record() -> None:
+@pytest.mark.timeout(30)
+async def test_ic7610_set_memory_contents_still_writes_the_record(
+    virtual_clock: VirtualClock,
+) -> None:
     transport = MockTransport()
     radio = _radio("IC-7610", transport)
     try:
@@ -169,7 +185,10 @@ async def test_ic7610_set_memory_contents_still_writes_the_record() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ic7610_memory_clear_still_writes() -> None:
+@pytest.mark.timeout(30)
+async def test_ic7610_memory_clear_still_writes(
+    virtual_clock: VirtualClock,
+) -> None:
     transport = MockTransport()
     radio = _radio("IC-7610", transport)
     try:
@@ -185,9 +204,11 @@ async def test_ic7610_memory_clear_still_writes() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("layout", ["civ_47", "", "CIV_26", [], {}])
 async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
     layout: object,
+    virtual_clock: VirtualClock,
 ) -> None:
     """The admission gate checks the shared vocabulary, not mere presence:
     a hand-built profile (no TOML loader in play) carrying an unlisted
@@ -212,6 +233,7 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -249,6 +271,7 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
 )
 async def test_sdk_supplied_junk_layout_members_refuse_not_crash(
     mutation: dict,
+    virtual_clock: VirtualClock,
 ) -> None:
     """A structurally broken layout spliced into a profile with
     ``dataclasses.replace`` must surface as the stable refusal (the same
@@ -299,17 +322,21 @@ class TestHandlerWriteGate:
         return handler, server.command_queue
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     @pytest.mark.parametrize("model", ["X6100", "X6200"])
-    async def test_memory_clear_refused_and_not_enqueued(self, model: str) -> None:
+    async def test_memory_clear_refused_and_not_enqueued(
+        self, model: str, virtual_clock: VirtualClock
+    ) -> None:
         handler, queue = self._handler(model)
         with pytest.raises(MemoryWriteUnverifiedError):
             await handler._enqueue_command("memory_clear", {"channel": 5})
         assert queue.drain() == []
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     @pytest.mark.parametrize("model", ["X6100", "X6200"])
     async def test_set_memory_contents_refused_and_not_enqueued(
-        self, model: str
+        self, model: str, virtual_clock: VirtualClock
     ) -> None:
         handler, queue = self._handler(model)
         with pytest.raises(MemoryWriteUnverifiedError):
@@ -317,6 +344,7 @@ class TestHandlerWriteGate:
         assert queue.drain() == []
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     @pytest.mark.parametrize(
         ("model", "group", "frequency_hz"),
         [
@@ -326,7 +354,7 @@ class TestHandlerWriteGate:
         ],
     )
     async def test_the_opted_in_radios_enqueue_the_write(
-        self, model: str, group: int, frequency_hz: int
+        self, model: str, group: int, frequency_hz: int, virtual_clock: VirtualClock
     ) -> None:
         """MOR-3644 part 2: the declared layouts pass the gate and
         the address reaches the queue (group/band for the addressed
@@ -347,7 +375,10 @@ class TestHandlerWriteGate:
         assert queue.drain() == [SetMemoryContents(mem)]
 
     @pytest.mark.asyncio
-    async def test_ic7610_memory_clear_still_enqueues(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_ic7610_memory_clear_still_enqueues(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         handler, queue = self._handler("IC-7610")
         result = await handler._enqueue_command("memory_clear", {"channel": 10})
         assert result == {"channel": 10}
@@ -357,7 +388,10 @@ class TestHandlerWriteGate:
         assert queue.drain() == [MemoryClear(10, 0)]
 
     @pytest.mark.asyncio
-    async def test_ws_response_carries_the_stable_error_code(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_ws_response_carries_the_stable_error_code(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         handler, _queue = self._handler("X6100")
         await handler._dispatch_command(7, "memory_clear", {"channel": 5})
         reply = json.loads(handler._ws.send_text.await_args_list[-1].args[0])
@@ -408,13 +442,19 @@ async def _serve(radio: IcomRadio) -> WebServer:
 
 async def _post_batch(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any]:
     """POST /api/v1/commands/batch and return ``(status, json body)``."""
-    return await _post_json(web, "/api/v1/commands/batch", payload, timeout=2)
+    return await _post_json(web, "/api/v1/commands/batch", payload)
 
 
 async def _post_json(
-    web: WebServer, path: str, payload: dict[str, Any], *, timeout: float
+    web: WebServer, path: str, payload: dict[str, Any]
 ) -> tuple[int, Any]:
-    """POST a JSON body to *path* and return ``(status, json body)``."""
+    """POST a JSON body to *path* and return ``(status, json body)``.
+
+    The server answers every request in these tests (refusals immediately,
+    deferred ones once the production loop releases them), so the body is
+    awaited as a real event: no raised timeout. A reply that never arrives
+    is a defect, reported by the test's own ``pytest.mark.timeout`` bound.
+    """
     from test_web_server import _read_http_response
 
     reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
@@ -430,9 +470,16 @@ async def _post_json(
             + body
         )
         await writer.drain()
-        status, _headers, response = await asyncio.wait_for(
-            _read_http_response(reader), timeout
-        )
+        read = asyncio.create_task(_read_http_response(reader))
+        try:
+            await await_until(
+                lambda: read.done(), timeout=30.0, description="HTTP response"
+            )
+        finally:
+            if not read.done():
+                read.cancel()
+                await asyncio.gather(read, return_exceptions=True)
+        status, _headers, response = read.result()
         return status, json.loads(response)
     finally:
         writer.close()
@@ -509,6 +556,7 @@ async def _memory_http_peer(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("model", "overrides"),
     [("IC-9700", {"group": 1, "frequency_hz": 446_000_000})]
@@ -534,7 +582,7 @@ async def _memory_http_peer(
     ],
 )
 async def test_http_memory_write_refuses_unrepresentable_input(
-    model: str, overrides: dict[str, Any]
+    model: str, overrides: dict[str, Any], virtual_clock: VirtualClock
 ) -> None:
     from test_memory_write_layouts import _mem as layout_mem
 
@@ -562,28 +610,39 @@ def _http_memory_step(model: str, operation: str) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("operation", ["set_memory_contents", "memory_clear"])
 async def test_http_memory_mutation_waits_for_transport_ack(
-    model: str, operation: str
+    model: str, operation: str, virtual_clock: VirtualClock
 ) -> None:
     transport = _HttpMemoryTransport()
     async with _memory_http_peer(model, transport) as (web, completed):
         request = asyncio.create_task(
-            _post_json(
-                web, "/api/v1/commands", _http_memory_step(model, operation), timeout=8
-            )
+            _post_json(web, "/api/v1/commands", _http_memory_step(model, operation))
         )
         try:
-            await asyncio.wait_for(transport.sent.wait(), timeout=5)
-            done, _pending = await asyncio.wait((request,), timeout=0.1)
-            assert not done
+            await await_until(
+                lambda: transport.sent.is_set(),
+                timeout=30.0,
+                description="memory frame on the wire",
+            )
+            # Bounded observation window, advanced on the virtual clock: were
+            # the ack wait missing, the loop would have answered by now.
+            await virtual_clock.elapse(0.2)
+            assert not request.done()
             assert not completed.is_set()
             assert len(transport.sent_packets) == 1
             transport.release_ack()
-            status, body = await asyncio.wait_for(request, timeout=5)
+            await await_until(
+                lambda: request.done(),
+                timeout=30.0,
+                description="HTTP memory response",
+            )
+            status, body = request.result()
         finally:
-            request.cancel()
+            if not request.done():
+                request.cancel()
             await asyncio.gather(request, return_exceptions=True)
         assert status == 200
         assert body["ok"] is True
@@ -593,6 +652,7 @@ async def test_http_memory_mutation_waits_for_transport_ack(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("operation", ["set_memory_contents", "memory_clear"])
 @pytest.mark.parametrize(
@@ -611,6 +671,7 @@ async def test_http_memory_mutation_reports_transport_failure(
     error: str,
     step_status: str,
     batch: bool,
+    virtual_clock: VirtualClock,
 ) -> None:
     transport = _HttpMemoryTransport(reply)
     async with _memory_http_peer(model, transport) as (web, completed):
@@ -621,12 +682,27 @@ async def test_http_memory_mutation_reports_transport_failure(
             if operation == "set_memory_contents"
             else "set_memory_contents",
         )
-        actual_status, body = await _post_json(
-            web,
-            "/api/v1/commands/batch" if batch else "/api/v1/commands",
-            {"steps": [step, successor]} if batch else step,
-            timeout=8,
+        request = asyncio.create_task(
+            _post_json(
+                web,
+                "/api/v1/commands/batch" if batch else "/api/v1/commands",
+                {"steps": [step, successor]} if batch else step,
+            )
         )
+        try:
+            # The radio's ack wait is clock-driven: advance past it so the
+            # NAK — or the silence timeout — surfaces and the reply flows.
+            await virtual_clock.elapse(30.0)
+            await await_until(
+                lambda: request.done(),
+                timeout=30.0,
+                description="HTTP memory failure response",
+            )
+            actual_status, body = request.result()
+        finally:
+            if not request.done():
+                request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
         assert actual_status == (200 if batch else status)
         assert body["ok"] is False
         result = body["results"][0] if batch else body
@@ -642,6 +718,7 @@ async def test_http_memory_mutation_reports_transport_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
 @pytest.mark.parametrize(
     "overrides",
@@ -656,7 +733,7 @@ async def test_http_memory_mutation_reports_transport_failure(
     ],
 )
 async def test_http_memory_write_refuses_unusable_mode_or_tones(
-    model: str, overrides: dict[str, Any]
+    model: str, overrides: dict[str, Any], virtual_clock: VirtualClock
 ) -> None:
     from test_memory_write_layouts import _mem as layout_mem
 
@@ -674,7 +751,10 @@ async def test_http_memory_write_refuses_unusable_mode_or_tones(
 
 
 @pytest.mark.asyncio
-async def test_http_memory_write_refuses_wfm_outside_active_profile() -> None:
+@pytest.mark.timeout(30)
+async def test_http_memory_write_refuses_wfm_outside_active_profile(
+    virtual_clock: VirtualClock,
+) -> None:
     from test_memory_write_layouts import _mem as layout_mem
 
     transport = MockTransport()
@@ -695,6 +775,7 @@ async def test_http_memory_write_refuses_wfm_outside_active_profile() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("name", "params"),
     [
@@ -715,7 +796,7 @@ async def test_http_memory_write_refuses_wfm_outside_active_profile() -> None:
     ],
 )
 async def test_http_seam_refuses_memory_writes_without_a_layout(
-    name: str, params: dict[str, Any]
+    name: str, params: dict[str, Any], virtual_clock: VirtualClock
 ) -> None:
     transport = MockTransport()
     radio = _radio("X6100", transport)
@@ -731,7 +812,10 @@ async def test_http_seam_refuses_memory_writes_without_a_layout(
 
 
 @pytest.mark.asyncio
-async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
+@pytest.mark.timeout(30)
+async def test_http_seam_still_writes_for_the_opted_in_profile(
+    virtual_clock: VirtualClock,
+) -> None:
     """IC-7610 (simulated): the write crosses the HTTP seam unchanged."""
     from rigplane.core.state_pipeline_contracts import (
         FieldPath,
@@ -779,8 +863,17 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
                 "name": "FT8",
             },
         )
-        await asyncio.wait_for(consumed.wait(), timeout=5)
-        await asyncio.wait_for(consumer, timeout=5)
+        await await_until(
+            lambda: consumed.is_set(),
+            timeout=30.0,
+            description="consumer took the memory entry",
+        )
+        await await_until(
+            lambda: consumer.done(),
+            timeout=30.0,
+            description="memory consumer finished",
+        )
+        consumer.result()
     finally:
         await _shutdown(web, radio)
     assert status == 200
@@ -791,8 +884,11 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2"])
-async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
+async def test_http_seam_writes_the_manual_layouts(
+    model: str, virtual_clock: VirtualClock
+) -> None:
     """MOR-3644 part 2, entry point to wire for every newly enabled
     layout: a write through the HTTP command endpoint carries the manual
     record on the wire (group/band address, centi-Hz tone), and the clear
@@ -841,8 +937,17 @@ async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
         clear_status, clear_body = await _request(
             web, "http", "memory_clear", {"channel": mem.channel, "group": mem.group}
         )
-        await asyncio.wait_for(done.wait(), timeout=5)
-        await asyncio.wait_for(consumer, timeout=5)
+        await await_until(
+            lambda: done.is_set(),
+            timeout=30.0,
+            description="both memory entries executed",
+        )
+        await await_until(
+            lambda: consumer.done(),
+            timeout=30.0,
+            description="memory consumer finished",
+        )
+        consumer.result()
     finally:
         await _shutdown(web, radio)
     assert status == 200 and body["ok"] is True
@@ -862,8 +967,11 @@ async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("datamode", [2, 3], ids=["DATA2", "DATA3"])
-async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
+async def test_http_seam_writes_the_ic7610_data_modes(
+    datamode: int, virtual_clock: VirtualClock
+) -> None:
     """The IC-7610's record carries DATA1-3 (guide p.11) through the
     production API path: the profile's ``[data_mode].count`` domain
     reaches the encoder (a write the builder's own default limit of 1
@@ -906,8 +1014,17 @@ async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
             "set_memory_contents",
             {**_mem().__dict__, "datamode": datamode},
         )
-        await asyncio.wait_for(consumed.wait(), timeout=5)
-        await asyncio.wait_for(consumer, timeout=5)
+        await await_until(
+            lambda: consumed.is_set(),
+            timeout=30.0,
+            description="consumer took the memory entry",
+        )
+        await await_until(
+            lambda: consumer.done(),
+            timeout=30.0,
+            description="memory consumer finished",
+        )
+        consumer.result()
     finally:
         await _shutdown(web, radio)
     assert status == 200 and body["ok"] is True
@@ -929,6 +1046,7 @@ async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "params",
     [
@@ -942,6 +1060,7 @@ async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
 )
 async def test_http_clear_refuses_a_malformed_address_before_enqueueing(
     params: dict,
+    virtual_clock: VirtualClock,
 ) -> None:
     """MOR-3644 part 2: the dispatch arm validates the address the profile
     needs (an explicit group on a grouped radio, strict integers, profile
@@ -961,7 +1080,10 @@ async def test_http_clear_refuses_a_malformed_address_before_enqueueing(
 
 
 @pytest.mark.asyncio
-async def test_http_write_refuses_a_groupless_address_before_enqueueing() -> None:
+@pytest.mark.timeout(30)
+async def test_http_write_refuses_a_groupless_address_before_enqueueing(
+    virtual_clock: VirtualClock,
+) -> None:
     """The write arm shares the rule: a grouped radio refuses a write that
     does not name its group (a null group is no choice either)."""
     transport = MockTransport()
@@ -983,7 +1105,10 @@ async def test_http_write_refuses_a_groupless_address_before_enqueueing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_http_batch_refuses_layoutless_memory_writes_and_skips_the_rest() -> None:
+@pytest.mark.timeout(30)
+async def test_http_batch_refuses_layoutless_memory_writes_and_skips_the_rest(
+    virtual_clock: VirtualClock,
+) -> None:
     """The batch endpoint answers the refusal per step and marks the
     remaining steps skipped; nothing is executed or sent."""
     transport = MockTransport()
@@ -1015,6 +1140,7 @@ async def test_http_batch_refuses_layoutless_memory_writes_and_skips_the_rest() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("name", "params", "wire"),
     [
@@ -1024,7 +1150,7 @@ async def test_http_batch_refuses_layoutless_memory_writes_and_skips_the_rest() 
     ids=["memory_clear", "set_memory_contents"],
 )
 async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
-    name: str, params: dict[str, Any], wire: bytes
+    name: str, params: dict[str, Any], wire: bytes, virtual_clock: VirtualClock
 ) -> None:
     """API to drain while keyed, through the production poller loop: the
     posted request enqueues, the loop's own staging holds it (no wire
@@ -1035,17 +1161,23 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
         Observation,
         SourceMetadata,
     )
+    from rigplane.core.state_store import FreshnessClock, StateStore
 
     transport = MockTransport()
     radio = _radio("IC-7610", transport)
+    # The deferred lane reads the store's own freshness clock, so seed the
+    # radio (and through it, the server below) with a manually advanced one:
+    # real time never moves the quiet-RX window on a virtual loop.
+    store_clock = FreshnessClock(start=asyncio.get_running_loop().time())
+    radio._state_store = StateStore(freshness_clock=store_clock)  # noqa: SLF001
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    assert web.command_state_store is radio._state_store  # noqa: SLF001
     poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
     # Keep the loop off the radio's poll surfaces: this test's wire
     # assertions must see only the memory command under test.
     poller._send_query = AsyncMock()  # noqa: SLF001
     poller._fetch_nb_controls = AsyncMock()  # noqa: SLF001
     poller._fetch_mod_inputs = AsyncMock()  # noqa: SLF001
-    loop = asyncio.get_running_loop()
 
     def _observe(ptt: bool) -> None:
         web.command_state_store.apply_current(
@@ -1053,17 +1185,10 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
                 path=FieldPath.global_("tx_state", "ptt"),
                 value=ptt,
                 source=SourceMetadata(source="test", provider="tests"),
-                timestamp_monotonic=loop.time(),
+                timestamp_monotonic=store_clock.now(),
                 max_age=60,
             )
         )
-
-    async def _until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-        deadline = loop.time() + timeout
-        while not predicate():
-            if loop.time() > deadline:
-                pytest.fail("condition not reached before the deadline")
-            await asyncio.sleep(0.02)
 
     _observe(True)  # keyed: the request must be held, not sent
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
@@ -1074,24 +1199,44 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
                 web,
                 "/api/v1/commands",
                 {"id": "deferred", "name": name, "params": params},
-                timeout=8,
             )
         )
-        # The production loop staged and held the entry (MOR-3644 deferral).
-        await _until(lambda: poller._deferred_tx_lane.pending is not None)  # noqa: SLF001
+        # The production loop staged and held the entry (MOR-3644 deferral):
+        # advance the virtual loop so the poller turns, then await the real
+        # staging event. The lane holds under TX whatever the clock says.
+        await virtual_clock.elapse(1.0)
+        await await_until(
+            lambda: poller._deferred_tx_lane.pending is not None,  # noqa: SLF001
+            timeout=30.0,
+            description="deferred memory entry staged",
+        )
         # Bounded observation window: were the deferral missing, the loop
         # would have executed the entry and answered the request by now.
-        await asyncio.sleep(0.2)
         assert transport.sent_packets == []
         assert not request.done()
 
         # Quiet known RX: the loop itself releases and executes the entry;
-        # the request completing is the bounded release condition.
+        # the request completing is the bounded release condition. The lane
+        # needs one quiet observation round to arm, then QUIET_SECONDS of
+        # quiet (1.0 s) before it releases -- both advanced on the store
+        # clock, each followed by a virtual turn of the loop. The 3.0 s
+        # lane TTL is never approached.
         _observe(False)
-        status, body = await asyncio.wait_for(request, timeout=8)
+        store_clock.advance(0.2)
+        await virtual_clock.elapse(0.2)
+        store_clock.advance(1.2)
+        await virtual_clock.elapse(1.2)
+        await await_until(
+            lambda: request.done(),
+            timeout=30.0,
+            description="deferred memory request answered",
+        )
+        status, body = request.result()
     finally:
+        if not request.done():
+            request.cancel()
         drain.cancel()
-        await asyncio.gather(drain, return_exceptions=True)
+        await asyncio.gather(drain, request, return_exceptions=True)
         await _shutdown(web, radio)
     assert status == 200
     assert body["ok"] is True
@@ -1101,7 +1246,10 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
 
 
 @pytest.mark.asyncio
-async def test_memories_listing_stays_unavailable_for_ic7610() -> None:
+@pytest.mark.timeout(30)
+async def test_memories_listing_stays_unavailable_for_ic7610(
+    virtual_clock: VirtualClock,
+) -> None:
     """Adding ``[memory]`` to ic7610.toml must not turn on the read listing:
     the ``memory_read`` capability stays undeclared (MOR-3627 boundary)."""
     transport = MockTransport()
