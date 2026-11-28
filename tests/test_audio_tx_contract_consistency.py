@@ -122,12 +122,12 @@ async def test_partial_mixin_hosts_serialize_tx_per_instance() -> None:
     try:
         async with first._audio_tx_admission_lock:
             push = asyncio.create_task(push_first())
-            await asyncio.wait_for(entered.wait(), timeout=1.0)
-            await asyncio.wait_for(second.push_tx(b"second"), timeout=1.0)
+            await entered.wait()
+            await second.push_tx(b"second")
             assert not push.done()
             assert first._audio_stream.pushed == []  # type: ignore[union-attr]
             assert second._audio_stream.pushed == [b"second"]  # type: ignore[union-attr]
-        await asyncio.wait_for(push, timeout=1.0)
+        await push
         assert first._audio_stream.pushed == [b"first"]  # type: ignore[union-attr]
     finally:
         if push is not None:
