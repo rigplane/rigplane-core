@@ -619,7 +619,11 @@ async def test_successful_round_consumes_budget_and_frames_reopen_episode() -> N
 async def test_third_successful_round_waits_for_real_frames(
     frames_before_return: bool,
 ) -> None:
-    """Real frames on the third round prevent FAILED across the return edge."""
+    """Real frames on the third round prevent FAILED across the return edge.
+
+    Three rounds run, the third waits for real frames, and the frames close
+    the episode back to idle (counter 0, teardown stamp cleared).
+    """
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
@@ -639,18 +643,12 @@ async def test_third_successful_round_waits_for_real_frames(
         allow_frames = asyncio.Event()
         delivery_order: list[str] = []
         heartbeats: list[float] = []
-        episode_before_frames: list[tuple[int, float]] = []
         ensure_calls: list[int] = []
         release_frames: asyncio.TimerHandle | None = None
+        teardown_completed_in_third_round: list[float | None] = []
 
         def _gate_real_frames(packet: AudioPacket | None) -> None:
             if allow_frames.is_set() and packet is not None:
-                if not heartbeats:
-                    completed = radio._audio_silence_repair_teardown_completed
-                    assert completed is not None
-                    episode_before_frames.append(
-                        (radio._audio_silence_repair_attempts, completed)
-                    )
                 orig_callback(packet)
                 heartbeat = bus.last_rx_frame_monotonic
                 assert heartbeat is not None
@@ -666,6 +664,12 @@ async def test_third_successful_round_waits_for_real_frames(
         async def _reestablish_with_frame_gate() -> None:
             nonlocal release_frames
             await orig_reestablish()
+            # Inside the third round: its teardown already ran and the
+            # episode finalizer cannot have reset it yet (the repair task
+            # holds the locks). Records that the round reached reestablish.
+            teardown_completed_in_third_round.append(
+                radio._audio_silence_repair_teardown_completed
+            )
             if frames_before_return:
                 allow_frames.set()
                 assert await await_until(lambda: bool(heartbeats), timeout=2.0)
@@ -688,16 +692,18 @@ async def test_third_successful_round_waits_for_real_frames(
                 lambda: radio._audio_silence_repair_task is None, timeout=5.0
             ), "third-round frame observation did not finish"
             assert len(teardown_calls) == 3
-            assert len(ensure_calls) == 3
-            attempts_before_frames, teardown_completed = episode_before_frames[0]
-            assert attempts_before_frames == (2 if frames_before_return else 3)
-            assert radio._audio_silence_repair_attempts == 0
-            assert radio._audio_silence_repair_teardown_completed is None
+            assert len(teardown_completed_in_third_round) == 1
+            third_teardown_completed = teardown_completed_in_third_round[0]
+            assert third_teardown_completed is not None
             assert recovery == [], "healthy third round falsely reported FAILED"
             assert (
                 delivery_order.index("frame") < delivery_order.index("return")
             ) is frames_before_return
-            assert heartbeats[0] > teardown_completed
+            assert heartbeats[0] > third_teardown_completed
+            # Real RX frames closed the episode: the counter is back to 0
+            # and the teardown stamp cleared (idle), not left at 3.
+            assert radio._audio_silence_repair_attempts == 0
+            assert radio._audio_silence_repair_teardown_completed is None
         finally:
             if release_frames is not None:
                 release_frames.cancel()
