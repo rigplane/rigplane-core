@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import rigplane.core._state_cache as state_cache_module
@@ -17,6 +19,22 @@ from rigplane.testing.timing import VirtualClock
 @pytest.fixture
 def cache() -> StateCache:
     return StateCache()
+
+
+def _scope_clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
+    """Build a virtual clock and point the state-cache module at it.
+
+    ``rigplane.core._state_cache`` only imports ``time`` (it is synchronous),
+    but :meth:`VirtualClock.scope_to` also installs the module's ``asyncio``
+    name, which needs an existing attribute to replace. Pre-create it with
+    ``raising=False``; ``monkeypatch`` still undoes both patches on teardown.
+    The clock starts at 1000.0 because ``0.0`` is the cache's never-written
+    sentinel and must not be a real timestamp.
+    """
+    monkeypatch.setattr(state_cache_module, "asyncio", asyncio, raising=False)
+    clock = VirtualClock(start=1000.0)
+    clock.scope_to(monkeypatch, state_cache_module)
+    return clock
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +153,7 @@ def test_is_fresh_zero_ttl_mode(cache: StateCache) -> None:
 def test_is_fresh_expired_when_timestamp_is_old(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     cache.update_freq(14_074_000)
     # Age the entry 10 s on the virtual clock so it looks old.
     clock.advance(10.0)
@@ -146,8 +163,7 @@ def test_is_fresh_expired_when_timestamp_is_old(
 def test_is_fresh_not_expired_within_ttl(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     cache.update_freq(14_074_000)
     # Slightly age but stay within TTL.
     clock.advance(0.1)
@@ -167,8 +183,7 @@ def test_update_freq_stores_value(cache: StateCache) -> None:
 def test_update_freq_sets_timestamp(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     before = clock.now
     cache.update_freq(14_074_000)
     assert cache.freq_ts >= before
@@ -211,8 +226,7 @@ def test_update_mode_stores_none_filter(cache: StateCache) -> None:
 def test_update_mode_sets_timestamp(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     before = clock.now
     cache.update_mode("USB", 1)
     assert cache.mode_ts >= before
@@ -251,8 +265,7 @@ def test_update_ptt_false(cache: StateCache) -> None:
 def test_update_ptt_sets_timestamp(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     before = clock.now
     cache.update_ptt(True)
     assert cache.ptt_ts >= before
@@ -271,8 +284,7 @@ def test_update_s_meter_stores_value(cache: StateCache) -> None:
 def test_update_s_meter_sets_timestamp(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     before = clock.now
     cache.update_s_meter(0)
     assert cache.s_meter_ts >= before
@@ -286,8 +298,7 @@ def test_update_rf_power_stores_value(cache: StateCache) -> None:
 def test_update_rf_power_sets_timestamp(
     cache: StateCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    clock = VirtualClock(start=1000.0)
-    clock.scope_to(monkeypatch, state_cache_module)
+    clock = _scope_clock(monkeypatch)
     before = clock.now
     cache.update_rf_power(1.0)
     assert cache.rf_power_ts >= before
