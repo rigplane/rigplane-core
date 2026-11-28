@@ -11,11 +11,11 @@ import asyncio
 import contextlib
 import dataclasses
 import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.dx_cluster import DXClusterClient, DXSpot, SpotBuffer, parse_spot
 
 
@@ -150,11 +150,16 @@ class TestParseSpot:
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
             spot.call = "MODIFIED"  # type: ignore[misc]
 
-    def test_spot_has_timestamp(self):
+    async def test_spot_has_timestamp(
+        self, virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
+    ):
+        import rigplane.web.dx_cluster as dx_cluster_mod
+
+        virtual_clock.scope_to(monkeypatch, dx_cluster_mod)
         line = "DX de K1ABC:  14074.0  JA1XYZ  FT8  1234Z"
-        before = time.monotonic()
+        before = virtual_clock.now
         spot = parse_spot(line)
-        after = time.monotonic()
+        after = virtual_clock.now
         assert spot is not None
         assert before <= spot.timestamp <= after
 
@@ -186,17 +191,17 @@ def _make_writer() -> MagicMock:
     return writer
 
 
-async def _run_and_cancel(coro, *, delay: float = 0.05) -> None:
-    """Start a coroutine as a task, wait briefly, then cancel it."""
+async def _run_and_cancel(coro, clock: VirtualClock, *, delay: float = 0.05) -> None:
+    """Start a coroutine as a task, advance virtual time, then cancel it."""
     task = asyncio.create_task(coro)
-    await asyncio.sleep(delay)
+    await clock.elapse(delay)
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
 
 class TestDXClusterClient:
-    async def test_connects_and_sends_callsign(self):
+    async def test_connects_and_sends_callsign(self, virtual_clock: VirtualClock):
         """Client sends callsign immediately after connecting."""
         reader = _make_blocking_reader()
         writer = _make_writer()
@@ -208,11 +213,11 @@ class TestDXClusterClient:
             client = DXClusterClient(
                 "dx.example.com", 7300, "K1ABC", on_spot=MagicMock()
             )
-            await _run_and_cancel(client.start())
+            await _run_and_cancel(client.start(), virtual_clock)
 
         writer.write.assert_called_once_with(b"K1ABC\r\n")
 
-    async def test_calls_on_spot_for_each_valid_line(self):
+    async def test_calls_on_spot_for_each_valid_line(self, virtual_clock: VirtualClock):
         """on_spot callback is invoked once per valid spot line."""
         reader = _make_blocking_reader(_SPOT_LINE_1, _SPOT_LINE_2)
         writer = _make_writer()
@@ -225,13 +230,13 @@ class TestDXClusterClient:
             client = DXClusterClient(
                 "dx.example.com", 7300, "K1ABC", on_spot=spots.append
             )
-            await _run_and_cancel(client.start())
+            await _run_and_cancel(client.start(), virtual_clock)
 
         assert len(spots) == 2
         assert spots[0].call == "JA1XYZ"
         assert spots[1].call == "VK3ABC"
 
-    async def test_ignores_non_spot_lines(self):
+    async def test_ignores_non_spot_lines(self, virtual_clock: VirtualClock):
         """Non-spot lines do not trigger on_spot."""
         reader = _make_blocking_reader(_NON_SPOT_LINE, _SPOT_LINE_1)
         writer = _make_writer()
@@ -244,7 +249,7 @@ class TestDXClusterClient:
             client = DXClusterClient(
                 "dx.example.com", 7300, "K1ABC", on_spot=spots.append
             )
-            await _run_and_cancel(client.start())
+            await _run_and_cancel(client.start(), virtual_clock)
 
         assert len(spots) == 1
         assert spots[0].call == "JA1XYZ"
@@ -280,7 +285,7 @@ class TestDXClusterClient:
         assert call_count >= 2
         assert len(spots) >= 1
 
-    async def test_stop_sets_flag_and_closes_writer(self):
+    async def test_stop_sets_flag_and_closes_writer(self, virtual_clock: VirtualClock):
         """stop() sets _running=False and closes the active writer."""
         reader = _make_blocking_reader()
         writer = _make_writer()
@@ -292,7 +297,7 @@ class TestDXClusterClient:
             new=AsyncMock(return_value=(reader, writer)),
         ):
             task = asyncio.create_task(client.start())
-            await asyncio.sleep(0.05)  # let it connect
+            await virtual_clock.elapse(0.05)  # let it connect
 
             await client.stop()
             assert not client._running
@@ -302,7 +307,7 @@ class TestDXClusterClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def test_cancelled_error_propagates(self):
+    async def test_cancelled_error_propagates(self, virtual_clock: VirtualClock):
         """CancelledError from external task cancellation is not swallowed."""
         reader = _make_blocking_reader()
         writer = _make_writer()
@@ -314,13 +319,13 @@ class TestDXClusterClient:
             new=AsyncMock(return_value=(reader, writer)),
         ):
             task = asyncio.create_task(client.start())
-            await asyncio.sleep(0.05)
+            await virtual_clock.elapse(0.05)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
     async def test_stalled_connect_times_out_into_backoff(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
     ):
         """A connect that never completes fails into the reconnect backoff."""
         import rigplane.web.dx_cluster as dx_cluster_mod
@@ -344,16 +349,17 @@ class TestDXClusterClient:
             dx_cluster_mod.asyncio, "open_connection", stalled_open_connection
         )
         monkeypatch.setattr(dx_cluster_mod, "_CONNECT_TIMEOUT_SECONDS", 0.05)
-        monkeypatch.setattr(dx_cluster_mod.asyncio, "sleep", AsyncMock())
 
         client = DXClusterClient("dx.example.com", 7300, "K1ABC", on_spot=MagicMock())
+        t0 = virtual_clock.now
         task = asyncio.create_task(client.start())
-        started = time.monotonic()
         try:
-            # wait_for bounds the test itself: without the timeout wrapper
-            # these raise TimeoutError and the test fails instead of hanging.
-            await asyncio.wait_for(entered.wait(), timeout=1.0)
-            await asyncio.wait_for(second_attempt.wait(), timeout=1.0)
+            # The 0.05 s connect timeout fires on virtual time, then the 1 s
+            # backoff passes and the retry starts: no wall-clock waiting.
+            await virtual_clock.elapse(0.06)
+            assert entered.is_set()
+            await virtual_clock.elapse(1.0)
+            assert second_attempt.is_set()
         finally:
             await client.stop()
             task.cancel()
@@ -361,10 +367,12 @@ class TestDXClusterClient:
                 await task
 
         assert attempts >= 2
-        assert time.monotonic() - started < 1.0
+        # Timeout (0.05 s) plus first backoff (1 s): the retry came from the
+        # timer path; the stalled connect itself was never waited out.
+        assert virtual_clock.now - t0 < 5.0
 
     async def test_cancel_during_pending_connect_propagates(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
     ):
         """Cancelling start() while the connect is pending is not a retry."""
         import rigplane.web.dx_cluster as dx_cluster_mod
@@ -386,7 +394,8 @@ class TestDXClusterClient:
 
         client = DXClusterClient("dx.example.com", 7300, "K1ABC", on_spot=MagicMock())
         task = asyncio.create_task(client.start())
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
+        await virtual_clock.elapse(0)  # let the connect park
+        assert entered.is_set()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -457,9 +466,14 @@ class TestSpotBuffer:
         buf.add(_make_spot("JA1XYZ", freq=14074000))
         assert buf.get_spots(band="99m") == []
 
-    def test_expire_removes_old_spots(self):
+    async def test_expire_removes_old_spots(
+        self, virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
+    ):
+        import rigplane.web.dx_cluster as dx_cluster_mod
+
+        virtual_clock.scope_to(monkeypatch, dx_cluster_mod)
         buf = SpotBuffer()
-        now = time.monotonic()
+        now = virtual_clock.now
         old = _make_spot("OLD", ts=now - 3000)  # 50 min ago
         fresh = _make_spot("FRESH", ts=now - 60)  # 1 min ago
         buf.add(old)
