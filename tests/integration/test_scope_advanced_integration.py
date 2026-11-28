@@ -15,12 +15,13 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
+
+from rigplane.testing.timing import await_until
 
 # Make tests/ importable from tests/integration/
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -178,7 +179,10 @@ async def scope_radio(scope_mock: ScopeMockRadio) -> AsyncGenerator[IcomRadio, N
     await radio.disconnect()
 
 
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
+# Bound for a stuck run, not the expected wait: the SET frames below are
+# fire-and-forget (wait_response=False), so each test waits for the mock to
+# record the frame over the real socket instead of sleeping wall time.
+_SETTLE_TIMEOUT = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +203,11 @@ class TestScopeDuringTx:
     ) -> None:
         """Set during_tx ON and verify via GET."""
         await scope_radio.set_scope_during_tx(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: scope_mock._during_tx == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records during_tx on",
+        )
         result = await scope_radio.get_scope_during_tx()
         assert result is True
         assert scope_mock._during_tx == 1
@@ -210,7 +218,11 @@ class TestScopeDuringTx:
         """Set during_tx OFF after being on."""
         scope_mock._during_tx = 1
         await scope_radio.set_scope_during_tx(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: scope_mock._during_tx == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records during_tx off",
+        )
         result = await scope_radio.get_scope_during_tx()
         assert result is False
         assert scope_mock._during_tx == 0
@@ -221,7 +233,11 @@ class TestScopeDuringTx:
         """Toggle during_tx: off → on → off → on."""
         for expected in (True, False, True):
             await scope_radio.set_scope_during_tx(expected)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda want=1 if expected else 0: scope_mock._during_tx == want,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock records during_tx {expected!r}",
+            )
             got = await scope_radio.get_scope_during_tx()
             assert got is expected, f"during_tx: expected {expected}, got {got}"
         assert scope_mock._during_tx == 1
@@ -245,7 +261,11 @@ class TestScopeCenterType:
     ) -> None:
         """Set center_type to 1 and verify via GET."""
         await scope_radio.set_scope_center_type(1)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: scope_mock._center_type == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records center_type 1",
+        )
         result = await scope_radio.get_scope_center_type()
         assert result == 1
         assert scope_mock._center_type == 1
@@ -255,7 +275,11 @@ class TestScopeCenterType:
     ) -> None:
         """Set center_type to 2 and verify via GET."""
         await scope_radio.set_scope_center_type(2)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: scope_mock._center_type == 2,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records center_type 2",
+        )
         result = await scope_radio.get_scope_center_type()
         assert result == 2
         assert scope_mock._center_type == 2
@@ -266,7 +290,11 @@ class TestScopeCenterType:
         """Cycle through all valid center_type values: 0 → 1 → 2 → 0."""
         for value in (0, 1, 2, 0):
             await scope_radio.set_scope_center_type(value)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda want=value: scope_mock._center_type == want,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock records center_type {value}",
+            )
             got = await scope_radio.get_scope_center_type()
             assert got == value, f"center_type: expected {value}, got {got}"
             assert scope_mock._center_type == value
@@ -295,7 +323,18 @@ class TestScopeFixedEdge:
         start_hz = 14_000_000
         end_hz = 14_350_000
         await scope_radio.set_scope_fixed_edge(edge=1, start_hz=start_hz, end_hz=end_hz)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                (
+                    scope_mock._fixed_edge,
+                    scope_mock._fixed_start_hz,
+                    scope_mock._fixed_end_hz,
+                )
+                == (1, start_hz, end_hz)
+            ),
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records 14 MHz fixed edge",
+        )
         result = await scope_radio.get_scope_fixed_edge()
 
         assert isinstance(result, ScopeFixedEdge)
@@ -312,7 +351,18 @@ class TestScopeFixedEdge:
         start_hz = 7_000_000
         end_hz = 7_200_000
         await scope_radio.set_scope_fixed_edge(edge=2, start_hz=start_hz, end_hz=end_hz)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                (
+                    scope_mock._fixed_edge,
+                    scope_mock._fixed_start_hz,
+                    scope_mock._fixed_end_hz,
+                )
+                == (2, start_hz, end_hz)
+            ),
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records 7 MHz fixed edge",
+        )
         result = await scope_radio.get_scope_fixed_edge()
 
         assert result.start_hz == start_hz
@@ -328,13 +378,22 @@ class TestScopeFixedEdge:
         start_hz = 21_000_000
         end_hz = 21_450_000
         await scope_radio.set_scope_fixed_edge(edge=1, start_hz=start_hz, end_hz=end_hz)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                (scope_mock._fixed_start_hz, scope_mock._fixed_end_hz)
+                == (start_hz, end_hz)
+            ),
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records 21 MHz fixed edge",
+        )
         result = await scope_radio.get_scope_fixed_edge()
 
         assert result.start_hz == start_hz
         assert result.end_hz == end_hz
 
-    async def test_fixed_edge_multiple_changes(self, scope_radio: IcomRadio) -> None:
+    async def test_fixed_edge_multiple_changes(
+        self, scope_radio: IcomRadio, scope_mock: ScopeMockRadio
+    ) -> None:
         """Change fixed edge multiple times and confirm each update is reflected."""
         settings = [
             (1, 14_000_000, 14_350_000),
@@ -345,7 +404,18 @@ class TestScopeFixedEdge:
             await scope_radio.set_scope_fixed_edge(
                 edge=edge, start_hz=start, end_hz=end
             )
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda want=(edge, start, end): (
+                    (
+                        scope_mock._fixed_edge,
+                        scope_mock._fixed_start_hz,
+                        scope_mock._fixed_end_hz,
+                    )
+                    == want
+                ),
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock records fixed edge {edge}",
+            )
             result = await scope_radio.get_scope_fixed_edge()
             assert result.start_hz == start, (
                 f"start mismatch: expected {start}, got {result.start_hz}"
@@ -358,14 +428,21 @@ class TestScopeFixedEdge:
             )
 
     async def test_fixed_edge_range_index_preserved(
-        self, scope_radio: IcomRadio
+        self, scope_radio: IcomRadio, scope_mock: ScopeMockRadio
     ) -> None:
         """range_index in GET response matches what was set via the command builder."""
         start_hz = 14_000_000
         end_hz = 14_350_000
         # radio.py re-parses the frame it built to recover range_index
         await scope_radio.set_scope_fixed_edge(edge=1, start_hz=start_hz, end_hz=end_hz)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: (
+                (scope_mock._fixed_start_hz, scope_mock._fixed_end_hz)
+                == (start_hz, end_hz)
+            ),
+            timeout=_SETTLE_TIMEOUT,
+            description="mock records fixed edge for range_index check",
+        )
         result = await scope_radio.get_scope_fixed_edge()
 
         assert isinstance(result.range_index, int)
