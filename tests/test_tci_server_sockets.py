@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from rigplane.tci.server import TciServer
+from rigplane.tci.server import STOP_TIMEOUT_S, TciServer
 from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.ws import (
     WS_OP_BINARY,
@@ -544,8 +544,17 @@ async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
         await await_until(
             cleaning.is_set, timeout=5.0, description="the teardown cleanup entry"
         )
-        async with asyncio.timeout(10.0):
-            await stop_task
+        # stop() observes the parked setup task through a bounded
+        # asyncio.wait (STOP_TIMEOUT_S on the virtual loop): drive that
+        # bound so the timed-out path (retain + return) completes while
+        # the gate stays closed, then consume the finished task.
+        await virtual_clock.elapse(STOP_TIMEOUT_S + 1.0)
+        await await_until(
+            lambda: stop_task.done(),
+            timeout=5.0,
+            description="the bounded stop return",
+        )
+        await stop_task
         assert not cleaned.is_set()
         async with asyncio.timeout(5.0):
             data = await client.reader.read()
@@ -575,24 +584,26 @@ async def test_watchdog_expires_silent_session_automatically(
     ``stop()`` before asserting: the client only observes the dropped
     transport, and the handler records exactly one disconnect. The
     short deadline (a constructor constant on the virtual clock) keeps
-    the run fast; the elapsed time proves the firing came from the
-    watchdog.
+    the run fast; silence below it must not expire the session, while
+    time strictly past ``last_activity + deadline`` must (the watchdog
+    rejects elapsed time at or below the bound, so the crossing is
+    explicit, never an exact-boundary landing).
     """
     handler = FakeHandler()
     server = make_server(handler, clock=virtual_clock, deadline=0.3)
     await server.start()
-    started = virtual_clock()
     stopped = False
     try:
         client = await RawClient.connect(server.bound_port)
         await client.read_until_ready()
-        await virtual_clock.elapse(0.31)
+        await virtual_clock.elapse(0.2)
+        assert handler.disconnect_calls == 0
+        virtual_clock.advance(0.15)
         await await_until(
             lambda: handler.disconnect_calls > 0,
             timeout=5.0,
             description="the watchdog disconnect",
         )
-        assert virtual_clock() - started < 5.0
         await _read_until_closed(client)
         assert handler.disconnect_calls == 1
         await server.stop()
@@ -622,7 +633,13 @@ async def test_watchdog_fires_despite_concurrent_pings(
     try:
         client = await RawClient.connect(server.bound_port)
         await client.read_until_ready()
-        await virtual_clock.elapse(0.41)
+        # Pings accumulate in the unread socket buffer while the client
+        # stays silent; silence below the deadline must not expire it.
+        await virtual_clock.elapse(0.3)
+        assert handler.disconnect_calls == 0
+        # Cross last_activity + deadline strictly (the watchdog rejects
+        # elapsed time at or below the bound): the abort must follow.
+        virtual_clock.advance(0.15)
         await await_until(
             lambda: handler.disconnect_calls > 0,
             timeout=5.0,
@@ -989,6 +1006,7 @@ async def test_gated_handlers_survive_while_client_pongs(
     await server.start()
     pump: asyncio.Task[None] | None = None
     pump_stop = asyncio.Event()
+    ping_payloads: list[bytes] = []
     try:
         client = await RawClient.connect(server.bound_port)
 
@@ -1000,6 +1018,7 @@ async def test_gated_handlers_survive_while_client_pongs(
                     except TimeoutError:
                         continue
                     if opcode == WS_OP_PING:
+                        ping_payloads.append(payload)
                         await client._send(WS_OP_PONG, payload)
             except (
                 asyncio.CancelledError,
@@ -1024,9 +1043,23 @@ async def test_gated_handlers_survive_while_client_pongs(
             entered_text.is_set, timeout=5.0, description="the gated text entry"
         )
         # Several deadlines pass with the command parked; the answered
-        # pongs must keep the session alive. The elapse fires the ping
-        # timers while the pump answers on real sockets in each settle.
-        await virtual_clock.elapse(1.2)
+        # pongs must keep the session alive. Step one ping interval at a
+        # time and confirm the server observed the pong (last_activity
+        # advanced) before moving on: settling the loop does not deliver
+        # kernel bytes, so an unchecked elapse could outrun a delayed
+        # loopback pong into a false expiry.
+        assert len(server.sessions) == 1
+        session = server.sessions[0]
+        last_activity = session._conn.last_activity
+        for _ in range(24):
+            await virtual_clock.elapse(0.05)
+            await await_until(
+                lambda: session._conn.last_activity > last_activity,
+                timeout=5.0,
+                description="the answered heartbeat",
+            )
+            last_activity = session._conn.last_activity
+        assert ping_payloads, "no server ping reached the client in 1.2 virtual s"
         assert handler.disconnect_calls == 0
         assert len(server.sessions) == 1
         gate_text.set()
@@ -1097,7 +1130,12 @@ async def test_gated_handler_silent_client_still_expires(
         await await_until(
             entered.is_set, timeout=5.0, description="the gated command entry"
         )
-        await virtual_clock.elapse(0.31)
+        # The parked handler must not renew the deadline: silence below
+        # it leaves the session alone, time strictly past it expires it
+        # (the watchdog rejects elapsed time at or below the bound).
+        await virtual_clock.elapse(0.2)
+        assert handler.disconnect_calls == 0
+        virtual_clock.advance(0.15)
         await await_until(
             lambda: handler.disconnect_calls > 0,
             timeout=5.0,
