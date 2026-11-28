@@ -1436,6 +1436,7 @@ class WebServer:
                 )
         self._audio_broadcaster = AudioBroadcaster(
             radio,
+            state_store=self.command_state_store,
             on_client_count_change=self._broadcast_ws_client_state_update,
             on_rx_start_status_change=self._on_rx_start_status_change,
             adaptive_egress=self._config.audio_adaptive_egress,

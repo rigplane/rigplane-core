@@ -171,6 +171,7 @@ unsolicited_push = [
     "receiver.main.active.freq_mode.mode",
 ]
 polling_only = [
+    "receiver.main.operator_toggles.dcd",
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "receiver.main.unselected.freq_mode.freq_hz",
@@ -290,6 +291,13 @@ supported_controls = [
     "global.operator_controls.tuner_status",
     "global.tx_state.split",
 ]
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.dcd"]
+reason = "LIVE audio needs a timely squelch-open reading in receive. Omit it in TX to preserve the CI-V poll budget (MOR-4795)"
+rx_only = true
+cadence_seconds = 0.4
+freshness_ttl_seconds = 1.2
+adaptive_decay = false
 
 # Field-policy shapes are carried from the IC-7300 profile; none are
 # hardware-validated on the MK2. `reason` states the policy, not a measurement.

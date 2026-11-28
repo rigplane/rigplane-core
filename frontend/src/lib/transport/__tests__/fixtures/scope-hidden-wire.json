@@ -395,7 +395,7 @@
      "storePath": "receiver.main.active.freq_mode.data_mode"
     },
     "main.dcd": {
-     "availability": "undeclared",
+     "availability": "missing",
      "freshness": "unknown",
      "observed": false,
      "storePath": "receiver.main.operator_toggles.dcd"
@@ -587,7 +587,7 @@
      "storePath": "receiver.main.meters.s_meter"
     },
     "main.sMeterSqlOpen": {
-     "availability": "undeclared",
+     "availability": "missing",
      "freshness": "unknown",
      "observed": false,
      "storePath": "receiver.main.operator_toggles.dcd"

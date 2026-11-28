@@ -57,6 +57,7 @@ _CIV_ACQUISITION: dict[str, RadioAcquisitionProfile] = {
 _RANK = {klass: rank for rank, klass in enumerate(AcquisitionClass)}
 _WINDOW = {False: "receive", True: "transmit"}
 _EPSILON = 1e-9
+_DCD = FieldPath.receiver("main", "operator_toggles", "dcd")
 
 
 def _base_cadences(scheduler: AcquisitionScheduler) -> dict[FieldPath, float]:
@@ -115,9 +116,9 @@ def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
     """Per profile and window: demand is within 0.75 x budget, or the warning says not.
 
     Demand is every polled path at the cadence the scheduler reports for
-    it, ``tx_only`` paths only in transmit. No poll group mixes explicit
-    and class-derived paths, and explicit profile cadences are never
-    changed. A class-derived path sits between its class's start cadence
+    it, counting phase-limited paths only in their window. No poll group
+    mixes explicit and class-derived paths. Explicit profile cadences are
+    never changed. A class-derived path sits between its class's start cadence
     (nominal, or the ceiling for a class held there in transmit) and its
     ceiling, one cadence per class. When the demand fits, either nothing
     stretched, or it closes on the limit with every class ranked below the
@@ -144,7 +145,7 @@ def test_fitted_demand_is_within_the_margin_or_the_warning_says_why(
         policy = acquisition.policy_for(path)
         if path in acquisition.field_policies:
             assert cadence == policy.cadence_seconds, path
-        if not tx and policy.tx_only:
+        if (tx and policy.rx_only) or (not tx and policy.tx_only):
             continue
         demand += 1.0 / cadence
         if path in acquisition.field_policies:
@@ -207,22 +208,27 @@ def _explicit_hz(acquisition: RadioAcquisitionProfile, *, tx: bool) -> float:
         policy = acquisition.field_policies.get(path)
         if policy is None or policy.cadence_seconds is None:
             continue
-        if tx or not policy.tx_only:
-            explicit += 1.0 / policy.cadence_seconds
+        if (tx and policy.rx_only) or (not tx and policy.tx_only):
+            continue
+        explicit += 1.0 / policy.cadence_seconds
     return explicit
 
 
 def _window_cadences(
     acquisition: RadioAcquisitionProfile, budget_hz: float, *, tx: bool
 ) -> dict[FieldPath, float]:
-    """Cadence of every path polled in the window, ``tx_only`` paths in TX only."""
+    """Cadence of every path polled in the window."""
 
     scheduler = AcquisitionScheduler(profile=acquisition, transport_budget_hz=budget_hz)
     scheduler.note_tx_active(tx)
     return {
         path: cadence
         for path, cadence in _base_cadences(scheduler).items()
-        if tx or not acquisition.policy_for(path).tx_only
+        if not (
+            acquisition.policy_for(path).rx_only
+            if tx
+            else acquisition.policy_for(path).tx_only
+        )
     }
 
 
@@ -279,7 +285,7 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
     """IC-7610 over USB, receive: 40 q/s leaves the classes at their start.
 
     Explicit demand is under the 30 q/s limit, and so is the whole window
-    at nominal cadences (26.1 q/s), so nothing stretches and the window
+    at nominal cadences (28.6 q/s), so nothing stretches and the window
     stays under the 40 q/s transport budget.
     """
 
@@ -293,9 +299,9 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
     for path, (cadence, start, _ceiling) in class_derived.items():
         assert cadence == pytest.approx(start), path
     demand = sum(1.0 / cadence for cadence in cadences.values())
-    # MOR-2748: the two filter_shape reads went 10 s -> 5 s, +2*(1/5-1/10)
-    # = +0.2 q/s.
-    assert demand == pytest.approx(26.1)
+    # MOR-4795: 26.1 q/s plus one 400 ms squelch-open read.
+    assert cadences[_DCD] == pytest.approx(0.4)
+    assert demand == pytest.approx(28.6)
     assert demand < ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ
 
 
@@ -314,6 +320,7 @@ def test_ic705_transmit_at_the_serial_budget_stretches_but_not_to_the_ceiling() 
     assert _explicit_hz(acquisition, tx=True) == pytest.approx(16.6)
 
     cadences = _window_cadences(acquisition, _SERIAL_BUDGET_HZ, tx=True)
+    assert _DCD not in cadences
 
     class_derived = _class_derived_starts(acquisition, cadences, tx=True)
     assert any(
@@ -332,6 +339,21 @@ def test_ic705_transmit_under_the_lan_budget_stays_at_its_start() -> None:
     class_derived = _class_derived_starts(acquisition, cadences, tx=True)
     for path, (cadence, start, _ceiling) in class_derived.items():
         assert cadence == pytest.approx(start), path
+
+
+def test_receive_only_poll_resumes_after_transmit() -> None:
+    """A queued cadence read yields to TX and is dispatched after dekey."""
+    acquisition = _CIV_ACQUISITION["IC-9700"]
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, transport_budget_hz=_SERIAL_BUDGET_HZ
+    )
+    assert all(_DCD not in req.paths for req in scheduler.due_requests(tx_active=True))
+    request = next(req for req in scheduler.due_requests() if _DCD in req.paths)
+    assert scheduler.is_dispatchable(request)
+    scheduler.note_tx_active(True)
+    assert not scheduler.is_dispatchable(request)
+    scheduler.note_tx_active(False)
+    assert scheduler.is_dispatchable(request)
 
 
 # --- (b) dispatch order -------------------------------------------------------

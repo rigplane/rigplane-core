@@ -833,22 +833,15 @@ class TestBuildStateQueries:
         assert len(set(keys)) == len(queries), f"{model}: {collisions}"
 
     @pytest.mark.parametrize("model", _shipped_civ_models())
-    def test_squelch_open_status_is_never_scheduled(self, model: str) -> None:
-        """No profile polls the squelch-open (0x15 0x01) status: the SQL tag
-        reads the squelch LEVEL, so the old BUSY-lamp read is gone on every
-        radio and every band."""
+    def test_squelch_observation_uses_the_profile_status_read(self, model: str) -> None:
         profile = resolve_radio_profile(model=model)
         parts = [(query.command, query.sub) for query in build_state_queries(profile)]
 
-        assert (0x15, 0x01) not in parts, model
+        assert (0x15, 0x05) not in parts, model
         acquisition = profile.state_acquisition
-        if acquisition is not None:
-            polled = acquisition.pollable_paths()
-            for receiver in ("main", "sub"):
-                assert (
-                    FieldPath.receiver(receiver, "operator_toggles", "dcd")
-                    not in polled
-                ), model
+        dcd = FieldPath.receiver("main", "operator_toggles", "dcd")
+        polls_dcd = acquisition is not None and acquisition.capability_for(dcd).can_poll
+        assert ((0x15, 0x01) in parts) == polls_dcd, model
 
     def test_squelch_level_stays_polled_for_the_sql_tag(self) -> None:
         """The SQL tag's source, the squelch level (0x14 0x03), is still read."""
@@ -1074,10 +1067,11 @@ class TestBuildStateQueries:
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
         # read; MOR-3624 adds repeater_offset_hz (0C) without merging into
-        # any of those; without an observed fixed-edge slot, 40 paths yield
-        # 36 queries.
-        assert len(pollable) == 40
-        assert len(queries) == 36
+        # any of those. MOR-4795 adds the main squelch status via 15 01.
+        assert FieldPath.receiver("main", "operator_toggles", "dcd") in pollable
+        assert len(pollable) == 41
+        assert len(queries) == 37
+        assert sum((query.command, query.sub) == (0x15, 0x01) for query in queries) == 1
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries

@@ -3503,6 +3503,8 @@ def _read_value(request: CivFrame) -> bytes:
         return bcd_encode(14_074_000)
     if request.command == 0x26:
         return b"\x01\x00\x01"
+    if (request.command, request.sub) == (0x15, 0x01):
+        return b"\x01"
     if request.command in (0x14, 0x15):
         return b"\x01\x28"
     if (request.command, request.sub) == (0x21, 0x00):

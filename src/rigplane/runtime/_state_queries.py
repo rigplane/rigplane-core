@@ -34,6 +34,7 @@ from rigplane.profiles import RadioProfile
 
 _RECEIVER_IDS = {"0": 0, "main": 0, "1": 1, "sub": 1}
 _RECEIVER_TOGGLE_GETTERS = {
+    "dcd": "get_s_meter_sql_status",
     "digisel": "get_digisel",
     "ipplus": "get_ip_plus",
     "nb": "get_nb",

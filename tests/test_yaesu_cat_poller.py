@@ -2698,6 +2698,7 @@ async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callba
 ):
     radio = make_radio(s_meter_main=150, s_meter_sub=75, ptt=False)
     radio.profile.state_acquisition = _profile_state_acquisition()
+    radio.read_dcd = AsyncMock(return_value=True)
     legacy_calls: list[RadioState] = []
     observations: list[Observation] = []
 
@@ -2715,6 +2716,7 @@ async def test_fast_poll_emits_rx_meter_observations_without_legacy_state_callba
 
     assert legacy_calls == []
     assert [(str(item.path), item.value) for item in observations] == [
+        ("receiver.main.operator_toggles.dcd", True),
         ("receiver.main.meters.s_meter", 150),
         ("receiver.sub.meters.s_meter", 75),
     ]

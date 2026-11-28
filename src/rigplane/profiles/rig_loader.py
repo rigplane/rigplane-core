@@ -1974,6 +1974,7 @@ _ACQUISITION_POLICY_KEYS = frozenset(
         "external_cat_pause",
         "meter_coalescing_window_seconds",
         "tx_only",
+        "rx_only",
         "available_when",
         "reason",
     }
@@ -2190,6 +2191,12 @@ def _parse_acquisition_policy(
                     "tx_only",
                     defaults.tx_only if defaults is not None else False,
                 ),
+            ),
+            rx_only=_strict_policy_bool(
+                filename,
+                prefix,
+                labels.get("rx_only", "rx_only"),
+                raw.get("rx_only", defaults.rx_only if defaults is not None else False),
             ),
             available_when=available_when,
         )

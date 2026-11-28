@@ -1158,6 +1158,8 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     setting fields, with ``tuner_status`` in the control class).
     MOR-2595 budgets 1 / 10 ms = 100 q/s, so the 75 q/s limit no longer
     stretches anything: setting stays at its 10 s nominal.
+    The MOR-4795 squelch-open read adds one setting to this historical
+    class fold. Its explicit cadence is covered by test_acquisition_budget_fit.
     """
 
     acquisition = get_radio_profile("IC-7610").state_acquisition
@@ -1187,7 +1189,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
         pytest.approx(10.0)
     )
-    assert fit.demand_hz == pytest.approx(23.7)
+    assert fit.demand_hz == pytest.approx(23.8)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------
@@ -1461,6 +1463,7 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     assert acquisition.provider == "icom_civ"
 
     expected_pollable = {
+        FieldPath.receiver("main", "operator_toggles", "dcd"),
         FieldPath.active("main", "freq_mode", "freq_hz"),
         FieldPath.active("main", "freq_mode", "mode"),
         FieldPath.unselected("main", "freq_mode", "freq_hz"),
@@ -1568,6 +1571,12 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("meters", name)
         for name in ("power", "swr", "alc", "comp", "id")
     }
+    dcd = FieldPath.receiver("main", "operator_toggles", "dcd")
+    assert {
+        path for path in expected_pollable if acquisition.policy_for(path).rx_only
+    } == {dcd}
+    assert acquisition.policy_for(dcd).cadence_seconds == 0.4
+    assert acquisition.policy_for(dcd).freshness_ttl_seconds == 1.2
 
     assert (
         acquisition.capability_for(
@@ -1798,7 +1807,7 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
         )
 
 
-def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
+def test_ftx1_acquisition_contract() -> None:
     ftx1 = get_radio_profile("FTX-1")
     acquisition = ftx1.state_acquisition
     assert acquisition is not None
@@ -1809,10 +1818,26 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     # MOR-2969: +2 tone_squelch_type (MAIN, SUB), each with a field policy.
     # MOR-3677: +2 filter_width_radio_default (MAIN, SUB), each with a field
     # policy that mirrors the filter_width one.
-    assert len(acquisition.capabilities) == 77
-    assert len(acquisition.field_policies) == 72
+    # MOR-4795: add MAIN's squelch-open observation and its fast RX policy.
+    assert len(acquisition.capabilities) == 78
+    assert len(acquisition.field_policies) == 73
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
+
+    dcd = FieldPath.receiver("main", "operator_toggles", "dcd")
+    assert acquisition.capability_for(dcd).can_poll
+    assert acquisition.policy_for(dcd).available_when == (
+        AvailabilityClause(
+            field=FieldPath.global_("slow_state", "active"),
+            operator="equals",
+            value="MAIN",
+        ),
+        AvailabilityClause(
+            field=FieldPath.global_("tx_state", "dual_watch"),
+            operator="equals",
+            value=False,
+        ),
+    )
 
     sub_shift = FieldPath.receiver("sub", "operator_controls", "repeater_shift")
     assert acquisition.capability_for(sub_shift).can_poll is True
@@ -2158,6 +2183,8 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.main.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+        # MOR-4795 bench route: RI0 supplies MAIN's status in single receive.
+        ("FTX-1", "receiver.main.operator_toggles.dcd"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
