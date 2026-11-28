@@ -690,6 +690,15 @@ async def test_http_memory_mutation_reports_transport_failure(
             )
         )
         try:
+            # Real I/O first (the shared clock's I/O contract): the frame
+            # must reach the wire before virtual time moves. Otherwise the
+            # radio installs its 2 s ACK deadline at the final virtual time
+            # and the silence cases hang on the frozen loop.
+            await await_until(
+                lambda: transport.sent.is_set(),
+                timeout=30.0,
+                description="memory frame on the wire",
+            )
             # The radio's ack wait is clock-driven: advance past it so the
             # NAK — or the silence timeout — surfaces and the reply flows.
             await virtual_clock.elapse(30.0)
@@ -919,24 +928,56 @@ async def test_http_seam_writes_the_manual_layouts(
         )
     )
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    took = asyncio.Event()
     done = asyncio.Event()
 
     # ``done`` fires after each execution; the test still awaits the consumer
     # itself, so both entries are executed before the wire assertions run.
+    # ``took`` fires on each take, before execution: the second take is the
+    # real event that says the clear has reached the radio path.
     consumer = asyncio.create_task(
         run_command_consumer(
             web.command_queue,
             poller._execute_queued_entry,
             count=2,
+            taken=took,
             executed=done,
         )
     )
     mem = _layout_mem(model)
     try:
         status, body = await _request(web, "http", "set_memory_contents", mem.__dict__)
-        clear_status, clear_body = await _request(
-            web, "http", "memory_clear", {"channel": mem.channel, "group": mem.group}
+        # The clear lands on the wire <10 ms (real) after the first write,
+        # so the production 10 ms CI-V pacing gap parks it on the frozen
+        # loop — and the shared helper's own 2 s HTTP deadline is frozen
+        # too. Run it concurrently: sync on the real take, then drive the
+        # pacing gap past it on the virtual clock.
+        took.clear()
+        clear = asyncio.create_task(
+            _request(
+                web,
+                "http",
+                "memory_clear",
+                {"channel": mem.channel, "group": mem.group},
+            )
         )
+        try:
+            await await_until(
+                lambda: took.is_set(),
+                timeout=30.0,
+                description="consumer took the clear entry",
+            )
+            await virtual_clock.elapse(0.5)
+            await await_until(
+                lambda: clear.done(),
+                timeout=30.0,
+                description="clear HTTP response",
+            )
+            clear_status, clear_body = clear.result()
+        finally:
+            if not clear.done():
+                clear.cancel()
+            await asyncio.gather(clear, return_exceptions=True)
         await await_until(
             lambda: done.is_set(),
             timeout=30.0,
@@ -1201,17 +1242,18 @@ async def test_memory_writes_from_the_http_api_defer_until_quiet_rx(
                 {"id": "deferred", "name": name, "params": params},
             )
         )
-        # The production loop staged and held the entry (MOR-3644 deferral):
-        # advance the virtual loop so the poller turns, then await the real
-        # staging event. The lane holds under TX whatever the clock says.
-        await virtual_clock.elapse(1.0)
+        # The production loop stages and holds the entry (MOR-3644
+        # deferral): await the real staging event first — the parked poller
+        # wakes on the enqueue itself, no virtual timer needed — then turn
+        # a bounded observation window past it. The lane holds under TX
+        # whatever the clock says; were the deferral missing, the loop
+        # would have executed the entry and answered the request by now.
         await await_until(
             lambda: poller._deferred_tx_lane.pending is not None,  # noqa: SLF001
             timeout=30.0,
             description="deferred memory entry staged",
         )
-        # Bounded observation window: were the deferral missing, the loop
-        # would have executed the entry and answered the request by now.
+        await virtual_clock.elapse(1.0)
         assert transport.sent_packets == []
         assert not request.done()
 
