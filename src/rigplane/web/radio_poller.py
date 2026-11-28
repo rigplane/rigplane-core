@@ -1181,7 +1181,7 @@ class RadioPoller:
     ) -> None:
         """Send a single state query
 
-        A ``COMMAND`` or ``USER`` request goes out at ``Priority.NORMAL`` so
+        A ``COMMAND`` or ``USER`` request goes out at ``Priority.READBACK`` so
         a post-write confirmation does not wait behind the poll burst; a
         ``KEYING``-class read (the PTT read-back) goes out at
         ``Priority.KEYING``, ahead of the FIFO background lane, so a burst of
@@ -1205,7 +1205,7 @@ class RadioPoller:
             scope_rx = self._radio_state.scope_controls.receiver
         command, sub, data = wire_parts_for_query(query, scope_rx)
         if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER):
-            lane = Priority.NORMAL
+            lane = Priority.READBACK
         elif acquisition_class is AcquisitionClass.KEYING:
             lane = Priority.KEYING
         else:

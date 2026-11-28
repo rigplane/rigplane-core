@@ -92,9 +92,6 @@ class _CapRadio:
         )
 
 
-_CADENCE = 1.0  # LIVE class nominal cadence for an active freq_hz path
-
-
 def _profile(*paths: FieldPath) -> RadioAcquisitionProfile:
     polled = paths or (_FREQ,)
     return RadioAcquisitionProfile(
@@ -164,7 +161,8 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
             await poller._send_query()  # noqa: SLF001
 
         dropped = scheduler.pending_requests()
-        assert dropped == ()
+        assert len(dropped) == 1
+        assert dropped[0].paths == (_FREQ,)
         assert poller._acquisition_in_flight == {}  # noqa: SLF001
         assert [
             event.kind
@@ -188,16 +186,13 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
         ]
         assert own_records == []
 
-        # One cadence later the dropped path goes out again, well before
-        # max_age (the LIVE class TTL, 1 s) plus the 6 s healthy-link grace.
+        # Capacity recovery retries the same pending request immediately.
         release.set()
         await gate
         await commander.stop()
         commander._bg_inflight = 0  # noqa: SLF001
         commander.start()
-        clock.advance(_CADENCE + 0.01)
-        scheduler.due_requests(now=clock.now())
-        assert scheduler.pending_requests() != ()
+        assert scheduler.pending_requests() == dropped
         with patch("rigplane.core.acquisition_drain.time.monotonic", clock.now):
             await poller._send_query()  # noqa: SLF001
         in_flight = poller._acquisition_in_flight  # noqa: SLF001
@@ -210,7 +205,7 @@ async def test_a_poll_dropped_at_the_commander_cap_is_not_dispatched(
 
 
 @pytest.mark.asyncio
-async def test_a_command_priority_request_reaches_the_commander_as_normal() -> None:
+async def test_a_command_priority_request_reaches_the_commander_as_readback() -> None:
     async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
 
@@ -237,7 +232,7 @@ async def test_a_command_priority_request_reaches_the_commander_as_normal() -> N
     finally:
         await commander.stop()
 
-    assert radio.seen == [Priority.NORMAL]
+    assert radio.seen == [Priority.READBACK]
 
 
 @pytest.mark.asyncio

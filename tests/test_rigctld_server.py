@@ -1579,7 +1579,7 @@ class TestLifecycle:
                         "sub": None,
                         "data": b"\x00",
                         "wait_response": False,
-                        "priority": Priority.NORMAL,
+                        "priority": Priority.READBACK,
                     }
                 ]
 

@@ -252,7 +252,7 @@ async def test_keying_reads_are_not_dropped_at_the_background_cap() -> None:
 
 
 def test_lane_order_is_between_user_commands_and_background_polls() -> None:
-    assert Priority.NORMAL < Priority.KEYING < Priority.BACKGROUND
+    assert Priority.NORMAL < Priority.READBACK < Priority.KEYING < Priority.BACKGROUND
 
 
 @pytest.mark.parametrize(
@@ -263,8 +263,8 @@ def test_lane_order_is_between_user_commands_and_background_polls() -> None:
         (AcquisitionPriority.BACKGROUND, AcquisitionClass.SETTING, Priority.BACKGROUND),
         (AcquisitionPriority.BACKGROUND, None, Priority.BACKGROUND),
         # A write confirmation keeps its user-command lane, whatever the class.
-        (AcquisitionPriority.COMMAND, AcquisitionClass.KEYING, Priority.NORMAL),
-        (AcquisitionPriority.USER, AcquisitionClass.SETTING, Priority.NORMAL),
+        (AcquisitionPriority.COMMAND, AcquisitionClass.KEYING, Priority.READBACK),
+        (AcquisitionPriority.USER, AcquisitionClass.SETTING, Priority.READBACK),
     ],
 )
 async def test_poller_sender_maps_priority_and_class_to_a_lane(

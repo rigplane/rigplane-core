@@ -6,10 +6,12 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.commands.commander import IcomCommander, Priority, _MAX_BG_INFLIGHT
 from rigplane.core import acquisition_drain, acquisition_scheduler, state_store
 from rigplane.core.acquisition_drain import AcquisitionDrain, InFlightLedger
 from rigplane.core.acquisition_scheduler import (
@@ -31,9 +33,12 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessState, StateStore
+from rigplane.profiles.rig_loader import load_rig
+from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 from rigplane.testing.timing import VirtualClock
 from rigplane.types import bcd_decode, bcd_encode
 from rigplane_testkit.sim.profiles import load_sim_profile
+from rigplane.web.radio_poller import RadioPoller
 from testkit.ic7300_fakes import ic7300_profile_fake
 
 _ROOT = Path(__file__).parents[1]
@@ -94,7 +99,9 @@ async def test_burst_readback_confirms_in_one_slot_at_ic7300_simulator_pace(
             FieldCapability(path=p, polling=True) for p in (*background, _FREQ)
         ),
         field_policies={
-            p: AcquisitionPolicy(cadence_seconds=float(i + 1))
+            p: AcquisitionPolicy(
+                cadence_seconds=float(i + 1), freshness_ttl_seconds=2.0 * (i + 1)
+            )
             for i, p in enumerate(background)
         },
     )
@@ -321,7 +328,10 @@ async def test_continuing_writes_allow_a_background_slot_after_four_readbacks(
         provider="icom_civ",
         capabilities=tuple(FieldCapability(path=p, polling=True) for p in (*bg, _FREQ)),
         field_policies={
-            p: AcquisitionPolicy(cadence_seconds=float(i + 1)) for i, p in enumerate(bg)
+            p: AcquisitionPolicy(
+                cadence_seconds=float(i + 1), freshness_ttl_seconds=2.0 * (i + 1)
+            )
+            for i, p in enumerate(bg)
         },
     )
     scheduler = AcquisitionScheduler(profile=profile)
@@ -368,3 +378,278 @@ async def test_continuing_writes_allow_a_background_slot_after_four_readbacks(
     assert sent[:6] == [_METER_QUERY, *([_FREQ_QUERY] * 4), _METER_QUERY]
     assert len(sent) <= len(bg) + 4
     assert sent.count(_METER_QUERY) >= 3
+
+
+def _incremental_drain(
+    scheduler: AcquisitionScheduler,
+    executor: IcomCivAcquisitionExecutor,
+    ledger: InFlightLedger,
+) -> AcquisitionDrain:
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail(f"unexpected drain failure: {kwargs}")
+
+    return AcquisitionDrain(
+        scheduler=lambda: scheduler,
+        executor=lambda: executor,
+        store=lambda: None,
+        in_flight=ledger,
+        expired=lambda request, *, sent_at, now: False,
+        dispatchable=lambda requests: requests,
+        report_failure=unexpected,
+        report_executor_missing=unexpected,
+        report_executor_error=unexpected,
+        report_sent=lambda *args, **kwargs: None,
+    )
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("slot", [0.03, 0.01], ids=["simulator", "lan-default"])
+async def test_readback_bound_applies_on_wire_across_drain_passes(
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, slot: float
+) -> None:
+    for module in (acquisition_drain, acquisition_scheduler):
+        virtual_clock.scope_to(monkeypatch, module)
+    reads = tuple(
+        FieldPath.active("main", "freq_mode", f"readback_{i}") for i in range(16)
+    )
+    background = tuple(
+        FieldPath.global_("operator_controls", f"background_{i}") for i in range(3)
+    )
+    profile = RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=tuple(
+            FieldCapability(path=p, polling=True) for p in (*reads, *background)
+        ),
+        field_policies={
+            p: AcquisitionPolicy(
+                cadence_seconds=float(i + 1), freshness_ttl_seconds=2.0 * (i + 1)
+            )
+            for i, p in enumerate((*reads, *background))
+        },
+    )
+    scheduler = AcquisitionScheduler(profile=profile)
+    queries = {
+        p: AcquisitionQuery(command=0x03, data=bytes([i])) for i, p in enumerate(reads)
+    }
+    queries.update(
+        {
+            p: AcquisitionQuery(command=0x15, data=bytes([i]))
+            for i, p in enumerate(background)
+        }
+    )
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    wire: list[bytes] = []
+    timestamps: list[float] = []
+
+    async def execute(payload: bytes, wait_response: bool) -> None:
+        assert not wait_response
+        if payload == b"gate":
+            entered.set()
+            await release.wait()
+            return
+        await asyncio.sleep(slot)
+        wire.append(payload)
+        timestamps.append(virtual_clock())
+
+    commander = IcomCommander(execute)
+    commander.start()
+    gate = asyncio.create_task(commander.send(b"gate", wait_response=False))
+
+    async def civ(command: int, **kwargs: Any) -> None:
+        await commander.send(
+            bytes([command]) + kwargs["data"],
+            priority=kwargs["priority"],
+            wait_response=False,
+            wait_dispatch=kwargs["wait_dispatch"],
+        )
+
+    poller = object.__new__(RadioPoller)
+    poller._radio_state = None
+    poller._civ = civ
+    executor = IcomCivAcquisitionExecutor(
+        poller._send_one_state_query, resolve_query=queries.get
+    )
+    drain = _incremental_drain(scheduler, executor, {})
+    try:
+        await virtual_clock.elapse(0)
+        assert entered.is_set()
+        for batch in range(2):
+            for path in reads[batch * 8 : (batch + 1) * 8]:
+                scheduler.ensure_fresh(
+                    path, max_age=10, priority="user", reason="post_write"
+                )
+            for path in background[batch * 2 : (batch + 1) * 2]:
+                scheduler.ensure_fresh(
+                    path, max_age=10, priority="background", reason="cadence"
+                )
+            await _finish_pass(drain, virtual_clock, slot)
+        assert wire == []
+        await commander.send(
+            b"write", priority=Priority.NORMAL, wait_response=False, wait_dispatch=False
+        )
+        await commander.send(
+            b"urgent",
+            priority=Priority.IMMEDIATE,
+            wait_response=False,
+            wait_dispatch=False,
+        )
+        release.set()
+        await virtual_clock.elapse(22 * slot)
+        await gate
+        assert wire[:2] == [b"urgent", b"write"]
+        pending_background = len(background)
+        streak = 0
+        for payload in wire[2:]:
+            if payload[0] == 0x15:
+                assert streak <= 4
+                pending_background -= 1
+                streak = 0
+            else:
+                streak += 1
+                if pending_background:
+                    assert streak <= 4
+        assert pending_background == 0
+        assert len(wire) == len(reads) + len(background) + 2
+        assert [p for p in wire if p[0] == 0x15] == [bytes([0x15, i]) for i in range(3)]
+        assert all(
+            b - a == pytest.approx(slot) for a, b in zip(timestamps, timestamps[1:])
+        )
+        assert commander._queue is not None
+        await commander._queue.join()
+        assert commander._bg_inflight == 0
+    finally:
+        release.set()
+        await commander.stop()
+        await asyncio.gather(gate, return_exceptions=True)
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("alias", [False, True], ids=["real-profile", "query-alias"])
+async def test_promoted_target_precedes_background_siblings_and_keeps_aliases(
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, alias: bool
+) -> None:
+    for module in (acquisition_drain, acquisition_scheduler):
+        virtual_clock.scope_to(monkeypatch, module)
+    profile = load_rig(_ROOT / "rigs/ic7300.toml").to_profile()
+    assert profile.state_acquisition is not None
+    paths = tuple(
+        FieldPath.receiver("main", "operator_controls", name)
+        for name in ("af_level", "rf_gain", "squelch")
+    )
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    scheduler.ensure_fresh(paths, max_age=10, priority="background", reason="cadence")
+    promoted = scheduler.ensure_fresh(
+        paths[2],
+        max_age=1e-9,
+        priority="user",
+        reason="post_write",
+        require_fresh_dispatch=True,
+    ).request
+    assert promoted is not None
+    assert len(scheduler.pending_requests()) == 1
+    resolve = acquisition_query_resolver_for_profile(profile)
+    target = resolve(paths[2])
+    assert target is not None
+    sent: list[AcquisitionQuery] = []
+
+    async def send(
+        query: AcquisitionQuery, priority: AcquisitionPriority, klass: AcquisitionClass
+    ) -> None:
+        sent.append(query)
+        await asyncio.sleep(0.03)
+
+    ledger: InFlightLedger = {}
+    executor = IcomCivAcquisitionExecutor(
+        send,
+        resolve_query=lambda p: target if alias and p == paths[1] else resolve(p),
+    )
+    drain = _incremental_drain(scheduler, executor, ledger)
+    await _finish_pass(drain, virtual_clock, 0.03)
+    assert sent[0] == target
+    assert sent.count(target) == 1
+    assert len(sent) == (2 if alias else 3)
+    assert ledger[promoted.id][0] == frozenset(paths)
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("slot", [0.03, 0.01], ids=["simulator", "lan-default"])
+async def test_mid_envelope_backpressure_retains_unsent_path_for_retry(
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, slot: float
+) -> None:
+    for module in (acquisition_drain, acquisition_scheduler):
+        virtual_clock.scope_to(monkeypatch, module)
+    paths = tuple(
+        FieldPath.receiver("main", "operator_controls", name)
+        for name in ("af_level", "squelch")
+    )
+    scheduler = AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="icom_civ",
+            capabilities=tuple(FieldCapability(path=p, polling=True) for p in paths),
+        )
+    )
+    request = scheduler.ensure_fresh(
+        paths, max_age=10, priority="background", reason="cadence"
+    ).request
+    assert request is not None
+    queries = {p: AcquisitionQuery(command=0x14, sub=i) for i, p in enumerate(paths)}
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    wire: list[bytes] = []
+
+    async def execute(payload: bytes, wait_response: bool) -> None:
+        if payload == b"gate":
+            entered.set()
+            await release.wait()
+            return
+        await asyncio.sleep(slot)
+        wire.append(payload)
+
+    commander = IcomCommander(execute)
+    commander.start()
+    gate = asyncio.create_task(commander.send(b"gate", wait_response=False))
+
+    async def send(
+        query: AcquisitionQuery, priority: AcquisitionPriority, klass: AcquisitionClass
+    ) -> None:
+        assert query.sub is not None
+        await commander.send(
+            bytes([query.command, query.sub]),
+            priority=Priority.BACKGROUND,
+            wait_response=False,
+            wait_dispatch=False,
+        )
+
+    ledger: InFlightLedger = {}
+    drain = _incremental_drain(
+        scheduler, IcomCivAcquisitionExecutor(send, resolve_query=queries.get), ledger
+    )
+    try:
+        await virtual_clock.elapse(0)
+        assert entered.is_set()
+        for _ in range(_MAX_BG_INFLIGHT - 1):
+            await commander.send(
+                b"filler",
+                priority=Priority.BACKGROUND,
+                wait_response=False,
+                wait_dispatch=False,
+            )
+        await _finish_pass(drain, virtual_clock, slot)
+        assert ledger[request.id][0] == frozenset({paths[0]})
+        assert scheduler.pending_requests() == (request,)
+        assert set(scheduler._dispatch_by_request_id[request.id]) == {paths[0]}
+        await _finish_pass(drain, virtual_clock, slot)
+        assert ledger[request.id][0] == frozenset({paths[0]})
+        release.set()
+        await virtual_clock.elapse((_MAX_BG_INFLIGHT + 1) * slot)
+        await gate
+        await _finish_pass(drain, virtual_clock, slot)
+        await virtual_clock.elapse(2 * slot)
+        assert ledger[request.id][0] == frozenset(paths)
+        assert wire.count(b"\x14\x00") == wire.count(b"\x14\x01") == 1
+        assert set(scheduler._dispatch_by_request_id[request.id]) == set(paths)
+    finally:
+        release.set()
+        await commander.stop()
+        await asyncio.gather(gate, return_exceptions=True)

@@ -238,6 +238,7 @@ class AcquisitionRequest:
     external_cat_paused: bool = False
     external_cat_owner: str | None = None
     source_metadata: dict[str, str | None] | None = None
+    readback_paths: tuple[FieldPath, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         """Return a stable serializable projection for diagnostics/executors."""
@@ -416,7 +417,9 @@ class IcomCivAcquisitionExecutor:
         failed: list[FieldPath] = []
         failure_reason = ""
         sent_queries: set[AcquisitionQuery] = set()
-        for path in request.paths:
+        ordered_paths = tuple(p for p in request.readback_paths if p in request.paths)
+        ordered_paths += tuple(p for p in request.paths if p not in ordered_paths)
+        for path in ordered_paths:
             if path in already_sent_paths:
                 continue
             query = self.query_for_path(path)
@@ -440,8 +443,12 @@ class IcomCivAcquisitionExecutor:
                     query, request.priority, acquisition_class_for_path(path)
                 )
             except BackgroundSendDropped:
-                if sent:
-                    return AcquisitionExecutionResult(sent_paths=tuple(sent))
+                if one_query or sent or already_sent_paths:
+                    return AcquisitionExecutionResult(
+                        sent_paths=tuple(sent),
+                        failed_paths=tuple(failed),
+                        failure_reason=failure_reason,
+                    )
                 raise
             sent_queries.add(query)
             sent.append(path)
@@ -2699,6 +2706,11 @@ class AcquisitionScheduler:
                 "provider": self._profile.provider,
                 "capabilityId": ",".join(str(path) for path in paths),
             },
+            readback_paths=(
+                paths
+                if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
+                else ()
+            ),
         )
 
     def _coalesce(
@@ -2725,9 +2737,13 @@ class AcquisitionScheduler:
                 merged_reasons = (*merged_reasons, candidate)
         deadline = min(existing.deadline_monotonic, deadline_monotonic)
         merged_paths = _merge_paths(existing.paths, paths)
+        readback_paths = existing.readback_paths
+        if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER):
+            readback_paths = _merge_paths(readback_paths, paths)
         return replace(
             existing,
             paths=merged_paths,
+            readback_paths=readback_paths,
             priority=priority_to_keep,
             max_age=min(existing.max_age, max_age),
             timeout=_min_optional_timeout(existing.timeout, timeout),
@@ -2749,6 +2765,7 @@ class AcquisitionScheduler:
         return replace(
             request,
             paths=paths,
+            readback_paths=tuple(p for p in request.readback_paths if p in paths),
             capability_ids=tuple(str(path) for path in paths),
             source_metadata={
                 "provider": self._profile.provider,

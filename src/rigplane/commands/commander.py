@@ -12,6 +12,7 @@ from rigplane.core.exceptions import (
     ConnectionError,
     StaleBeforeWireError,
 )
+from rigplane.core.state_acquisition_policy import READBACK_BURST_LIMIT
 from rigplane.core.types import CivFrame
 
 __all__ = ["IcomCommander", "InterferenceScope", "Priority"]
@@ -22,6 +23,7 @@ class Priority(IntEnum):
     ABORT = -10
     IMMEDIATE = 0
     NORMAL = 10
+    READBACK = 12
     #: MOR-3863: reads of KEYING-class state (the PTT read-back). Below user
     #: commands, above the FIFO BACKGROUND poll lane, so a key/unkey
     #: confirmation never waits behind a burst of other polls. Counts as a
@@ -137,6 +139,7 @@ class IcomCommander:
         # ``_MAX_BG_INFLIGHT``).  Incremented at enqueue, decremented in the
         # worker's ``finally`` for items flagged ``counts_bg_inflight``.
         self._bg_inflight = 0
+        self._readback_streak = 0
         # Live read-modify-write scopes (MOR-3743).  The worker marks each
         # scope when it dispatches a non-BACKGROUND frame from another task.
         self._interference_scopes: set[InterferenceScope] = set()
@@ -144,6 +147,7 @@ class IcomCommander:
     def start(self) -> None:
         if self._worker is None or self._worker.done():
             self._queue = asyncio.PriorityQueue()
+            self._readback_streak = 0
             self._worker = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -340,18 +344,49 @@ class IcomCommander:
             if scope.owner is not enqueued_by:
                 scope.interfered = True
 
+    async def _next_item(
+        self, queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]]
+    ) -> _QueueItem:
+        selected = await queue.get()
+        if (
+            selected[0] != Priority.READBACK
+            or self._readback_streak < READBACK_BURST_LIMIT
+        ):
+            return selected[2]
+
+        # A drain's enqueue order cannot constrain a priority queue's wire
+        # order. Give the next eligible read lane a turn after the burst;
+        # NORMAL writes and safety lanes still win the initial queue.get().
+        held: list[tuple[int, int, _QueueItem]] = []
+        while not queue.empty():
+            candidate = queue.get_nowait()
+            if candidate[0] in _READ_LANES and not candidate[2].future.done():
+                held.append(selected)
+                selected = candidate
+                break
+            held.append(candidate)
+        for candidate in held:
+            queue.put_nowait(candidate)
+            queue.task_done()
+        return selected[2]
+
     async def _loop(self) -> None:
         queue, worker = self._queue, asyncio.current_task()
         assert queue is not None and worker is not None
         try:
             while True:
-                _, _, item = await queue.get()
+                item = await self._next_item(queue)
                 execute_task: asyncio.Future[CivFrame | None] | None = None
                 try:
                     # Skip abandoned requests (caller cancelled/timed out
                     # before worker even started this item).
                     if item.future.done():
                         continue
+
+                    if item.priority == Priority.READBACK:
+                        self._readback_streak += 1
+                    elif item.priority in _READ_LANES:
+                        self._readback_streak = 0
 
                     # MOR-3743: this frame is about to go to the wire.  Any
                     # live scope owned by another task may have preserved

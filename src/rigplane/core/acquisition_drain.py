@@ -40,6 +40,7 @@ from .acquisition_scheduler import (
     AcquisitionScheduler,
     tx_active,
 )
+from .state_acquisition_policy import READBACK_BURST_LIMIT
 from .state_pipeline_contracts import FieldPath
 from .state_store import StateStore
 
@@ -57,7 +58,6 @@ InFlightLedger = MutableMapping[str, tuple[frozenset[FieldPath], float]]
 # Interactive writes can keep arriving while this drain awaits a slow read.
 # Strict priority would starve cadence acquisition; allow one background
 # execution after four readback executions (test_readback_acquisition_priority).
-_READBACK_BURST_LIMIT = 4
 _READBACK_PRIORITIES = frozenset(
     (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
 )
@@ -266,7 +266,7 @@ class AcquisitionDrain:
         if not candidates:
             return None
         request = candidates[0]
-        if readback_streak >= _READBACK_BURST_LIMIT:
+        if readback_streak >= READBACK_BURST_LIMIT:
             request = next(
                 (r for r in candidates if r.priority in _BACKGROUND_PRIORITIES),
                 request,
@@ -313,7 +313,7 @@ class AcquisitionDrain:
         whole_request_attempts: set[str] = set()
         readback_streak = 0
         for _ in range(
-            sum(len(request.paths) for request in pending) + _READBACK_BURST_LIMIT
+            sum(len(request.paths) for request in pending) + READBACK_BURST_LIMIT
         ):
             request = self._next_request(
                 scheduler,

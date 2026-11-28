@@ -569,10 +569,6 @@ class RigctldServer:
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
 
-        This seat sends every read on the radio's default lane, in order, so
-        the class that lets the web seat lift KEYING reads ahead of its
-        background lane (MOR-3863) has nothing to change here.
-
         Wire-frame assembly (cmd29 wrap, 0x27 scope-receiver substitution)
         is shared with the other two acquisition senders via
         ``wire_parts_for_query``; the live scope receiver comes from the
@@ -588,7 +584,7 @@ class RigctldServer:
         command, sub, data = wire_parts_for_query(
             query, self._radio.radio_state.scope_controls.receiver
         )
-        # A COMMAND or USER request goes out at NORMAL so a post-write
+        # A COMMAND or USER request goes out at READBACK so a post-write
         # confirmation does not wait behind the poll burst; everything else
         # stays BACKGROUND so background polls yield to user commands —
         # the same mapping the web seat uses in
@@ -596,7 +592,7 @@ class RigctldServer:
         # priority here (always NORMAL) also bypassed the commander's
         # drop-newest cap for BACKGROUND fire-and-forget sends (MOR-3888).
         lane = (
-            Priority.NORMAL
+            Priority.READBACK
             if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
             else Priority.BACKGROUND
         )

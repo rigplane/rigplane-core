@@ -37,10 +37,15 @@ __all__ = [
     "SLOW_RECEIVER_DEMOTION_PATH",
     "RadioAcquisitionProfile",
     "ReconciliationPriority",
+    "READBACK_BURST_LIMIT",
     "acquisition_policy_for_class",
     "acquisition_policy_for_class_with_demotion",
     "fit_to_budget",
 ]
+
+# Shared drain/commander burst bound, exercised by
+# test_readback_bound_applies_on_wire_across_drain_passes (MOR-4735).
+READBACK_BURST_LIMIT = 4
 
 
 class FieldAvailability(StrEnum):
