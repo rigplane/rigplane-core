@@ -99,6 +99,25 @@ describe('passband probe evidence', () => {
     expect(passbandProbeReady([current(0, 0, 'frame', false), current(1, 1, 'dom')], 1)).toBe(false);
     expect(passbandProbeReady([current(0, 1)], 1)).toBe(true);
   });
+  it('waits for the requested FIX window in both painted and latest diagnostics', () => {
+    const view = { startHz: 14_200_000, endHz: 14_300_000 };
+    const old = current(0, 1);
+    old.gates.viewStartHz = 14_025_000;
+    old.gates.viewEndHz = 14_475_000;
+    expect(passbandProbeReady([old], 1, view)).toBe(false);
+    expect(passbandProbeReady([old, current(1, 1, 'dom')], 1, view)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), { ...old, t: 1, kind: 'dom' }], 1, view)).toBe(false);
+    expect(passbandProbeReady([current(2, 1), current(3, 1, 'dom')], 1, view)).toBe(true);
+  });
+  it('requires both requested edges without changing readiness for callers with no window', () => {
+    const view = { startHz: 14_200_000, endHz: 14_300_000 };
+    for (const edge of ['viewStartHz', 'viewEndHz'] as const) {
+      const sample = current(0, 1);
+      sample.gates[edge] += 1000;
+      expect(passbandProbeReady([sample], 1, view)).toBe(false);
+      expect(passbandProbeReady([sample], 1)).toBe(true);
+    }
+  });
   it('starts FIX continuity only after its current tuple has painted', () => {
     const samples = [current(-50, 0), sample(-30, false), sample(-20, false), sample(-10, false),
       current(-5, 1, 'dom')];
