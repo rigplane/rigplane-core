@@ -3,12 +3,12 @@
 An ``IcomRadio`` with ``auto_reconnect=True`` and the default
 ``watchdog_timeout`` is connected to a single-owner ``MockIcomRadio``; a task
 that asks ``get_freq()`` in a loop stands in for the web layer's poller. Each
-test schedules one radio-side event on the simulator -- a session drop with or
-without the busy=0 conninfo notice, or a power-off with the recorded notice --
+test schedules one radio-side event on the simulator — a session drop with or
+without the busy=0 conninfo notice, or a power-off with the recorded notice —
 and checks that the client holds a usable session with the radio's new token
 within a budget, how many logins and CI-V OpenClose(open) packets the
 simulator counted, and that the client then stays CONNECTED for
-``_OBSERVE_S`` seconds without logging the
+``_OBSERVE_S`` virtual seconds without logging the
 ``civ.soft_reconnect.already_open_stalled`` line.
 
 The no-notice drop also pins how it recovered: the watchdog probes the
@@ -16,6 +16,17 @@ control session before its OpenClose patience and escalates on exactly one
 rejected renewal. A standby scenario (a simulator scenario, not recorded
 radio behaviour) pins the other side: a radio that keeps answering renewals
 while its CI-V DATA is silent for 20 s never escalates and never re-logs in.
+
+All timing is virtual. Inside ``VirtualClock.on_running_loop`` every loop
+timer — the watchdog checks, reconnect backoffs, simulator events,
+keepalives, the poller — follows the test's clock and ``clock.elapse`` moves
+it, while real socket I/O still drains in the settles between timers. Only
+the modules' own ``time`` reads are redirected at the clock (their
+``asyncio`` stays real so sleeps keep following the loop); recovery waits use
+the documented concurrent pattern of ``rigplane.testing.timing`` — a driver
+task advances the clock while ``await_until`` watches the usable-session
+condition on real poll timers. Budgets keep their real-time values as virtual
+seconds, and every assertion keeps its meaning.
 
 ``_Run.report`` prints the state sequence, reconnect-status callbacks,
 counters and the first log lines when an assert fails.
@@ -26,21 +37,31 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
+from rigplane.core import acquisition_drain as acquisition_drain_module
+from rigplane.core import acquisition_scheduler as acquisition_scheduler_module
+from rigplane.core import civ as core_civ_module
+from rigplane.core import transport as core_transport_module
 from rigplane.radio import IcomRadio
+from rigplane.runtime import _civ_rx as civ_rx_module
+from rigplane.runtime import _control_phase as control_phase_module
+from rigplane.runtime import radio as radio_runtime_module
+from rigplane.runtime import radio_reconnect as radio_reconnect_module
+from rigplane.runtime import session_lifecycle as session_lifecycle_module
 from rigplane.runtime._civ_rx import (
     _CIV_DATA_WATCHDOG_TIMEOUT,
     _SILENT_OPENCLOSE_DEADLINE,
 )
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.icom import simulator
 
 from _perf_helpers import fast_connect
 
@@ -137,24 +158,6 @@ class _Run:
         )
 
 
-async def _sample(
-    radio: IcomRadio,
-    states: list[RadioConnectionState],
-    seconds: float,
-    done: Callable[[], bool] = lambda: False,
-) -> bool:
-    """Record ``conn_state`` changes every 20 ms until ``done()`` or the deadline."""
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        state = radio.conn_state
-        if not states or states[-1] is not state:
-            states.append(state)
-        if done():
-            return True
-        await asyncio.sleep(0.02)
-    return False
-
-
 async def _ask_freq(radio: IcomRadio, timeout: float) -> int | str:
     """The answer to ``get_freq()``, or text saying why there is none.
 
@@ -177,98 +180,224 @@ async def _ask_freq(radio: IcomRadio, timeout: float) -> int | str:
     return repr(error) if error is not None else ask.result()
 
 
-async def _poll(radio: IcomRadio) -> None:
+async def _poll(radio: IcomRadio, interval: float = 0.5) -> None:
     """Ask for the frequency in a loop, standing in for the web layer's poller."""
     while True:
         await _ask_freq(radio, 1.0)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(interval)
 
 
 def _is_rigplane(record: logging.LogRecord) -> bool:
     return record.name == "rigplane" or record.name.startswith("rigplane.")
 
 
-async def _ride_out(
+def _scope_virtual_time(
+    monkeypatch: pytest.MonkeyPatch,
+    sim: MockIcomRadio,
+    clock: VirtualClock,
+) -> None:
+    """Read every wall clock on the reconnect path from ``clock``.
+
+    Inside ``VirtualClock.on_running_loop`` the loop timers are already
+    virtual; only the modules' own ``time`` reads need redirecting (their
+    ``asyncio`` stays the real one so sleeps keep following the loop).
+    Everything reverts with ``monkeypatch`` when the test ends.
+    ``sim.clock`` is the simulator's documented test seam for its
+    retransmit pacing.
+    """
+    sim.clock = clock
+    clock.scope_to(monkeypatch, simulator)
+    monkeypatch.setattr(simulator, "asyncio", asyncio)
+    for module in (
+        civ_rx_module,
+        control_phase_module,
+        radio_reconnect_module,
+        session_lifecycle_module,
+        radio_runtime_module,
+        core_transport_module,
+        core_civ_module,
+        acquisition_scheduler_module,
+        acquisition_drain_module,
+    ):
+        clock.scope_to(monkeypatch, module)
+        monkeypatch.setattr(module, "asyncio", asyncio)
+
+
+async def _elapse_loop(
+    clock: VirtualClock,
+    start: float,
+    budget_s: float,
+    step_s: float,
+) -> None:
+    """Advance ``clock`` toward ``start + budget_s`` in ``step_s`` increments."""
+    while clock.now - start < budget_s:
+        await clock.elapse(min(step_s, budget_s - (clock.now - start)))
+
+
+async def _drive_clock_until(
+    clock: VirtualClock,
+    cond: Callable[[], bool],
+    *,
+    budget_s: float,
+    step_s: float,
+    description: str,
+    report: Callable[[], str],
+) -> None:
+    """Advance virtual time until ``cond()`` holds; fail with ``report()`` past the budget.
+
+    A driver task moves ``clock`` forward in ``step_s`` increments while
+    ``await_until`` watches ``cond()`` on real poll timers (the concurrent
+    pattern documented in ``rigplane.testing.timing``): real socket I/O
+    drains in the settles between virtual timers. Only the virtual budget
+    bounds the wait; the failure carries the run report, not a bare timeout.
+    """
+    start = clock.now
+    driver = asyncio.create_task(_elapse_loop(clock, start, budget_s, step_s))
+    try:
+        await await_until(
+            cond,
+            timeout=budget_s,
+            interval=0.02,
+            description=description,
+            clock=clock,
+        )
+    except AssertionError:
+        raise AssertionError(
+            f"{description} within {budget_s} s of virtual time\n{report()}"
+        )
+    finally:
+        driver.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await driver
+
+
+async def _observe_stable(
+    clock: VirtualClock,
+    radio: IcomRadio,
+    states: list[RadioConnectionState],
+    duration_s: float,
+    *,
+    step_s: float = 0.1,
+) -> None:
+    """Advance virtual time, sampling ``conn_state`` changes at each step."""
+    start = clock.now
+    while clock.now - start < duration_s:
+        await clock.elapse(min(step_s, duration_s - (clock.now - start)))
+        state = radio.conn_state
+        if states[-1] is not state:
+            states.append(state)
+
+
+async def _stop_watching(poller: asyncio.Task[None], radio: IcomRadio) -> None:
+    """Cancel the poller and disconnect on the real loop (past the virtual block)."""
+    poller.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await poller
+    await asyncio.wait_for(radio.disconnect(), 10.0)
+
+
+async def _run_scenario(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: VirtualClock,
+    radio: IcomRadio,
     schedule: Callable[[MockIcomRadio], None],
     recovery_budget_s: float,
 ) -> _Run:
-    """Connect, schedule the event, wait for recovery, then watch ``_OBSERVE_S``."""
-    caplog.set_level(logging.INFO, logger="rigplane")
-    radio = _client(sim)
-    run = _Run()
-    with fast_connect():
-        await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
-        try:
-            run.old_token = radio._token
-            logins0 = sim.login_count
-            opens0 = sim.openclose_open_count
-            rejects0 = sim.busy_rejects
-            first_record = len(caplog.records)
-            wall0, t0 = time.time(), time.monotonic()
-            radio.set_reconnect_status_callback(
-                lambda payload: run.statuses.append((time.monotonic() - t0, payload))
-            )
+    """Schedule the event, recover on the virtual clock, then observe.
 
-            schedule(sim)
-            if await _sample(
-                radio,
-                run.states,
-                recovery_budget_s,
-                lambda: (
-                    sim.token != run.old_token  # the event has fired
-                    and radio.conn_state is _CONNECTED
-                    and radio.connected
-                    and radio._token == sim.token
-                ),
-            ):
-                run.recovered_after_s = time.monotonic() - t0
-                after = len(caplog.records)
-                opens_at_recovery = sim.openclose_open_count
-                run.states_after.append(radio.conn_state)
-                await _sample(radio, run.states_after, _OBSERVE_S)
-                run.opens_after = sim.openclose_open_count - opens_at_recovery
-                run.storm_lines = [
-                    record.getMessage()
-                    for record in caplog.records[after:]
-                    if _is_rigplane(record) and _STORM_MARKER in record.getMessage()
-                ]
-                run.freq = await _ask_freq(radio, 5.0)
-            run.sim_token = sim.token
-            run.logins = sim.login_count - logins0
-            run.opens = sim.openclose_open_count - opens0
-            run.busy_rejects = sim.busy_rejects - rejects0
-            run.log_head = [
-                f"{record.created - wall0:6.2f}s {record.levelname} "
-                f"{record.name}: {record.getMessage()}"
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-            ][:30]
-            run.dead_hold_lines = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-                and "control session dead (" in record.getMessage()
-            ]
-        finally:
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            await asyncio.wait_for(radio.disconnect(), 10.0)
+    The caller connects on the real loop first and owns teardown: ``clock``
+    is already installed on this loop here (each test's own ``async with``
+    block, which is also what marks the test virtual for the realtime
+    guard).
+    """
+    caplog.set_level(logging.INFO, logger="rigplane")
+    run = _Run()
+    run.old_token = radio._token
+    logins0 = sim.login_count
+    opens0 = sim.openclose_open_count
+    rejects0 = sim.busy_rejects
+    _scope_virtual_time(monkeypatch, sim, clock)
+    first_record = len(caplog.records)
+    t0 = clock.now
+    radio.set_reconnect_status_callback(
+        lambda payload: run.statuses.append((clock.now, payload))
+    )
+
+    schedule(sim)
+
+    def usable() -> bool:
+        state = radio.conn_state
+        if not run.states or run.states[-1] is not state:
+            run.states.append(state)
+        return (
+            sim.token != run.old_token  # the event has fired
+            and radio.conn_state is _CONNECTED
+            and radio.connected
+            and radio._token == sim.token
+        )
+
+    await _drive_clock_until(
+        clock,
+        usable,
+        budget_s=recovery_budget_s,
+        step_s=0.5,
+        description="a usable session on the radio's fresh token",
+        report=run.report,
+    )
+    run.recovered_after_s = clock.now - t0
+    after = len(caplog.records)
+    opens_at_recovery = sim.openclose_open_count
+    run.states_after.append(radio.conn_state)
+    await _observe_stable(clock, radio, run.states_after, _OBSERVE_S)
+    run.opens_after = sim.openclose_open_count - opens_at_recovery
+    run.storm_lines = [
+        record.getMessage()
+        for record in caplog.records[after:]
+        if _is_rigplane(record) and _STORM_MARKER in record.getMessage()
+    ]
+    run.freq = await _ask_freq(radio, 5.0)
+    run.sim_token = sim.token
+    run.logins = sim.login_count - logins0
+    run.opens = sim.openclose_open_count - opens0
+    run.busy_rejects = sim.busy_rejects - rejects0
+    run.log_head = [
+        f"{record.levelname} {record.name}: {record.getMessage()}"
+        for record in caplog.records[first_record:]
+        if _is_rigplane(record)
+    ][:30]
+    run.dead_hold_lines = [
+        record.getMessage()
+        for record in caplog.records[first_record:]
+        if _is_rigplane(record) and "control session dead (" in record.getMessage()
+    ]
     return run
 
 
+@pytest.mark.timeout(180)
 async def test_session_drop_with_notice_recovers_with_one_login(
-    sim: MockIcomRadio, caplog: pytest.LogCaptureFixture
+    sim: MockIcomRadio,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run = await _ride_out(
-        sim,
-        caplog,
-        lambda s: s.drop_session(at=_EVENT_AT_S, notice=True),
-        _RECOVERY_S,
-    )
+    with fast_connect():
+        radio = _client(sim)
+        await radio.connect()
+        poller = asyncio.create_task(_poll(radio))
+        try:
+            async with VirtualClock.on_running_loop() as clock:
+                run = await _run_scenario(
+                    sim,
+                    caplog,
+                    monkeypatch,
+                    clock,
+                    radio,
+                    lambda s: s.drop_session(at=_EVENT_AT_S, notice=True),
+                    _RECOVERY_S,
+                )
+        finally:
+            await _stop_watching(poller, radio)
     assert run.recovered_after_s is not None, run.report()
     assert run.logins == 1, run.report()
     assert run.opens <= 3, run.report()
@@ -277,6 +406,7 @@ async def test_session_drop_with_notice_recovers_with_one_login(
     assert run.freq == _FREQ_HZ, run.report()
 
 
+@pytest.mark.timeout(120)
 async def test_two_session_drops_with_notices_recover_with_two_logins(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
@@ -296,126 +426,145 @@ async def test_two_session_drops_with_notices_recover_with_two_logins(
     cancels: list[float] = []
     release_tail = asyncio.Event()
 
-    async def parked_audio_transport() -> None:
-        entries.append(time.monotonic())
-        try:
-            await release_tail.wait()
-        except asyncio.CancelledError:
-            cancels.append(time.monotonic())
-            raise
-
     with fast_connect():
         await radio.connect()
-        monkeypatch.setattr(
-            radio,
-            "_ensure_audio_transport",
-            parked_audio_transport,  # type: ignore[method-assign]
-        )
         poller = asyncio.create_task(_poll(radio))
         try:
-            old_token = radio._token
-            logins0 = sim.login_count
-            first_record = len(caplog.records)
-            wall0, t0 = time.time(), time.monotonic()
-            states: list[RadioConnectionState] = []
+            async with VirtualClock.on_running_loop() as clock:
+                _scope_virtual_time(monkeypatch, sim, clock)
 
-            def report() -> str:
-                head = [
-                    f"{record.created - wall0:6.2f}s {record.levelname} "
-                    f"{record.name}: {record.getMessage()}"
-                    for record in caplog.records[first_record:]
-                    if _is_rigplane(record)
-                ][:30]
-                return "\n".join(
-                    [
-                        f"tokens: old={old_token:#x} "
-                        f"simulator={sim.token:#x} client={radio._token:#x}",
-                        f"states={[s.value for s in states]}",
-                        f"logins={sim.login_count - logins0}",
-                        f"tail_entries={[f'{t - t0:.2f}' for t in entries]}",
-                        f"tail_cancels={[f'{t - t0:.2f}' for t in cancels]}",
-                        *head,
-                    ]
+                async def parked_audio_transport() -> None:
+                    entries.append(clock.now)
+                    try:
+                        await release_tail.wait()
+                    except asyncio.CancelledError:
+                        cancels.append(clock.now)
+                        raise
+
+                monkeypatch.setattr(
+                    radio,
+                    "_ensure_audio_transport",
+                    parked_audio_transport,  # type: ignore[method-assign]
                 )
+                old_token = radio._token
+                logins0 = sim.login_count
+                first_record = len(caplog.records)
+                t0 = clock.now
+                states: list[RadioConnectionState] = []
 
-            async def wait_usable(
-                token_before: int, drop_offset: float, what: str
-            ) -> int:
-                """20 ms sampler: first usable session on a fresh token."""
-                end = t0 + drop_offset + 1.5
-                while True:
-                    state = radio.conn_state
-                    if not states or states[-1] is not state:
-                        states.append(state)
-                    if (
-                        state is _CONNECTED
-                        and radio.connected
-                        and radio._token == sim.token
-                        and sim.token != token_before
-                    ):
-                        break
-                    if time.monotonic() >= end:
-                        pytest.fail(
-                            f"{what} drop not followed by a usable session "
-                            f"within 1.5 s: {report()}"
-                        )
-                    await asyncio.sleep(0.02)
-                recovered_after = time.monotonic() - (t0 + drop_offset)
-                freq = await _ask_freq(radio, 5.0)
-                assert freq == _FREQ_HZ, report()
-                assert recovered_after <= 1.5, report()
-                return sim.token
-
-            sim.drop_session(at=0.1, notice=True)
-            sim.drop_session(at=drop2_at, notice=True)
-
-            token1 = await wait_usable(old_token, 0.1, "first")
-            assert entries, "the first recovery never parked its tail: " + report()
-            assert entries[0] - t0 < drop2_at, (
-                "the first recovery parked its tail only after the second "
-                "drop: " + report()
-            )
-            token2 = await wait_usable(token1, drop2_at, "second")
-            assert token2 != token1, report()
-            assert sim.login_count - logins0 == 2, report()
-            end = time.monotonic() + 5.0
-            while len(entries) < 2:
-                if time.monotonic() >= end:
-                    pytest.fail(
-                        "the second recovery never reached its tail: " + report()
+                def report() -> str:
+                    head = [
+                        f"{record.levelname} {record.name}: {record.getMessage()}"
+                        for record in caplog.records[first_record:]
+                        if _is_rigplane(record)
+                    ][:30]
+                    return "\n".join(
+                        [
+                            f"tokens: old={old_token:#x} "
+                            f"simulator={sim.token:#x} client={radio._token:#x}",
+                            f"states={[s.value for s in states]}",
+                            f"logins={sim.login_count - logins0}",
+                            f"tail_entries={[f'{t - t0:.2f}' for t in entries]}",
+                            f"tail_cancels={[f'{t - t0:.2f}' for t in cancels]}",
+                            *head,
+                        ]
                     )
-                await asyncio.sleep(0.02)
-            assert cancels, "the first recovery tail was never cancelled: " + report()
-            assert cancels[0] - t0 > drop2_at, (
-                "the first recovery tail was cancelled before the second "
-                "drop: " + report()
-            )
-            ignored = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record) and "notice ignored" in record.getMessage()
-            ]
-            assert ignored == [], report()
+
+                async def wait_usable(
+                    token_before: int, drop_offset: float, what: str
+                ) -> int:
+                    """First usable session on a fresh token, in virtual time."""
+                    deadline = t0 + drop_offset + 1.5
+
+                    def usable() -> bool:
+                        state = radio.conn_state
+                        if not states or states[-1] is not state:
+                            states.append(state)
+                        return (
+                            state is _CONNECTED
+                            and radio.connected
+                            and radio._token == sim.token
+                            and sim.token != token_before
+                        )
+
+                    await _drive_clock_until(
+                        clock,
+                        usable,
+                        budget_s=deadline - clock.now,
+                        step_s=0.5,
+                        description=(
+                            f"{what} drop not followed by a usable session within 1.5 s"
+                        ),
+                        report=report,
+                    )
+                    recovered_after = clock.now - (t0 + drop_offset)
+                    freq = await _ask_freq(radio, 5.0)
+                    assert freq == _FREQ_HZ, report()
+                    assert recovered_after <= 1.5, report()
+                    return sim.token
+
+                sim.drop_session(at=0.1, notice=True)
+                sim.drop_session(at=drop2_at, notice=True)
+
+                token1 = await wait_usable(old_token, 0.1, "first")
+                assert entries, "the first recovery never parked its tail: " + report()
+                assert entries[0] - t0 < drop2_at, (
+                    "the first recovery parked its tail only after the second "
+                    "drop: " + report()
+                )
+                token2 = await wait_usable(token1, drop2_at, "second")
+                assert token2 != token1, report()
+                assert sim.login_count - logins0 == 2, report()
+                await _drive_clock_until(
+                    clock,
+                    lambda: len(entries) >= 2,
+                    budget_s=5.0,
+                    step_s=0.5,
+                    description="the second recovery never reached its tail",
+                    report=report,
+                )
+                assert cancels, (
+                    "the first recovery tail was never cancelled: " + report()
+                )
+                assert cancels[0] - t0 > drop2_at, (
+                    "the first recovery tail was cancelled before the second "
+                    "drop: " + report()
+                )
+                ignored = [
+                    record.getMessage()
+                    for record in caplog.records[first_record:]
+                    if _is_rigplane(record) and "notice ignored" in record.getMessage()
+                ]
+                assert ignored == [], report()
         finally:
             release_tail.set()
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            await asyncio.wait_for(radio.disconnect(), 10.0)
+            await _stop_watching(poller, radio)
 
 
+@pytest.mark.timeout(180)
 async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("rigplane.runtime._civ_rx._OPENCLOSE_DEADLINE", _PATIENCE_S)
-    run = await _ride_out(
-        sim,
-        caplog,
-        lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
-        _SILENT_DROP_RECOVERY_S,
-    )
+    with fast_connect():
+        radio = _client(sim)
+        await radio.connect()
+        poller = asyncio.create_task(_poll(radio))
+        try:
+            async with VirtualClock.on_running_loop() as clock:
+                run = await _run_scenario(
+                    sim,
+                    caplog,
+                    monkeypatch,
+                    clock,
+                    radio,
+                    lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
+                    _SILENT_DROP_RECOVERY_S,
+                )
+        finally:
+            await _stop_watching(poller, radio)
     assert run.recovered_after_s is not None, run.report()
     assert run.logins == 1, run.report()
     # The watchdog's OpenClose nudges before recovery are not counted here.
@@ -433,9 +582,11 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     ], run.report()
 
 
+@pytest.mark.timeout(180)
 async def test_silent_drop_with_default_patience_recovers_within_10s(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MOR-3703: a silent drop recovers in ~10 s at the DEFAULT patience.
 
@@ -447,12 +598,23 @@ async def test_silent_drop_with_default_patience_recovers_within_10s(
     a re-login at once instead of after 60 s. On the old code this test
     fails: nothing recovers the session inside the 10 s budget.
     """
-    run = await _ride_out(
-        sim,
-        caplog,
-        lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
-        _FAST_SILENT_RECOVERY_S,
-    )
+    with fast_connect():
+        radio = _client(sim)
+        await radio.connect()
+        poller = asyncio.create_task(_poll(radio))
+        try:
+            async with VirtualClock.on_running_loop() as clock:
+                run = await _run_scenario(
+                    sim,
+                    caplog,
+                    monkeypatch,
+                    clock,
+                    radio,
+                    lambda s: s.drop_session(at=_EVENT_AT_S, notice=False),
+                    _FAST_SILENT_RECOVERY_S,
+                )
+        finally:
+            await _stop_watching(poller, radio)
     assert run.recovered_after_s is not None, run.report()
     assert run.recovered_after_s <= _FAST_SILENT_RECOVERY_S, run.report()
     assert run.logins == 1, run.report()
@@ -469,9 +631,11 @@ async def test_silent_drop_with_default_patience_recovers_within_10s(
     ], run.report()
 
 
+@pytest.mark.timeout(180)
 async def test_long_civ_silence_with_live_control_never_reconnects(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """CI-V DATA absent for 20 s while pings and renewals answer (MOR-3703).
 
@@ -491,40 +655,40 @@ async def test_long_civ_silence_with_live_control_never_reconnects(
         poller = asyncio.create_task(_poll(radio))
         try:
             logins0 = sim.login_count
-            first_record = len(caplog.records)
-            sim.civ_standby(True)
+            async with VirtualClock.on_running_loop() as clock:
+                _scope_virtual_time(monkeypatch, sim, clock)
+                first_record = len(caplog.records)
+                sim.civ_standby(True)
 
-            states: list[RadioConnectionState] = []
-            await _sample(radio, states, _LONG_CIV_SILENCE_S + 3.0)
+                states: list[RadioConnectionState] = [radio.conn_state]
+                await _observe_stable(clock, radio, states, _LONG_CIV_SILENCE_S + 3.0)
 
-            dead_lines = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-                and "control session dead" in record.getMessage()
-            ]
-            handoff_lines = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-                and "handing off to lifecycle recovery" in record.getMessage()
-            ]
-            assert dead_lines == []
-            assert handoff_lines == []
-            # The stall never left CONNECTED: no rebuild, no reconnect.
-            assert states == [_CONNECTED], [s.value for s in states]
-            assert sim.login_count == logins0
+                dead_lines = [
+                    record.getMessage()
+                    for record in caplog.records[first_record:]
+                    if _is_rigplane(record)
+                    and "control session dead" in record.getMessage()
+                ]
+                handoff_lines = [
+                    record.getMessage()
+                    for record in caplog.records[first_record:]
+                    if _is_rigplane(record)
+                    and "handing off to lifecycle recovery" in record.getMessage()
+                ]
+                assert dead_lines == []
+                assert handoff_lines == []
+                # The stall never left CONNECTED: no rebuild, no reconnect.
+                assert states == [_CONNECTED], [s.value for s in states]
+                assert sim.login_count == logins0
 
-            sim.civ_standby(False)
-            assert await _ask_freq(radio, 5.0) == _FREQ_HZ
-            assert radio.conn_state is _CONNECTED
+                sim.civ_standby(False)
+                assert await _ask_freq(radio, 5.0) == _FREQ_HZ
+                assert radio.conn_state is _CONNECTED
         finally:
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            await asyncio.wait_for(radio.disconnect(), 10.0)
+            await _stop_watching(poller, radio)
 
 
+@pytest.mark.timeout(180)
 async def test_power_off_with_notice_recovers_with_one_login(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,
@@ -545,14 +709,28 @@ async def test_power_off_with_notice_recovers_with_one_login(
         "rigplane.runtime._control_phase.ControlPhaseRuntime._STATUS_REJECT_COOLDOWN",
         _BUSY_FOR_S,
     )
-    run = await _ride_out(
-        sim,
-        caplog,
-        lambda s: s.reboot(
-            at=_EVENT_AT_S, down_for=_DOWN_FOR_S, busy_for=_BUSY_FOR_S, notice=True
-        ),
-        _EVENT_AT_S + _DOWN_FOR_S + _BUSY_FOR_S + _RECOVERY_S,
-    )
+    with fast_connect():
+        radio = _client(sim)
+        await radio.connect()
+        poller = asyncio.create_task(_poll(radio))
+        try:
+            async with VirtualClock.on_running_loop() as clock:
+                run = await _run_scenario(
+                    sim,
+                    caplog,
+                    monkeypatch,
+                    clock,
+                    radio,
+                    lambda s: s.reboot(
+                        at=_EVENT_AT_S,
+                        down_for=_DOWN_FOR_S,
+                        busy_for=_BUSY_FOR_S,
+                        notice=True,
+                    ),
+                    _EVENT_AT_S + _DOWN_FOR_S + _BUSY_FOR_S + _RECOVERY_S,
+                )
+        finally:
+            await _stop_watching(poller, radio)
     assert run.recovered_after_s is not None, run.report()
     assert run.logins == 1, run.report()
     assert run.opens_after <= 3, run.report()
