@@ -156,6 +156,9 @@ class TestParseSpot:
         import rigplane.web.dx_cluster as dx_cluster_mod
 
         virtual_clock.scope_to(monkeypatch, dx_cluster_mod)
+        # Move off the fixture-setup instant so the bounds below prove the
+        # factory reads the *current* virtual time, not a stale capture.
+        await virtual_clock.elapse(5.0)
         line = "DX de K1ABC:  14074.0  JA1XYZ  FT8  1234Z"
         before = virtual_clock.now
         spot = parse_spot(line)
@@ -351,13 +354,21 @@ class TestDXClusterClient:
         monkeypatch.setattr(dx_cluster_mod, "_CONNECT_TIMEOUT_SECONDS", 0.05)
 
         client = DXClusterClient("dx.example.com", 7300, "K1ABC", on_spot=MagicMock())
-        t0 = virtual_clock.now
         task = asyncio.create_task(client.start())
         try:
-            # The 0.05 s connect timeout fires on virtual time, then the 1 s
-            # backoff passes and the retry starts: no wall-clock waiting.
-            await virtual_clock.elapse(0.06)
+            # Below the 0.05 s connect timeout: the first attempt is parked
+            # in the stalled connect and no retry has started.
+            await virtual_clock.elapse(0.04)
             assert entered.is_set()
+            assert attempts == 1
+            assert not second_attempt.is_set()
+            # Past the timeout but inside the 1 s backoff: the first attempt
+            # has failed and the retry is waiting out the backoff, not
+            # connecting yet.
+            await virtual_clock.elapse(0.02)
+            assert attempts == 1
+            assert not second_attempt.is_set()
+            # Past the backoff: the retry starts a second connect.
             await virtual_clock.elapse(1.0)
             assert second_attempt.is_set()
         finally:
@@ -367,9 +378,6 @@ class TestDXClusterClient:
                 await task
 
         assert attempts >= 2
-        # Timeout (0.05 s) plus first backoff (1 s): the retry came from the
-        # timer path; the stalled connect itself was never waited out.
-        assert virtual_clock.now - t0 < 5.0
 
     async def test_cancel_during_pending_connect_propagates(
         self, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
