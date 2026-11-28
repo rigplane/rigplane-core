@@ -164,20 +164,69 @@ def _drain_nowait(client: _UdpClient) -> list[bytes]:
     return out
 
 
+async def _settle_delivery(client: _UdpClient, description: str) -> None:
+    """Wait until loopback delivery goes quiet, without moving the clock.
+
+    Everything the simulator emitted was handed to the real loopback socket
+    during the preceding ``elapse``; virtual time is frozen now, so nothing
+    new can be emitted and the queue must stabilize once the kernel
+    delivers what is already in flight. Polling never advances the clock
+    (``src/rigplane/testing/timing.py``), so this is a delivery barrier,
+    not a guess at how many loop turns delivery takes.
+    """
+    last = -1
+    steady = 0
+
+    def _quiet() -> bool:
+        nonlocal last, steady
+        n = client.queue.qsize()
+        if n == last:
+            steady += 1
+        else:
+            last, steady = n, 0
+        return steady >= 3
+
+    await await_until(_quiet, timeout=10.0, description=description)
+
+
 async def _collect(
     client: _UdpClient, clock: VirtualClock, duration: float
 ) -> list[bytes]:
     """Gather every packet sent within ``duration`` virtual seconds.
 
     Advances the clock (firing the simulator's 0.1 s fallback loop on the
-    way), then takes everything loopback delivered. The advance settles the
-    loop first, so packets sent before it are processed at the old reading
-    and only timer-driven rounds land in the window.
+    way), then waits for loopback delivery to go quiet before draining.
+    The quiet-wait is the delivery barrier: with virtual time frozen nothing
+    new can be emitted, so a stable queue means everything sent has
+    arrived. Callers must still await an acknowledgment that the
+    triggering inputs were processed *before* advancing (see
+    :func:`_await_inputs_processed`): bytes still in the kernel on the way
+    in would otherwise move the timers past the state they were meant for.
     """
     await clock.elapse(duration)
-    for _ in range(3):
-        await asyncio.sleep(0)
+    await _settle_delivery(client, f"loopback delivery after {duration:g} virtual s")
     return _drain_nowait(client)
+
+
+async def _await_inputs_processed(
+    client: _UdpClient, server: MockIcomRadio, description: str
+) -> list[bytes]:
+    """Wait until the simulator has processed every packet sent so far.
+
+    Pings are answered throughout, tracked or not, so a ping reply proves
+    the simulator handled everything received before the ping — and FIFO
+    loopback keeps earlier sends ahead of it. Returns any datagrams that
+    arrived first (immediate paced rounds, if a receipt drew any); the ping
+    reply itself is consumed. Virtual time stays frozen throughout, so no
+    timer can fire while real delivery settles.
+    """
+    client.send(_ping(), server.civ_port)
+    out: list[bytes] = []
+    while True:
+        pkt = await _next(client)
+        if _is_ping_reply(pkt):
+            return out
+        out.append(pkt)
 
 
 async def _next(client: _UdpClient) -> bytes:
@@ -225,6 +274,12 @@ def _inject(sim: MockIcomRadio, client: _UdpClient, pkt: bytes) -> None:
     sim._on_packet(pkt, transport.get_extra_info("sockname"), "civ", proto)
 
 
+# One real-time beat per granule: long enough for an in-flight localhost
+# datagram to land (microseconds in practice), short enough that a step
+# needing only timer progress still advances at ~granule speed.
+_DRIVE_BEAT_S = 0.01
+
+
 async def _drive(
     clock: VirtualClock,
     step: str,
@@ -236,15 +291,28 @@ async def _drive(
 
     Awaiting a production-client coroutine directly would freeze on a reply
     the client's own virtual timeouts guard: nothing else moves the clock.
-    Each ``elapse`` fires every timer on the way and settles loop callbacks,
-    so real localhost I/O interleaves with timer progress (the shape of the
-    suite's G7250 journey helper). Only an exhausted budget raises.
+    Before each ``elapse`` the loop first waits — on real time, without
+    moving the clock — for the step to finish, so a reply already on the
+    wire gets a delivery chance before any virtual timer moves: an
+    undelivered reply can no longer burn through the production client's
+    own virtual receive timeout while the loop briefly has no ready
+    callbacks (``await_until`` never advances the clock). Only timer waits
+    advance it (the shape of the suite's G7250 journey helper). Only an
+    exhausted budget raises.
     """
     task = asyncio.create_task(coro)
     spent = 0.0
     try:
         while not task.done():
             if spent >= budget_s:
+                break
+            try:
+                await await_until(
+                    lambda: task.done(), timeout=_DRIVE_BEAT_S, description=step
+                )
+            except AssertionError:
+                pass
+            if task.done():
                 break
             step_s = min(granule_s, budget_s - spent)
             await clock.elapse(step_s)
@@ -470,15 +538,31 @@ async def test_idle_fills_release_held_request_in_order(
         client.send(_idle(seq), server.civ_port)
     held = _freq_get(seq=held_seq)
     client.send(held, server.civ_port)
-    window = await _collect(client, virtual_clock, 0.25)
+    # The stall-time receipts must be processed at this frozen reading
+    # before the window advances: a held packet draws a paced round only
+    # when the previous round is 75 ms old. The ping reply proves all of
+    # them landed; immediate rounds, if any, join the window — the gap is
+    # unchanged by held-ahead packets, so their content is the same ranges
+    # request.
+    early = await _await_inputs_processed(
+        client, server, "the stall-time packets before the 0.25 s window"
+    )
+    window = early + await _collect(client, virtual_clock, 0.25)
     assert window
     assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in window)
     assert server.civ_gap_open is True
 
-    # Idle fills for 131 and 133: the request narrows to single 132.
+    # Idle fills for 131 and 133: the request narrows to single 132. Both
+    # fills must be processed at this frozen reading before the window
+    # advances — 131 arrives in order (silent), 133 can only draw the
+    # narrowed single-132 round, so whatever arrives first joins ``soon``
+    # without changing what it may contain.
     client.send(_idle(131), server.civ_port)
     client.send(_idle(133), server.civ_port)
-    soon = await _collect(client, virtual_clock, 0.2)
+    early = await _await_inputs_processed(
+        client, server, "the 131/133 fills before the narrowing window"
+    )
+    soon = early + await _collect(client, virtual_clock, 0.2)
     assert 2 <= len(soon) <= 8
     assert all(_parse_retransmit(p) == ("single", 132) for p in soon)
 
@@ -527,6 +611,10 @@ async def test_single_gap_fill_resumes(server, client, virtual_clock) -> None:
     assert server.civ_gap_open is True
 
     client.send(_idle(199), server.civ_port)
+    # The fill must be processed at this frozen reading before anything
+    # advances: the gap-closed assertion below reads simulator state, and
+    # the drain that follows must not run ahead of the fill.
+    await _await_inputs_processed(client, server, "the 199 fill")
     await _collect(client, virtual_clock, 0.15)  # drain pre-fill stragglers
     assert server.civ_gap_open is False
     assert await _collect(client, virtual_clock, 0.3) == []
@@ -565,11 +653,19 @@ async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
     # The re-sent OpenClose keeps the stream alive (its marker may still
     # arrive) but must not touch the tracker's numbering.
     client.send(_openclose(), server.civ_port)
+    # The re-sent open must be processed at this frozen reading before the
+    # window advances: its stream marker, if the simulator emits one, is
+    # drained here and cannot leak into the silence window below.
+    await _await_inputs_processed(client, server, "the re-sent open")
     await _collect(client, virtual_clock, 0.2)
 
     before = server.civ_retransmit_requests
     for seq in range(last + 1):
         client.send(_freq_get(seq=seq), server.civ_port)
+    # No ack needed before this window: renumbered packets at or below the
+    # last processed number are ignored whenever they arrive — no echo, no
+    # reply, no round — and the gap stays closed, so the fallback loop is
+    # silent at any virtual time.
     assert await _collect(client, virtual_clock, 0.35) == []
     assert server.civ_gap_open is False
     assert server.civ_retransmit_requests == before
@@ -693,6 +789,9 @@ async def test_out_of_order_fills_release_held_request(
 
     held = _freq_get(seq=138)
     client.send(held, server.civ_port)
+    # The held packet must be processed at this frozen reading before the
+    # window advances: only then is the answering round owed to it.
+    await _await_inputs_processed(client, server, "the held 138 packet")
     await _collect(client, virtual_clock, 0.15)  # the round answering the held packet
     assert server.civ_gap_open is True
 
@@ -1071,6 +1170,10 @@ async def test_new_gap_never_remarks_held_numbers(
     assert all(_parse_retransmit(p) == ("ranges", [(131, 133)]) for p in pair)
     for seq in (131, 132, 133):
         client.send(_idle(seq), server.civ_port)
+    # The fills must be processed at this frozen reading before the 141
+    # probe: 141's new-gap computation skips still-held numbers, so a fill
+    # arriving late would widen the requested range.
+    await _await_inputs_processed(client, server, "the 131-133 fills")
     await virtual_clock.elapse(0.09)
     client.send(_idle(141), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
