@@ -28,6 +28,7 @@ from rigplane.core.types import AudioCodec
 from rigplane.audio.route import AudioConfigSource
 
 if TYPE_CHECKING:
+    from ._audio_recovery import _AudioSnapshot
     from ._runtime_protocols import ControlPhaseHost
     from .session_lifecycle import AttemptResult, RadioPresence
 
@@ -874,7 +875,9 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = False
 
-    async def soft_reconnect(self) -> None:
+    async def soft_reconnect(
+        self, *, capture_audio: Callable[[], _AudioSnapshot | None] | None = None
+    ) -> None:
         """Reconnect CI-V transport using existing control session."""
         h = self._host
         if h._civ_transport is not None:
@@ -921,6 +924,11 @@ class ControlPhaseRuntime:
                 # Defensive: _force_cleanup_civ normally nulls the transport.
                 # If a subclass/mock left it set, do not loop forever — bail.
                 return
+        audio_runtime = getattr(h, "_audio_runtime", None)
+        if capture_audio is None and audio_runtime is not None:
+            capture_audio = audio_runtime.capture_snapshot
+        audio_snapshot = capture_audio() if capture_audio is not None else None
+
         # A control transport that ``_connect_once`` never marked CONNECTED is
         # no session to reuse: ``IcomTransport.connect``/``reconnect`` leave it
         # CONNECTING, so an open UDP socket alone must not select the
@@ -939,10 +947,6 @@ class ControlPhaseRuntime:
             # lifecycle owns retry.  A full re-establish here is a single
             # mechanism attempt (``_connect_once``); the lifecycle's RECOVERING
             # accounting / exhaustion handles repeated failures.
-            audio_runtime = getattr(h, "_audio_runtime", None)
-            audio_snapshot = (
-                audio_runtime.capture_snapshot() if audio_runtime is not None else None
-            )
             teardown_audio = getattr(h, "_teardown_audio_transport", None)
             if teardown_audio is not None:
                 try:
@@ -970,10 +974,6 @@ class ControlPhaseRuntime:
         # the next ``_ensure_audio_transport`` re-arm raises
         # ``RuntimeError: File descriptor ... is used by transport`` — RX never
         # recovers.  Snapshot live demand first so the re-arm can restore it.
-        audio_runtime = getattr(h, "_audio_runtime", None)
-        audio_snapshot = (
-            audio_runtime.capture_snapshot() if audio_runtime is not None else None
-        )
         teardown_audio = getattr(h, "_teardown_audio_transport", None)
         if teardown_audio is not None:
             try:
@@ -1557,6 +1557,7 @@ class ControlPhaseSessionMechanism:
         discover_fn: "_DiscoverFn | None" = None,
     ) -> None:
         self._cp = control_phase
+        self._recovery_audio: tuple[asyncio.Task[object], _AudioSnapshot] | None = None
         # Presence-probe discovery is INJECTED from an upper layer (CLI/web).
         # ``rigplane.runtime`` may not import ``rigplane.backends`` (layered
         # architecture, enforced by import-linter), so the lifecycle's
@@ -1646,11 +1647,30 @@ class ControlPhaseSessionMechanism:
             return
         await shutdown()
 
+    def _capture_recovery_audio(self) -> _AudioSnapshot | None:
+        audio = getattr(self._cp._host, "_audio_runtime", None)
+        snapshot = audio.capture_snapshot() if audio is not None else None
+        owner = asyncio.current_task()
+        saved = self._recovery_audio
+        # A previous attempt by this owner may have torn down the audio before
+        # handing off to FULL. Retain its demand until the owner exits.
+        if snapshot is None and saved is not None and saved[0] is owner:
+            return saved[1]
+        if snapshot is not None and owner is not None:
+            self._recovery_audio = (owner, snapshot)
+            if saved is None or saved[0] is not owner:
+                owner.add_done_callback(self._clear_recovery_audio)
+        return snapshot
+
+    def _clear_recovery_audio(self, owner: asyncio.Task[object]) -> None:
+        if self._recovery_audio is not None and self._recovery_audio[0] is owner:
+            self._recovery_audio = None
+
     async def full_reconnect_once(self) -> bool:
         """Renew the LAN login without releasing the managed-TX supervisor."""
         h = self._cp._host
         audio = getattr(h, "_audio_runtime", None)
-        snapshot = audio.capture_snapshot() if audio is not None else None
+        snapshot = self._capture_recovery_audio()
         h._conn_state = RadioConnectionState.RECONNECTING
         h._ctrl_transport._conninfo_notice_callback = None
         await self._cp.release()
@@ -1667,7 +1687,7 @@ class ControlPhaseSessionMechanism:
         return h.radio_ready
 
     async def soft_reconnect_once(self) -> None:
-        await self._cp.soft_reconnect()
+        await self._cp.soft_reconnect(capture_audio=self._capture_recovery_audio)
 
     async def scan(
         self, targets: list[str] | None, *, timeout: float

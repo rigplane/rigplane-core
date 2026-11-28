@@ -1711,6 +1711,10 @@ class CivRuntime:
                             # watching the link. Fall through to the patience
                             # window, whose deadline hands recovery off as for
                             # any stall.
+                        elif self._host._civ_stream_ready:
+                            # The RX pump accepted a current-generation frame
+                            # while the renewal reply was pending.
+                            continue
                         recovering = True
                         self._host._civ_recovering = True
                         # The patience window starts at this stall tick's

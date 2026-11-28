@@ -19,6 +19,12 @@ from test_radio_connect import (
     _FakeSocket,
 )
 
+from rigplane.audio.lan_stream import (
+    AudioPacket,
+    AudioState,
+    AudioStream,
+    build_audio_packet,
+)
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core import transport
 from rigplane.core.exceptions import DiscoveryTimeout
@@ -66,6 +72,8 @@ class Control(IcomTransport):
         self.logins: list[asyncio.Task[None] | None] = []
         self.down = False
         self.silent = False
+        self.delay_renewal = False
+        self.pending_renewal_reply: bytes | None = None
 
     async def connect(self, host: str, port: int, **kwargs: object) -> None:
         if self.down:
@@ -104,7 +112,10 @@ class Control(IcomTransport):
                 _control_phase.ControlPhaseRuntime._RENEWAL_RESPONSE_OFFSET,
                 0,
             )
-            self._route_data_packet(bytes(reply), 0, 0, self.remote_id)
+            if self.delay_renewal:
+                self.pending_renewal_reply = bytes(reply)
+            else:
+                self._route_data_packet(bytes(reply), 0, 0, self.remote_id)
         elif len(data) == 0x90:
             self.queue_response(_build_status())
 
@@ -298,6 +309,91 @@ async def test_ping_only_after_stall_cannot_bypass_deadline(link: Link) -> None:
     await link.clock.elapse(0)
     link.assert_recovery_exit()
     assert link.radio.radio_ready
+
+
+async def test_token_ok_after_current_frame_keeps_stream_ready(link: Link) -> None:
+    radio = link.radio
+    civ = link.ports[-1]
+    opens = civ.opens
+    link.control.delay_renewal = True
+    await link.clock.elapse(2.71)
+    reply = link.control.pending_renewal_reply
+    assert reply is not None
+    assert not radio._civ_stream_ready
+
+    civ.payload()
+    await link.clock.elapse(0)
+    assert radio.radio_ready
+    link.control._route_data_packet(reply, 0, 0, link.control.remote_id)
+    await link.clock.elapse(0)
+    assert radio.radio_ready and not radio._civ_recovering
+    assert civ.opens == opens
+    for _ in range(138):
+        civ.rx_packet_count += 1
+        await link.clock.elapse(0.5)
+    assert radio._civ_stream_ready and not radio._civ_recovering
+    assert len(link.ports) == 1 and not link.control.logins
+    link.assert_recovery_exit()
+
+
+async def test_notice_during_soft_discovery_restores_legacy_rx_once(
+    link: Link, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = link.radio
+    frames: list[AudioPacket | None] = []
+    audio_ports: list[ConnectMockTransport] = []
+
+    async def ensure_audio() -> None:
+        if radio._audio_stream is None:
+            port = ConnectMockTransport()
+            audio_ports.append(port)
+            radio._audio_stream = AudioStream(port)
+
+    monkeypatch.setattr(radio, "_ensure_audio_transport", ensure_audio)
+    monkeypatch.setattr(radio, "_auto_recover_audio", True)
+    await radio.start_audio_rx_opus(frames.append, jitter_depth=0)
+    initial_stream = radio._audio_stream
+    assert initial_stream is not None
+    callback = radio._opus_rx_user_callback
+    start_rx = AsyncMock(wraps=radio.start_audio_rx_opus)
+    start_tx = AsyncMock(wraps=radio.start_audio_tx_opus)
+    monkeypatch.setattr(radio, "start_audio_rx_opus", start_rx)
+    monkeypatch.setattr(radio, "start_audio_tx_opus", start_tx)
+
+    await link.clock.elapse(5.1)
+    link.pause_soft = True
+    repair = asyncio.create_task(radio.soft_reconnect())
+    try:
+        await link.clock.elapse(0.25)
+        assert len(link.soft_discoveries) == 1 and not repair.done()
+        assert initial_stream.state is AudioState.IDLE
+        assert radio._audio_stream is None
+        link.control.notice()
+        await link.clock.elapse(3)
+        assert repair.done()
+        repair.result()
+        link.ports[-1].payload()
+        await link.clock.elapse(0)
+        assert radio.radio_ready
+        assert link.control.logins == [link.soft_discoveries[0][1]]
+
+        start_rx.assert_awaited_once_with(callback, jitter_depth=0)
+        start_tx.assert_not_awaited()
+        stream = radio._audio_stream
+        assert stream is not None and stream.state is AudioState.RECEIVING
+        assert radio._pcm_tx_fmt is None and not link.ptt_writes
+        assert len(audio_ports) == 2
+        packet = AudioPacket(ident=0x80, send_seq=1, data=b"\xf8\xff\xfe")
+        audio_ports[-1].queue_response(
+            build_audio_packet(packet.data, sender_id=1, receiver_id=2, send_seq=1)
+        )
+        await link.clock.elapse(0)
+        assert frames == [packet]
+        link.assert_recovery_exit()
+    finally:
+        if not repair.done():
+            repair.cancel()
+        await asyncio.gather(repair, return_exceptions=True)
 
 
 @pytest.mark.parametrize("join", ["watchdog", "pump"])

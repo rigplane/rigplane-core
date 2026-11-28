@@ -54,6 +54,7 @@ import asyncio
 import logging
 import socket
 import struct
+from types import SimpleNamespace
 
 import pytest
 
@@ -325,6 +326,7 @@ class _SoftReconnectHost:
         self._civ_ready_idle_timeout = 3.0
         self._civ_last_waiter_gc_monotonic = 0.0
         self._civ_runtime = None
+        self._session_lifecycle = SimpleNamespace(full_recovery_pending=False)
         self._on_reconnect = None
         self._auto_recover_audio = True
 
