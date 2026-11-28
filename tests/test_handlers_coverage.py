@@ -1704,6 +1704,7 @@ async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
     valid_params: dict[str, object],
     invalid_params: dict[str, object],
     expected: int,
+    virtual_clock: VirtualClock,
 ) -> None:
     ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
@@ -1713,6 +1714,7 @@ async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
         radio=radio,
         server=SimpleNamespace(command_queue=queue),
         session_id="normalized-pacing",
+        clock=virtual_clock,
     )
     handler._CMD_MIN_INTERVAL = 10.0  # noqa: SLF001
     key = handler._coalesce_key(name, valid_params)  # noqa: SLF001
@@ -2310,8 +2312,14 @@ async def test_wait_radio_ready_waits_then_succeeds(
     radio = SimpleNamespace(connected=True, radio_ready=False)
     handler = _control_handler(radio=radio, clock=virtual_clock)
 
+    completed_at: list[float] = []
+
+    async def _wait_and_stamp() -> None:
+        await handler._wait_radio_ready(timeout=2.0)
+        completed_at.append(virtual_clock())
+
     start = virtual_clock()
-    task = asyncio.ensure_future(handler._wait_radio_ready(timeout=2.0))
+    task = asyncio.ensure_future(_wait_and_stamp())
     try:
         await virtual_clock.elapse(0.25)
         assert not task.done()
@@ -2322,8 +2330,8 @@ async def test_wait_radio_ready_waits_then_succeeds(
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-    elapsed = virtual_clock() - start
-    assert 0.2 < elapsed < 1.0
+    assert len(completed_at) == 1
+    assert 0.2 < completed_at[0] - start < 1.0
 
 
 @pytest.mark.timeout(30)
@@ -2335,8 +2343,15 @@ async def test_wait_radio_ready_times_out_gracefully(
         radio=SimpleNamespace(connected=True, radio_ready=False),
         clock=virtual_clock,
     )
+
+    completed_at: list[float] = []
+
+    async def _wait_and_stamp() -> None:
+        await handler._wait_radio_ready(timeout=0.3)
+        completed_at.append(virtual_clock())
+
     start = virtual_clock()
-    task = asyncio.ensure_future(handler._wait_radio_ready(timeout=0.3))
+    task = asyncio.ensure_future(_wait_and_stamp())
     try:
         await virtual_clock.elapse(0.2)
         assert not task.done()
@@ -2346,8 +2361,8 @@ async def test_wait_radio_ready_times_out_gracefully(
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-    elapsed = virtual_clock() - start
-    assert 0.25 < elapsed < 0.6
+    assert len(completed_at) == 1
+    assert 0.25 < completed_at[0] - start < 0.6
 
 
 async def test_handle_command_response_paths() -> None:
