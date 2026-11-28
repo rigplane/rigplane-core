@@ -357,13 +357,17 @@ async def test_ping_mode_audio_ayt_starts_rx_first_then_pings(
         assert all(len(pkt) > 0x18 for pkt in got[: got.index(ping)])
         assert sim.audio_rx_frames_sent >= 3
         assert [_rx_inner_seq(pkt) for pkt in got[:3]] == [0, 1, 2]
+        # RX-only baseline: audio_rx_frames_sent counts sent RX frames but
+        # not the ping, while len(got) includes that one ping, so the
+        # baseline — not len(got) — is what the second wait subtracts.
+        rx_baseline = sim.audio_rx_frames_sent
 
         # AYR draws no handshake of any kind; the RX stream keeps flowing.
         client.send(_ayr(), sim.audio_port)
         await virtual_clock.elapse(0.3)
         # Only the frames sent since the first drain are outstanding.
         rested = await _drain_audio(
-            client, at_least=sim.audio_rx_frames_sent - len(got)
+            client, at_least=sim.audio_rx_frames_sent - rx_baseline
         )
         assert rested, "the stream outlives the AYR"
         assert all(len(pkt) > 0x18 for pkt in rested)
