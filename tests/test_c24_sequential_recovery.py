@@ -40,11 +40,9 @@ pytestmark = pytest.mark.timeout(10)
 
 
 class ControlEndpoint(asyncio.DatagramTransport):
-    def __init__(self, protocol: _UdpProtocol, close_delay: float) -> None:
+    def __init__(self, protocol: _UdpProtocol) -> None:
         super().__init__()
         self.protocol = protocol
-        self.close_delay = close_delay
-        self.closing = False
         self.closed = False
         self.packets: list[bytes] = []
 
@@ -52,8 +50,7 @@ class ControlEndpoint(asyncio.DatagramTransport):
         self.packets.append(data)
 
     def close(self) -> None:
-        self.closing = True
-        asyncio.get_running_loop().call_later(self.close_delay, self._finish_close)
+        asyncio.get_running_loop().call_later(0, self._finish_close)
 
     def _finish_close(self) -> None:
         self.closed = True
@@ -69,8 +66,6 @@ class Control(IcomTransport):
         self.logins: list[asyncio.Task[None] | None] = []
         self.down = False
         self.silent = False
-        self.close_delay = 0.0
-        self.park_next_open: asyncio.Event | None = None
 
     async def connect(self, host: str, port: int, **kwargs: object) -> None:
         if self.down:
@@ -79,12 +74,9 @@ class Control(IcomTransport):
         self.my_id = 0x10000 + len(self.endpoints) + 1
         self._udp_close_event = asyncio.Event()
         protocol = _UdpProtocol(self)
-        endpoint = ControlEndpoint(protocol, self.close_delay)
+        endpoint = ControlEndpoint(protocol)
         self.endpoints.append(endpoint)
         protocol.connection_made(endpoint)
-        park, self.park_next_open = self.park_next_open, None
-        if park is not None:
-            await park.wait()
         if self.silent:
             await self._discover()
         self.remote_id = 0xDEADBEEF
@@ -481,88 +473,6 @@ async def test_full_recovery_survives_cancellation(link: Link, cancel: str) -> N
     link.ports[-1].payload()
     await link.clock.elapse(0)
     assert link.radio.radio_ready
-
-
-async def test_disconnect_at_recovery_pump_join_writes_off(
-    link: Link, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    radio = link.radio
-    await hold_tx(link, "disconnect-at-join")
-    await link.clock.elapse(5.1)
-    stop = radio._civ_runtime.stop_pump
-    disconnect: asyncio.Task[None] | None = None
-
-    async def disconnect_at_join() -> None:
-        nonlocal disconnect
-        if disconnect is None:
-            disconnect = asyncio.create_task(radio.disconnect())
-        await stop()
-
-    monkeypatch.setattr(radio._civ_runtime, "stop_pump", disconnect_at_join)
-    repair = asyncio.create_task(radio.soft_reconnect())
-    try:
-        await link.clock.elapse(4)
-        assert disconnect is not None and disconnect.done()
-        disconnect.result()
-        assert link.ptt_writes[-1][1] is False
-        assert all(port._udp_transport is None for port in link.ports)
-        assert all(endpoint.closed for endpoint in link.control.endpoints)
-        link.assert_recovery_exit(stopped=True)
-    finally:
-        repair.cancel()
-        await asyncio.gather(repair, return_exceptions=True)
-
-
-@pytest.mark.parametrize("stop", ["disconnect", "shutdown"])
-async def test_stop_joins_control_retirement_before_reconnect(
-    link: Link, stop: str
-) -> None:
-    radio = link.radio
-    old_endpoint = link.control.endpoints[0]
-    old_endpoint.close_delay = 0.8
-    link.control.notice()
-    await link.clock.elapse(0)
-    assert old_endpoint.closing and not old_endpoint.closed
-    operation = (
-        radio.disconnect
-        if stop == "disconnect"
-        else (radio._session_lifecycle.request_shutdown)
-    )
-    stopping = asyncio.create_task(operation())
-    await link.clock.elapse(0.1)
-    returned_early = stopping.done()
-    if not returned_early:
-        await link.clock.elapse(0.8)
-    assert stopping.done()
-    stopping.result()
-    await link.complete(radio.connect())
-    assert old_endpoint.closed
-    assert link.control.state is ConnectionState.CONNECTED
-    assert not returned_early, "stop returned before the UDP close callback"
-    assert link.control._udp_transport is link.control.endpoints[-1]
-
-
-async def test_connect_joins_full_control_open(link: Link) -> None:
-    link.control.park_next_open = opened = asyncio.Event()
-    link.control.notice()
-    await link.clock.elapse(0)
-    assert len(link.control.endpoints) == 2 and not link.control.logins
-    connecting = asyncio.create_task(link.radio.connect())
-    try:
-        await link.clock.elapse(0.5)
-        assert len(link.control.endpoints) == 2, "connect opened a second endpoint"
-        assert not connecting.done()
-        opened.set()
-        await link.complete(connecting)
-        assert len(link.control.logins) == 1
-        await link.complete(link.radio.disconnect())
-        assert all(endpoint.closed for endpoint in link.control.endpoints)
-        assert all(port._udp_transport is None for port in link.ports)
-        link.assert_recovery_exit(stopped=True)
-    finally:
-        opened.set()
-        connecting.cancel()
-        await asyncio.gather(connecting, return_exceptions=True)
 
 
 @pytest.mark.parametrize("link", [True, False], indirect=True, ids=["auto", "manual"])

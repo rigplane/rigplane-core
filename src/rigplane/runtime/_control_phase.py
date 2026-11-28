@@ -869,8 +869,7 @@ class ControlPhaseRuntime:
                 await asyncio.shield(self._send_token(0x01))
         if ctrl_t is not None:
             with _suppress(Exception):
-                # The transport joins its own retirement before propagating cancellation.
-                await ctrl_t.disconnect()
+                await asyncio.shield(ctrl_t.disconnect())
         h._conn_state = RadioConnectionState.DISCONNECTED
         h._civ_stream_ready = False
         h._civ_recovering = False
@@ -1579,7 +1578,12 @@ class ControlPhaseSessionMechanism:
         1/5/8).  Both are idempotent.
 
         Supervised TX is stopped first (MOR-1016).  This is the single funnel
-        every lifecycle path that gives the session up goes through.
+        every lifecycle path that gives the session up goes through, and it is
+        the only one of them ``CoreRadio.disconnect()`` does not sit above:
+        ``request_shutdown()`` (the SIGTERM hook) and recovery exhaustion reach
+        it directly, and before this they closed the transport with the
+        supervisor still armed over the captured CI-V port — a SIGTERM'd
+        process left a possibly-keyed rig with no release even attempted.
         """
         h = self._cp._host
         await self._shutdown_supervised_tx(h)
@@ -1608,8 +1612,11 @@ class ControlPhaseSessionMechanism:
         skips the session close this method is supposed to precede.
 
         **Idempotent by construction, and relied upon as such.**
-        ``CoreRadio.disconnect()`` also runs the teardown after the lifecycle
-        returns, covering transports assembled outside the lifecycle.
+        ``CoreRadio.disconnect()`` runs the same teardown one level above,
+        because the lifecycle may treat its own ``disconnect()`` as a no-op
+        (nothing claimed) and never reach this method at all.  When both do
+        run, the second finds ``_managed_tx_runtime is None`` — the first
+        call's ``finally`` cleared it — and returns without touching anything.
 
         ``getattr`` rather than a direct call: ``ControlPhaseHost`` is a
         Protocol, and a host that never assembles managed TX (a backend, a test

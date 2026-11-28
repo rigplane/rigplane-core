@@ -118,7 +118,7 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
         radio._civ_epoch += 1
 
     radio._session_lifecycle = SimpleNamespace(
-        connect=AsyncMock(side_effect=replace_link), recovery_active=False
+        connect=AsyncMock(side_effect=replace_link)
     )
 
     radio._fetch_initial_state = AsyncMock()
