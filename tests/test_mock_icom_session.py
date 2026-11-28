@@ -38,6 +38,7 @@ from mock_server import (
     _TOKEN_RENEW,
     MockIcomRadio,
 )
+from rigplane.testing.timing import VirtualClock, await_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -160,26 +161,6 @@ async def _claim(sim: MockIcomRadio, client: _RawClient) -> tuple[int, int]:
     return await client.conninfo(sim.control_port)
 
 
-async def _wait_release_deadline_moved(
-    sim: MockIcomRadio, before: float, timeout: float = 2.0
-) -> float:
-    """Bounded wait for the re-armed keepalive deadline to move past ``before``.
-
-    Polls the held session's release-timer deadline; a missing refresh fails
-    at the bound instead of racing a fixed sleep on a loaded runner.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        timer = sim._keepalive_timer
-        assert timer is not None
-        current = timer.when()
-        if current > before:
-            return current
-        assert loop.time() < deadline, "keepalive deadline did not move within bound"
-        await asyncio.sleep(0.01)
-
-
 # ---------------------------------------------------------------------------
 # 1. Held single-owner session -> busy reject (0xFFFFFFFF)
 # ---------------------------------------------------------------------------
@@ -237,16 +218,23 @@ async def test_same_owner_reconnect_is_not_rejected(sim: MockIcomRadio) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_token_remove_frees_session_immediately(sim: MockIcomRadio) -> None:
+async def test_token_remove_frees_session_immediately(
+    sim: MockIcomRadio, virtual_clock: VirtualClock
+) -> None:
     owner = await _client(0x10001)
     newcomer = await _client(0x10002)
     try:
         await _claim(sim, owner)
         assert sim.session_held is True
 
-        # Graceful withdraw.
+        # Graceful withdraw: the release is a real UDP delivery, so wait for
+        # the simulator to observe it instead of sleeping a wall interval.
         owner.token(sim.control_port, _TOKEN_REMOVE)
-        await asyncio.sleep(0.02)
+        await await_until(
+            lambda: not sim.session_held,
+            timeout=5.0,
+            description="session released after token-remove",
+        )
         assert sim.session_held is False
         assert sim.last_release_reason == "token_remove"
 
@@ -259,30 +247,47 @@ async def test_token_remove_frees_session_immediately(sim: MockIcomRadio) -> Non
         await newcomer.close()
 
 
-async def test_openclose_close_frees_session_immediately(sim: MockIcomRadio) -> None:
+async def test_openclose_close_frees_session_immediately(
+    sim: MockIcomRadio, virtual_clock: VirtualClock
+) -> None:
     owner = await _client(0x10001)
     try:
         await _claim(sim, owner)
-        # Open the data stream, then close it gracefully.
+        # Open the data stream, then close it gracefully. Both are real UDP
+        # deliveries, so wait for the simulator to observe each one.
         owner.openclose(sim.civ_port, _OPENCLOSE_OPEN)
-        await asyncio.sleep(0.02)
+        await await_until(
+            lambda: sim.openclose_open_count >= 1,
+            timeout=5.0,
+            description="openclose open processed",
+        )
         assert sim.session_held is True
 
         owner.openclose(sim.civ_port, _OPENCLOSE_CLOSE)
-        await asyncio.sleep(0.02)
+        await await_until(
+            lambda: not sim.session_held,
+            timeout=5.0,
+            description="session released after openclose close",
+        )
         assert sim.session_held is False
         assert sim.last_release_reason == "openclose_close"
     finally:
         await owner.close()
 
 
-async def test_disconnect_packet_frees_session(sim: MockIcomRadio) -> None:
+async def test_disconnect_packet_frees_session(
+    sim: MockIcomRadio, virtual_clock: VirtualClock
+) -> None:
     owner = await _client(0x10001)
     try:
         await _claim(sim, owner)
         assert sim.session_held is True
         owner.disconnect(sim.control_port)
-        await asyncio.sleep(0.02)
+        await await_until(
+            lambda: not sim.session_held,
+            timeout=5.0,
+            description="session released after disconnect",
+        )
         assert sim.session_held is False
         assert sim.last_release_reason == "disconnect"
     finally:
@@ -294,26 +299,31 @@ async def test_disconnect_packet_frees_session(sim: MockIcomRadio) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_keepalive_timeout_auto_releases_after_hold(sim: MockIcomRadio) -> None:
-    # keepalive_hold_s is 0.3 in the fixture.
+async def test_keepalive_timeout_auto_releases_after_hold(
+    sim: MockIcomRadio, virtual_clock: VirtualClock
+) -> None:
+    # keepalive_hold_s is 0.3 in the fixture. The auto-release is a loop
+    # timer (call_later), so elapsing the virtual clock fires it exactly.
     owner = await _client(0x10001)
     try:
         await _claim(sim, owner)
         assert sim.session_held is True
 
         # No graceful close: while inside the hold the session is still held.
-        await asyncio.sleep(0.1)
+        await virtual_clock.elapse(0.1)
         assert sim.session_held is True
 
         # After the hold elapses with no traffic, the session auto-releases.
-        await asyncio.sleep(0.35)
+        await virtual_clock.elapse(0.35)
         assert sim.session_held is False
         assert sim.last_release_reason == "keepalive_timeout"
     finally:
         await owner.close()
 
 
-async def test_busy_reject_while_inside_keepalive_hold(sim: MockIcomRadio) -> None:
+async def test_busy_reject_while_inside_keepalive_hold(
+    sim: MockIcomRadio, virtual_clock: VirtualClock
+) -> None:
     """A fast relaunch inside the keepalive window still hits the held session."""
     owner = await _client(0x10001)
     newcomer = await _client(0x10002)
@@ -322,21 +332,24 @@ async def test_busy_reject_while_inside_keepalive_hold(sim: MockIcomRadio) -> No
         await owner.close()  # socket goes silent, NO token-remove
 
         # Still inside the hold -> the radio holds -> new owner is rejected.
-        await asyncio.sleep(0.05)
+        await virtual_clock.elapse(0.05)
         civ_port, error = await _claim(sim, newcomer)
         assert civ_port == 0 and error == _ERR_PREV_SESSION_ACTIVE
 
         # After the hold expires, the new owner can connect.
-        await asyncio.sleep(0.35)
+        await virtual_clock.elapse(0.35)
         civ_port2, error2 = await _claim(sim, newcomer)
         assert error2 == _ERR_OK and civ_port2 == sim.civ_port
     finally:
         await newcomer.close()
 
 
-async def test_ping_refreshes_keepalive() -> None:
+async def test_ping_refreshes_keepalive(virtual_clock: VirtualClock) -> None:
     # Deterministic: the hold (60 s) dwarfs the test time, so the release
-    # timer cannot fire mid-test; each ping must re-arm its deadline.
+    # timer cannot fire mid-test; each ping must re-arm its deadline. The
+    # elapse moves virtual time forward so the re-armed deadline (now + hold)
+    # is strictly later than the previous one; the ping itself is a real UDP
+    # delivery, awaited with await_until.
     sim = MockIcomRadio(single_owner=True, keepalive_hold_s=60.0)
     await sim.start()
     owner = await _client(0x10001)
@@ -345,9 +358,18 @@ async def test_ping_refreshes_keepalive() -> None:
         assert sim.session_held is True
         assert sim._keepalive_timer is not None
         for _ in range(6):
+            await virtual_clock.elapse(0.05)
+            assert sim._keepalive_timer is not None
             before = sim._keepalive_timer.when()
             owner.ping(sim.control_port)
-            await _wait_release_deadline_moved(sim, before)
+            await await_until(
+                lambda: (
+                    sim._keepalive_timer is not None
+                    and sim._keepalive_timer.when() > before
+                ),
+                timeout=5.0,
+                description="keepalive deadline to move after ping",
+            )
             assert sim.session_held is True
             assert sim.released_count == 0
         assert sim.session_held is True
@@ -357,9 +379,12 @@ async def test_ping_refreshes_keepalive() -> None:
         await sim.stop()
 
 
-async def test_token_renew_refreshes_keepalive() -> None:
+async def test_token_renew_refreshes_keepalive(virtual_clock: VirtualClock) -> None:
     # Deterministic: the hold (60 s) dwarfs the test time, so the release
-    # timer cannot fire mid-test; each renewal must re-arm its deadline.
+    # timer cannot fire mid-test; each renewal must re-arm its deadline. The
+    # elapse moves virtual time forward so the re-armed deadline (now + hold)
+    # is strictly later than the previous one; the renewal itself is a real
+    # UDP delivery, awaited with await_until.
     sim = MockIcomRadio(single_owner=True, keepalive_hold_s=60.0)
     await sim.start()
     owner = await _client(0x10001)
@@ -368,9 +393,18 @@ async def test_token_renew_refreshes_keepalive() -> None:
         assert sim.session_held is True
         assert sim._keepalive_timer is not None
         for _ in range(3):
+            await virtual_clock.elapse(0.05)
+            assert sim._keepalive_timer is not None
             before = sim._keepalive_timer.when()
             owner.token(sim.control_port, _TOKEN_RENEW)
-            await _wait_release_deadline_moved(sim, before)
+            await await_until(
+                lambda: (
+                    sim._keepalive_timer is not None
+                    and sim._keepalive_timer.when() > before
+                ),
+                timeout=5.0,
+                description="keepalive deadline to move after token renew",
+            )
             assert sim.session_held is True
             assert sim.released_count == 0
             assert sim._keepalive_timer is not None
@@ -387,7 +421,7 @@ async def test_token_renew_refreshes_keepalive() -> None:
 
 
 async def test_force_civ_unavailable_returns_not_ready_then_recovers(
-    sim: MockIcomRadio,
+    sim: MockIcomRadio, virtual_clock: VirtualClock
 ) -> None:
     owner = await _client(0x10001)
     try:
@@ -398,7 +432,9 @@ async def test_force_civ_unavailable_returns_not_ready_then_recovers(
         assert sim.session_held is False
         assert sim.busy_rejects == 0
 
-        await asyncio.sleep(0.25)
+        # End the not-ready window deterministically instead of sleeping out
+        # the wall-clock knob; the recovery path below is what this pins.
+        sim.clear_civ_unavailable()
         # Now available -> claims and returns the real port.
         civ_port2, error2 = await _claim(sim, owner)
         assert error2 == _ERR_OK and civ_port2 == sim.civ_port
@@ -412,7 +448,7 @@ async def test_force_civ_unavailable_returns_not_ready_then_recovers(
 # ---------------------------------------------------------------------------
 
 
-async def test_unsolicited_stream_emits_frames() -> None:
+async def test_unsolicited_stream_emits_frames(virtual_clock: VirtualClock) -> None:
     sim = MockIcomRadio(
         single_owner=True,
         keepalive_hold_s=5.0,
@@ -426,7 +462,10 @@ async def test_unsolicited_stream_emits_frames() -> None:
         # Open the data stream so the radio knows where to send unsolicited frames.
         start_freq = sim._frequency
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
-        await asyncio.sleep(0.2)
+        # The emission cadence is a loop timer, so elapsing the virtual clock
+        # drives the stream deterministically (delivery of the open settles
+        # first, then the cadence timers fire).
+        await virtual_clock.elapse(0.2)
         assert sim.unsolicited_sent > 0
         # Autonomous state evolution: frequency drifted.
         assert sim._frequency > start_freq
@@ -435,7 +474,9 @@ async def test_unsolicited_stream_emits_frames() -> None:
         await sim.stop()
 
 
-async def test_stall_for_suppresses_unsolicited_stream() -> None:
+async def test_stall_for_suppresses_unsolicited_stream(
+    virtual_clock: VirtualClock,
+) -> None:
     sim = MockIcomRadio(
         single_owner=True,
         keepalive_hold_s=5.0,
@@ -447,24 +488,31 @@ async def test_stall_for_suppresses_unsolicited_stream() -> None:
     try:
         await _claim(sim, c)
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
-        await asyncio.sleep(0.1)
+        await virtual_clock.elapse(0.1)
         assert sim.unsolicited_sent > 0
 
-        # Stall: no frames should be emitted for the window.
+        # Stall: no frames should be emitted for the window. The stall knob
+        # is a wall-clock timestamp, so while it is armed the virtual cadence
+        # timers run but emit nothing — a deterministic absence.
         sim.stall_for(0.3)
         before = sim.unsolicited_sent
-        await asyncio.sleep(0.15)
+        await virtual_clock.elapse(0.15)
         assert sim.unsolicited_sent == before  # watchdog would trip here
 
-        # After the stall window, the stream resumes.
-        await asyncio.sleep(0.25)
+        # After the stall window, the stream resumes. End the wall-clock
+        # window deterministically (a zero stall expires at once) and drive
+        # the cadence timers again.
+        sim.stall_for(0)
+        await virtual_clock.elapse(0.25)
         assert sim.unsolicited_sent > before
     finally:
         await c.close()
         await sim.stop()
 
 
-async def test_drop_rate_suppresses_unsolicited_frames() -> None:
+async def test_drop_rate_suppresses_unsolicited_frames(
+    virtual_clock: VirtualClock,
+) -> None:
     sim = MockIcomRadio(
         single_owner=True,
         keepalive_hold_s=5.0,
@@ -477,7 +525,7 @@ async def test_drop_rate_suppresses_unsolicited_frames() -> None:
     try:
         await _claim(sim, c)
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
-        await asyncio.sleep(0.15)
+        await virtual_clock.elapse(0.15)
         # Every unsolicited frame is dropped -> none counted as sent.
         assert sim.unsolicited_sent == 0
     finally:
@@ -514,11 +562,13 @@ async def test_legacy_mode_never_rejects() -> None:
 
 
 @pytest.mark.slow
-async def test_near_real_keepalive_hold_releases() -> None:
-    """One non-accelerated case so acceleration cannot mask real timing bugs.
+async def test_near_real_keepalive_hold_releases(virtual_clock: VirtualClock) -> None:
+    """The realistic-hold case: a 1.5 s hold on the virtual clock.
 
     Uses a ~1.5 s hold (well under a real 45-60 s radio window but long enough
-    to exercise the wall-clock timer path without an accelerated value).
+    to exercise the exact hold/release timer path with a non-accelerated
+    value). The keepalive expiry is a loop timer, so elapsing the virtual
+    clock fires it deterministically with no wall waiting.
     """
     hold = 1.5
     sim = MockIcomRadio(single_owner=True, keepalive_hold_s=hold)
@@ -530,12 +580,12 @@ async def test_near_real_keepalive_hold_releases() -> None:
         await owner.close()  # silent drop, no graceful close
 
         # Inside the hold: still held, foreign owner rejected.
-        await asyncio.sleep(hold * 0.5)
+        await virtual_clock.elapse(hold * 0.5)
         civ_port, error = await _claim(sim, newcomer)
         assert civ_port == 0 and error == _ERR_PREV_SESSION_ACTIVE
 
         # After the full hold: auto-released, foreign owner connects.
-        await asyncio.sleep(hold)
+        await virtual_clock.elapse(hold)
         assert sim.session_held is False
         civ_port2, error2 = await _claim(sim, newcomer)
         assert error2 == _ERR_OK and civ_port2 == sim.civ_port
