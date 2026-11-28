@@ -13,8 +13,10 @@ import asyncio
 import io
 import json
 import signal
+import struct
 import sys
 import wave
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +45,8 @@ from rigplane_testkit.sim.serve import (
 
 from _perf_helpers import fast_connect
 from testkit.test_simulator_audio import (
+    _PT_I_AM_HERE,
+    _audio_openclose,
     _await_client_seq_value,
     _claim,
     _open_audio,
@@ -50,6 +54,7 @@ from testkit.test_simulator_audio import (
     _udp,
 )
 from testkit.test_simulator_faults import (
+    _ayt,
     _bare_conninfo,
     _conninfo_tx_format,
     _header,
@@ -382,7 +387,7 @@ async def test_audio_tx_capture_routes() -> None:
             client.send(_tx_audio(2, 2, pcm, radio_id), radio.audio_port)
             await await_until(
                 lambda: len(radio.audio_tx_frames) >= 2,
-                timeout=5.0,
+                timeout=2.0,
                 description="tx frames sunk",
             )
         finally:
@@ -427,40 +432,134 @@ async def _stream_tx_frame(radio, payload: bytes) -> None:
         client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port)
         await await_until(
             lambda: len(radio.audio_tx_frames) > before,
-            timeout=5.0,
+            timeout=2.0,
             description="tx frame sunk",
         )
     finally:
         client.close()
 
 
-async def _recv_after_elapse(ctrl, clock: VirtualClock, delay: float) -> bytes:
-    """One control reply with the simulator's ``response_delay`` driven past.
+def _receive_counter(radio) -> Callable[[], int]:
+    """Count datagrams reaching the simulator under test.
 
-    The simulator defers every reply with ``loop.call_later`` when
-    ``response_delay`` is set; on the virtual loop that timer fires only on
-    ``elapse``, so a bare ``recv()`` would wait on a frozen clock until the
-    watchdog trips.
+    ``_receive`` runs on receipt, before ``response_delay`` defers the
+    reply with ``loop.call_later`` — so the count observes exactly the
+    moment a send has been delivered and its response timer armed.
     """
+    seen: list[int] = []
+    orig_receive = radio._receive
+
+    def _counting_receive(*args, **kwargs):
+        seen.append(1)
+        return orig_receive(*args, **kwargs)
+
+    radio._receive = _counting_receive  # type: ignore[method-assign]
+    return lambda: len(seen)
+
+
+async def _send_and_arm(
+    received: Callable[[], int],
+    send: Callable[[], None],
+    clock: VirtualClock,
+    delay: float,
+    what: str,
+) -> None:
+    """One request send, observed at the simulator before driving its timer.
+
+    ``elapse`` settles only ready callbacks, not bytes still in the kernel:
+    elapsing blind can finish before the datagram is delivered, arming the
+    response timer after the advance — and the reply would then wait on a
+    frozen clock. So the send is awaited at the simulator (``_receive`` ran
+    and armed the timer) first, and only then is the timer fired.
+    """
+    before = received()
+    send()
+    await await_until(
+        lambda: received() > before,
+        timeout=2.0,
+        description=f"sim received {what}",
+    )
     await clock.elapse(delay + 0.05)
+
+
+async def _recv_queued(ctrl, what: str) -> bytes:
+    """One reply, awaited as real loopback delivery after its timer fired."""
+    await await_until(
+        lambda: not ctrl.queue.empty(),
+        timeout=2.0,
+        description=what,
+    )
     return await ctrl.recv()
 
 
+async def _control_roundtrip(
+    ctrl,
+    pkt: bytes,
+    radio,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
+) -> bytes:
+    """One control request/reply with ``response_delay`` driven past."""
+    await _send_and_arm(
+        received,
+        lambda: ctrl.send(pkt, radio.control_port),
+        clock,
+        delay,
+        "control request",
+    )
+    return await _recv_queued(ctrl, "control reply")
+
+
+async def _open_audio_after_elapse(
+    client,
+    radio,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
+) -> int:
+    """``_open_audio`` with the simulator's ``response_delay`` driven past."""
+    await _send_and_arm(
+        received,
+        lambda: client.send(_ayt(), radio.audio_port),
+        clock,
+        delay,
+        "audio AYT",
+    )
+    iah = await _recv_queued(client, "audio IAH")
+    assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
+    await _send_and_arm(
+        received,
+        lambda: client.send(_audio_openclose(seq=0), radio.audio_port),
+        clock,
+        delay,
+        "audio OpenClose",
+    )
+    return struct.unpack_from("<I", iah, 8)[0]
+
+
 async def _stream_tx_frame_after_elapse(
-    radio, payload: bytes, clock: VirtualClock, delay: float
+    radio,
+    payload: bytes,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
 ) -> None:
     """``_stream_tx_frame`` with the simulator's ``response_delay`` driven past."""
     client = await _udp()
     try:
-        opening = asyncio.create_task(_open_audio(client, radio))
-        await clock.elapse(delay + 0.05)
-        radio_id = await opening
+        radio_id = await _open_audio_after_elapse(client, radio, clock, delay, received)
         before = len(radio.audio_tx_frames)
-        client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port)
-        await clock.elapse(delay + 0.05)
+        await _send_and_arm(
+            received,
+            lambda: client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port),
+            clock,
+            delay,
+            "TX audio frame",
+        )
         await await_until(
             lambda: len(radio.audio_tx_frames) > before,
-            timeout=5.0,
+            timeout=2.0,
             description="tx frame sunk",
         )
     finally:
@@ -523,27 +622,43 @@ async def test_audio_tx_capture_spanning_a_format_change_is_flagged(
     async with _stack() as s:
         radio = s.inner.backend.radio
         radio.response_delay = response_delay
+        received = _receive_counter(radio)
         ctrl = await _udp()
         try:
-            ctrl.send(_login(), radio.control_port)
-            await _recv_after_elapse(ctrl, virtual_clock, response_delay)
-            ctrl.send(
-                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
-                radio.control_port,
+            await _control_roundtrip(
+                ctrl, _login(), radio, virtual_clock, response_delay, received
             )
-            await _recv_after_elapse(ctrl, virtual_clock, response_delay)
+            await _control_roundtrip(
+                ctrl,
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
+                radio,
+                virtual_clock,
+                response_delay,
+                received,
+            )
             await _stream_tx_frame_after_elapse(
-                radio, bytes(range(256)) * 2, virtual_clock, response_delay
+                radio,
+                bytes(range(256)) * 2,
+                virtual_clock,
+                response_delay,
+                received,
             )
             assert len(radio.audio_tx_frames) == 1
             # Mid-capture the client renegotiates: a fresh conninfo at 16 kHz.
-            ctrl.send(
+            await _control_roundtrip(
+                ctrl,
                 _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
-                radio.control_port,
+                radio,
+                virtual_clock,
+                response_delay,
+                received,
             )
-            await _recv_after_elapse(ctrl, virtual_clock, response_delay)
             await _stream_tx_frame_after_elapse(
-                radio, bytes(range(256)) * 2, virtual_clock, response_delay
+                radio,
+                bytes(range(256)) * 2,
+                virtual_clock,
+                response_delay,
+                received,
             )
             assert len(radio.audio_tx_frames) == 2
         finally:
