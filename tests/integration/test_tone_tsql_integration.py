@@ -28,7 +28,6 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -42,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import await_until  # noqa: E402, TID251
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -57,7 +57,9 @@ _SUB_TSQL_FREQ = 0x01
 _SUB_REPEATER_TONE = 0x42
 _SUB_REPEATER_TSQL = 0x43
 
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
+# Delivery bound for a fire-and-forget SET to reach the mock over loopback TCP.
+# Only a stuck-run bound: the wait returns as soon as the mock applies the SET.
+_SETTLE_TIMEOUT = 5.0
 
 # Standard CTCSS test frequencies (exact centiHz)
 _FREQ_MIN = 6700
@@ -330,7 +332,11 @@ class TestRepeaterTone:
     ) -> None:
         """Set repeater tone ON and verify via GET."""
         await tone_radio.set_repeater_tone(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone ON",
+        )
 
         result = await tone_radio.get_repeater_tone()
         assert result is True
@@ -341,27 +347,49 @@ class TestRepeaterTone:
     ) -> None:
         """Set repeater tone ON then OFF; GET returns False."""
         await tone_radio.set_repeater_tone(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone ON",
+        )
 
         await tone_radio.set_repeater_tone(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone OFF",
+        )
 
         result = await tone_radio.get_repeater_tone()
         assert result is False
         assert tone_mock._repeater_tone == 0
 
-    async def test_toggle_on_off_on(self, tone_radio: IcomRadio) -> None:
+    async def test_toggle_on_off_on(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Toggle repeater tone on → off → on."""
         await tone_radio.set_repeater_tone(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone ON",
+        )
         assert await tone_radio.get_repeater_tone() is True
 
         await tone_radio.set_repeater_tone(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone OFF",
+        )
         assert await tone_radio.get_repeater_tone() is False
 
         await tone_radio.set_repeater_tone(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone ON",
+        )
         assert await tone_radio.get_repeater_tone() is True
 
 
@@ -383,7 +411,11 @@ class TestRepeaterTSQL:
     ) -> None:
         """Set repeater TSQL ON and verify via GET."""
         await tone_radio.set_repeater_tsql(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL ON",
+        )
 
         result = await tone_radio.get_repeater_tsql()
         assert result is True
@@ -394,41 +426,83 @@ class TestRepeaterTSQL:
     ) -> None:
         """Set repeater TSQL ON then OFF; GET returns False."""
         await tone_radio.set_repeater_tsql(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL ON",
+        )
 
         await tone_radio.set_repeater_tsql(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL OFF",
+        )
 
         result = await tone_radio.get_repeater_tsql()
         assert result is False
         assert tone_mock._repeater_tsql == 0
 
-    async def test_toggle_on_off_on(self, tone_radio: IcomRadio) -> None:
+    async def test_toggle_on_off_on(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Toggle repeater TSQL on → off → on."""
         await tone_radio.set_repeater_tsql(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL ON",
+        )
         assert await tone_radio.get_repeater_tsql() is True
 
         await tone_radio.set_repeater_tsql(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL OFF",
+        )
         assert await tone_radio.get_repeater_tsql() is False
 
         await tone_radio.set_repeater_tsql(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL ON",
+        )
         assert await tone_radio.get_repeater_tsql() is True
 
-    async def test_tone_and_tsql_independent(self, tone_radio: IcomRadio) -> None:
+    async def test_tone_and_tsql_independent(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Repeater tone and TSQL are independent flags."""
         await tone_radio.set_repeater_tone(True)
         await tone_radio.set_repeater_tsql(False)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone ON",
+        )
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL OFF",
+        )
 
         assert await tone_radio.get_repeater_tone() is True
         assert await tone_radio.get_repeater_tsql() is False
 
         await tone_radio.set_repeater_tone(False)
         await tone_radio.set_repeater_tsql(True)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._repeater_tone == 0,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater tone OFF",
+        )
+        await await_until(
+            lambda: tone_mock._repeater_tsql == 1,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied repeater TSQL ON",
+        )
 
         assert await tone_radio.get_repeater_tone() is False
         assert await tone_radio.get_repeater_tsql() is True
@@ -452,16 +526,26 @@ class TestToneFrequency:
     ) -> None:
         """Set tone frequency to 67.0 Hz (minimum CTCSS tone)."""
         await tone_radio.set_tone_freq(_FREQ_MIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tone_freq_centihz == _FREQ_MIN,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied tone frequency 6700",
+        )
 
         result = await tone_radio.get_tone_freq()
         assert result == _FREQ_MIN
         assert tone_mock._tone_freq_centihz == _FREQ_MIN
 
-    async def test_set_110_9_hz(self, tone_radio: IcomRadio) -> None:
+    async def test_set_110_9_hz(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Set tone frequency to 110.9 Hz."""
         await tone_radio.set_tone_freq(_FREQ_MID_LO)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tone_freq_centihz == _FREQ_MID_LO,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied tone frequency 11090",
+        )
 
         result = await tone_radio.get_tone_freq()
         assert result == _FREQ_MID_LO
@@ -471,13 +555,19 @@ class TestToneFrequency:
     ) -> None:
         """Set tone frequency to 254.1 Hz (maximum CTCSS tone)."""
         await tone_radio.set_tone_freq(_FREQ_MAX)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tone_freq_centihz == _FREQ_MAX,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied tone frequency 25410",
+        )
 
         result = await tone_radio.get_tone_freq()
         assert result == _FREQ_MAX
         assert tone_mock._tone_freq_centihz == _FREQ_MAX
 
-    async def test_multiple_freq_changes(self, tone_radio: IcomRadio) -> None:
+    async def test_multiple_freq_changes(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Change tone frequency through all standard test values."""
         for freq in (
             _FREQ_MIN,
@@ -488,15 +578,25 @@ class TestToneFrequency:
             _FREQ_MAX,
         ):
             await tone_radio.set_tone_freq(freq)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda: tone_mock._tone_freq_centihz == freq,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock applied tone frequency {freq}",
+            )
             result = await tone_radio.get_tone_freq()
             assert result == freq, f"Expected {freq} centiHz, got {result} centiHz"
 
-    async def test_freq_roundtrip_precision(self, tone_radio: IcomRadio) -> None:
+    async def test_freq_roundtrip_precision(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """BCD encoding/decoding preserves single-decimal precision."""
         for freq in (6700, 7700, 8850, 10000, 11090, 12730, 16790, 20350, 25410):
             await tone_radio.set_tone_freq(freq)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda: tone_mock._tone_freq_centihz == freq,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock applied tone frequency {freq}",
+            )
             result = await tone_radio.get_tone_freq()
             assert result == freq, f"Precision loss: sent {freq}, got {result}"
 
@@ -519,16 +619,26 @@ class TestTSQLFrequency:
     ) -> None:
         """Set TSQL frequency to 67.0 Hz (minimum CTCSS tone)."""
         await tone_radio.set_tsql_freq(_FREQ_MIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tsql_freq_centihz == _FREQ_MIN,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied TSQL frequency 6700",
+        )
 
         result = await tone_radio.get_tsql_freq()
         assert result == _FREQ_MIN
         assert tone_mock._tsql_freq_centihz == _FREQ_MIN
 
-    async def test_set_110_9_hz(self, tone_radio: IcomRadio) -> None:
+    async def test_set_110_9_hz(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Set TSQL frequency to 110.9 Hz."""
         await tone_radio.set_tsql_freq(_FREQ_MID_LO)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tsql_freq_centihz == _FREQ_MID_LO,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied TSQL frequency 11090",
+        )
 
         result = await tone_radio.get_tsql_freq()
         assert result == _FREQ_MID_LO
@@ -538,13 +648,19 @@ class TestTSQLFrequency:
     ) -> None:
         """Set TSQL frequency to 254.1 Hz (maximum CTCSS tone)."""
         await tone_radio.set_tsql_freq(_FREQ_MAX)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tsql_freq_centihz == _FREQ_MAX,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied TSQL frequency 25410",
+        )
 
         result = await tone_radio.get_tsql_freq()
         assert result == _FREQ_MAX
         assert tone_mock._tsql_freq_centihz == _FREQ_MAX
 
-    async def test_multiple_freq_changes(self, tone_radio: IcomRadio) -> None:
+    async def test_multiple_freq_changes(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Change TSQL frequency through all standard test values."""
         for freq in (
             _FREQ_MIN,
@@ -555,26 +671,47 @@ class TestTSQLFrequency:
             _FREQ_MAX,
         ):
             await tone_radio.set_tsql_freq(freq)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda: tone_mock._tsql_freq_centihz == freq,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock applied TSQL frequency {freq}",
+            )
             result = await tone_radio.get_tsql_freq()
             assert result == freq, f"Expected {freq} centiHz, got {result} centiHz"
 
-    async def test_tone_and_tsql_freq_independent(self, tone_radio: IcomRadio) -> None:
+    async def test_tone_and_tsql_freq_independent(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """Tone and TSQL frequencies are stored independently."""
         await tone_radio.set_tone_freq(_FREQ_MID_LO)
         await tone_radio.set_tsql_freq(_FREQ_MAX)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: tone_mock._tone_freq_centihz == _FREQ_MID_LO,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied tone frequency 11090",
+        )
+        await await_until(
+            lambda: tone_mock._tsql_freq_centihz == _FREQ_MAX,
+            timeout=_SETTLE_TIMEOUT,
+            description="mock applied TSQL frequency 25410",
+        )
 
         tone = await tone_radio.get_tone_freq()
         tsql = await tone_radio.get_tsql_freq()
         assert tone == _FREQ_MID_LO
         assert tsql == _FREQ_MAX
 
-    async def test_freq_roundtrip_precision(self, tone_radio: IcomRadio) -> None:
+    async def test_freq_roundtrip_precision(
+        self, tone_radio: IcomRadio, tone_mock: ToneMockRadio
+    ) -> None:
         """BCD encoding/decoding preserves single-decimal precision for TSQL."""
         for freq in (6700, 7700, 8850, 10000, 11090, 12730, 16790, 20350, 25410):
             await tone_radio.set_tsql_freq(freq)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda: tone_mock._tsql_freq_centihz == freq,
+                timeout=_SETTLE_TIMEOUT,
+                description=f"mock applied TSQL frequency {freq}",
+            )
             result = await tone_radio.get_tsql_freq()
             assert result == freq, f"Precision loss: sent {freq}, got {result}"
 
