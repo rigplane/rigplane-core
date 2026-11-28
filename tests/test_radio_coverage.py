@@ -39,7 +39,10 @@ from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
+from rigplane.runtime import _control_phase as _control_phase_module
+from rigplane.runtime import radio_reconnect as _radio_reconnect_module
 from rigplane.scope import ScopeFrame
+from rigplane.testing.timing import VirtualClock, virtual_clock
 from rigplane.types import Mode
 
 # Re-use the low-level helpers from test_radio
@@ -281,21 +284,27 @@ async def test_soft_disconnect_with_audio_stream_stops_audio(
 # ---------------------------------------------------------------------------
 
 
+@virtual_clock
 async def test_soft_reconnect_noops_when_open_transport_is_receiving_data(
+    clock: VirtualClock,
     radio: IcomRadio,
     mock_transport: MockTransport,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import logging
-    import time
 
     from rigplane.runtime._connection_state import RadioConnectionState
+
+    clock.scope_to(monkeypatch, _control_phase_module)
+    # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+    monkeypatch.setattr(_control_phase_module, "asyncio", asyncio)
 
     mock_transport._udp_transport = MagicMock()
     radio._conn_state = RadioConnectionState.RECONNECTING
     radio._civ_stream_ready = False
     radio._civ_recovering = True
-    radio._last_civ_data_received = time.monotonic()
+    radio._last_civ_data_received = clock()
 
     with caplog.at_level(logging.INFO, logger="rigplane.runtime._control_phase"):
         await radio.soft_reconnect()
@@ -307,10 +316,13 @@ async def test_soft_reconnect_noops_when_open_transport_is_receiving_data(
     assert not any("already open" in r.message for r in caplog.records)
 
 
+@virtual_clock
 async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
+    clock: VirtualClock,
     radio: IcomRadio,
     mock_transport: MockTransport,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#1217: a stalled CI-V transport (transport open, no data flowing) must
     NOT freeze soft_reconnect.  The old behavior returned early after logging
@@ -318,15 +330,18 @@ async def test_soft_reconnect_already_open_stalled_rebuilds_not_frozen(
     stalled transport down and falls through to a genuine rebuild.
     """
     import logging
-    import time
 
     from rigplane.runtime._connection_state import RadioConnectionState
+
+    clock.scope_to(monkeypatch, _control_phase_module)
+    # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+    monkeypatch.setattr(_control_phase_module, "asyncio", asyncio)
 
     mock_transport._udp_transport = MagicMock()
     radio._conn_state = RadioConnectionState.RECONNECTING
     radio._civ_stream_ready = False
     radio._civ_recovering = True
-    radio._last_civ_data_received = time.monotonic() - 60.0
+    radio._last_civ_data_received = clock() - 60.0
 
     cleanup_called: list[bool] = []
 
@@ -1340,27 +1355,34 @@ async def test_enable_scope_verify_times_out(
         await radio.enable_scope(policy=ScopeCompletionPolicy.VERIFY, timeout=0.05)
 
 
+@virtual_clock
 async def test_enable_scope_verify_succeeds_when_event_fires(
-    radio: IcomRadio, mock_transport: MockTransport
+    clock: VirtualClock, radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    mock_transport.queue_response_on_send(1, _ack_response())
-    mock_transport.queue_response_on_send(2, _ack_response())
     """VERIFY policy succeeds when scope activity event fires."""
     from rigplane.types import ScopeCompletionPolicy
 
-    async def _set_event_soon() -> None:
-        await asyncio.sleep(0.02)
-        radio._scope_activity_event.set()
-
-    task = asyncio.create_task(_set_event_soon())
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
+    enabling = asyncio.ensure_future(
+        radio.enable_scope(policy=ScopeCompletionPolicy.VERIFY, timeout=0.5)
+    )
     try:
-        await radio.enable_scope(policy=ScopeCompletionPolicy.VERIFY, timeout=0.5)
+        # The activity mark lands while enable_scope is waiting on it (the old
+        # real-time ``sleep(0.02)`` producer); the virtual clock drives both
+        # the wait and the deadline.
+        await clock.elapse(0.02)
+        radio._scope_activity_event.set()
+        await clock.elapse(0.5)
+        assert enabling.done()
+        await enabling
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if not enabling.done():
+            enabling.cancel()
+            try:
+                await enabling
+            except asyncio.CancelledError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1404,12 +1426,13 @@ async def test_disable_scope_strict_ack_succeeds(
 # ---------------------------------------------------------------------------
 
 
+@virtual_clock
 async def test_capture_scope_frame_returns_first_frame(
-    radio: IcomRadio, mock_transport: MockTransport
+    clock: VirtualClock, radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    """capture_scope_frame() should return the first frame received."""
     mock_transport.queue_response_on_send(1, _ack_response())
     mock_transport.queue_response_on_send(2, _ack_response())
-    """capture_scope_frame() should return the first frame received."""
     frame = ScopeFrame(
         receiver=0,
         mode=1,
@@ -1419,24 +1442,26 @@ async def test_capture_scope_frame_returns_first_frame(
         out_of_range=False,
     )
 
-    # Simulate scope frames arriving shortly
-    async def _push_frame() -> None:
-        await asyncio.sleep(0.02)
+    # The frame lands while capture_scope_frame() is waiting on it (the old
+    # real-time ``sleep(0.02)`` producer); the virtual clock drives the wait.
+    capturing = asyncio.ensure_future(radio.capture_scope_frame(timeout=1.0))
+    try:
+        await clock.elapse(0.02)
         radio._scope_activity_event.set()
         cb = radio._scope_callback
-        if cb is not None:
-            cb(frame)
-
-    task = asyncio.create_task(_push_frame())
-    try:
-        result = await radio.capture_scope_frame(timeout=1.0)
+        assert cb is not None
+        cb(frame)
+        await clock.elapse(1.0)
+        assert capturing.done()
+        result = await capturing
         assert result is frame
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if not capturing.done():
+            capturing.cancel()
+            try:
+                await capturing
+            except asyncio.CancelledError:
+                pass
 
 
 async def test_capture_scope_frames_timeout_raises(
@@ -1449,12 +1474,13 @@ async def test_capture_scope_frames_timeout_raises(
         await radio.capture_scope_frames(count=5, timeout=0.05)
 
 
+@virtual_clock
 async def test_capture_scope_frames_multiple(
-    radio: IcomRadio, mock_transport: MockTransport
+    clock: VirtualClock, radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    """capture_scope_frames(count=3) collects exactly 3 frames."""
     mock_transport.queue_response_on_send(1, _ack_response())
     mock_transport.queue_response_on_send(2, _ack_response())
-    """capture_scope_frames(count=3) collects exactly 3 frames."""
     frames = [
         ScopeFrame(
             receiver=0,
@@ -1467,24 +1493,27 @@ async def test_capture_scope_frames_multiple(
         for i in range(3)
     ]
 
-    async def _push_frames() -> None:
-        await asyncio.sleep(0.02)
+    # The frames land while capture_scope_frames() is waiting on them (the
+    # old real-time ``sleep(0.02)`` producer); the virtual clock drives it.
+    capturing = asyncio.ensure_future(radio.capture_scope_frames(count=3, timeout=1.0))
+    try:
+        await clock.elapse(0.02)
         radio._scope_activity_event.set()
         cb = radio._scope_callback
-        if cb is not None:
-            for f in frames:
-                cb(f)
-
-    task = asyncio.create_task(_push_frames())
-    try:
-        result = await radio.capture_scope_frames(count=3, timeout=1.0)
+        assert cb is not None
+        for f in frames:
+            cb(f)
+        await clock.elapse(1.0)
+        assert capturing.done()
+        result = await capturing
         assert len(result) == 3
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if not capturing.done():
+            capturing.cancel()
+            try:
+                await capturing
+            except asyncio.CancelledError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1893,74 +1922,79 @@ async def test_watchdog_loop_detects_activity(radio: IcomRadio) -> None:
     assert call_count[0] >= 2
 
 
+@virtual_clock
 async def test_watchdog_loop_logs_health_periodically(
-    radio: IcomRadio, caplog: pytest.LogCaptureFixture
+    clock: VirtualClock,
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_watchdog_loop logs health info periodically (lines 515-521)."""
     import logging
-    import time as time_mod
+
+    clock.scope_to(monkeypatch, _radio_reconnect_module)
+    # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+    monkeypatch.setattr(_radio_reconnect_module, "asyncio", asyncio)
 
     radio._ctrl_transport.rx_packet_count = 10
-    call_count = [0]
-    base_time = time_mod.monotonic()
-
-    def advancing_time() -> float:
-        call_count[0] += 1
-        # Advance time beyond health log interval on later calls
-        if call_count[0] <= 3:
-            return base_time
-        return base_time + radio._WATCHDOG_HEALTH_LOG_INTERVAL + 1.0
-
-    async def mock_sleep(delay: float) -> None:
-        if call_count[0] >= 6:
+    # A steady link that never goes idle: health logs fire, no reconnect does.
+    radio._watchdog_timeout = 3600.0
+    # The health log moved with the loop to ``radio_reconnect`` (issue #1259);
+    # the parent level covers it wherever the emitting module lives.
+    with caplog.at_level(logging.INFO, logger="rigplane.runtime"):
+        watchdog = asyncio.ensure_future(radio._watchdog_loop())
+        try:
+            await clock.elapse(radio._WATCHDOG_HEALTH_LOG_INTERVAL + 1.0)
+            assert not watchdog.done()
             radio._connected = False
-            raise asyncio.CancelledError()
+            await clock.elapse(2 * radio.WATCHDOG_CHECK_INTERVAL + 1.0)
+            assert watchdog.done()
+            await watchdog
+        finally:
+            radio._connected = False
+            if not watchdog.done():
+                watchdog.cancel()
+                try:
+                    await watchdog
+                except asyncio.CancelledError:
+                    pass
+    records = [r for r in caplog.records if "Transport health" in r.getMessage()]
+    assert records, "expected a periodic Transport health log"
 
-    with (
-        patch("rigplane.radio.time.monotonic", side_effect=advancing_time),
-        patch("asyncio.sleep", side_effect=mock_sleep),
-        caplog.at_level(logging.INFO, logger="rigplane.runtime.radio"),
-    ):
-        await radio._watchdog_loop()
 
-
-async def test_watchdog_loop_triggers_reconnect_on_timeout(radio: IcomRadio) -> None:
+@virtual_clock
+async def test_watchdog_loop_triggers_reconnect_on_timeout(
+    clock: VirtualClock, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """_watchdog_loop triggers reconnect after idle timeout (lines 523-531)."""
-    import time as time_mod
+    from rigplane.runtime._connection_state import RadioConnectionState
 
-    radio._watchdog_timeout = 0.01  # very short timeout
+    clock.scope_to(monkeypatch, _radio_reconnect_module)
+    # Keep sleeps timer-driven on this loop; only monotonic reads need a view.
+    monkeypatch.setattr(_radio_reconnect_module, "asyncio", asyncio)
 
-    call_count = [0]
-    base_time = time_mod.monotonic()
+    radio._watchdog_timeout = 1.0  # short: the steady link still goes idle
+    reconnect = AsyncMock()
+    with patch.object(radio, "_reconnect_loop", new=reconnect):
+        watchdog = asyncio.ensure_future(radio._watchdog_loop())
+        try:
+            await clock.elapse(3.0)
+            assert watchdog.done()
+            await watchdog
+        finally:
+            if not watchdog.done():
+                watchdog.cancel()
+                try:
+                    await watchdog
+                except asyncio.CancelledError:
+                    pass
 
-    def mock_time() -> float:
-        call_count[0] += 1
-        # Start just past last activity so watchdog triggers
-        return base_time + (call_count[0] * 1.0)
-
-    async def mock_sleep(delay: float) -> None:
-        pass  # Don't actually wait
-
-    scheduled: list[str] = []
-
-    def _create_task(coro: object) -> MagicMock:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
-        task = MagicMock()
-        task.done.return_value = False
-        scheduled.append("reconnect")
-        return task
-
-    with (
-        patch("rigplane.radio.time.monotonic", side_effect=mock_time),
-        patch("asyncio.sleep", side_effect=mock_sleep),
-        patch("asyncio.create_task", side_effect=_create_task),
-    ):
-        await radio._watchdog_loop()
-
-    # A reconnect task should have been created
-    assert scheduled == ["reconnect"]
+    # A reconnect task was scheduled (the body is stubbed; its own retries
+    # are pinned by the _reconnect_loop tests, not by this watchdog test).
+    assert radio._conn_state == RadioConnectionState.RECONNECTING
+    assert radio._reconnect_task is not None
+    reconnect.assert_awaited_once()
+    radio._connected = False
 
 
 # ---------------------------------------------------------------------------
