@@ -72,7 +72,7 @@ import aiohttp
 from serial_stub import SerialMockRadio
 
 from rigplane.runtime.controller_authority import ControllerAuthority
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebServer
 from scripts.soak import soak_driver
@@ -412,8 +412,10 @@ class _BlockingPsProcess:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.entered = False
 
     async def communicate(self) -> tuple[bytes, None]:
+        self.entered = True
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -441,7 +443,9 @@ async def test_ps_output_kills_and_reaps_its_child_when_cancelled(
     proc = _BlockingPsProcess()
     monkeypatch.setattr(soak_driver.asyncio, "create_subprocess_exec", _spawn_ps)
     task = asyncio.create_task(soak_driver._ps_output(["-o", "rss="]))
-    await asyncio.sleep(0.01)  # reach the blocking communicate()
+    await await_until(
+        lambda: proc.entered, description="the ps child reaching communicate()"
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -947,25 +951,26 @@ async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
 
     The cycle renews every live lease just before it closes its clients, so a
     session that is not ended by its channel's loss stays a full ``TTL_MS``.
-    Driven on a fake controller clock: a lease aged to within 1.5 s of its end
-    is back at the full ``TTL_MS`` after ``renew``, deterministically.
+    Driven on a virtual clock seeded from the controller's own clock: a lease
+    aged to within 1.5 s of its end is back at the full ``TTL_MS`` after
+    ``renew``, deterministically.
     """
     from rigplane.runtime.controller_authority import ControllerAuthority
 
     stack = await soak_driver._start_simulator_stack(managed_tx=True)
     try:
         controller = stack.web._controller
-        now = [time.monotonic()]
-        controller._clock = lambda: now[0]
+        clock = VirtualClock(start=controller._clock())
+        controller._clock = clock
         client = soak_driver._TxSessionClient(f"http://127.0.0.1:{stack.web_port}")
         await client.open()
         try:
             (session,) = controller._sessions.values()
-            now[0] += (ControllerAuthority.TTL_MS - 1500) / 1000
-            assert session.deadline - now[0] == pytest.approx(1.5)
+            clock.advance((ControllerAuthority.TTL_MS - 1500) / 1000)
+            assert session.deadline - clock() == pytest.approx(1.5)
             await client.renew()
             ttl = ControllerAuthority.TTL_MS / 1000
-            assert session.deadline - now[0] == pytest.approx(ttl)
+            assert session.deadline - clock() == pytest.approx(ttl)
             # A leaked session then outlives the check window by at least one
             # reaper tick, so the reaper cannot end it inside the window: the
             # coincidence of lease end and window end that failed the release
@@ -976,6 +981,17 @@ async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
             await client.close()
     finally:
         await stack.aclose()
+
+
+async def _parked() -> None:
+    """A never-completing task that arms no timer.
+
+    Leak and boundary tasks only have to be pending in the task population
+    the stability criteria count; parking them on an event (rather than a
+    long ``asyncio.sleep``) keeps the suite off the real clock.
+    """
+
+    await asyncio.Event().wait()
 
 
 def _process_script(
@@ -1254,23 +1270,21 @@ async def test_stability_settle_gives_up_on_a_hung_sample(
 
     The 7th runtime call is the settle's first sample; it hangs 30 real
     seconds against a real 50 ms window, and the in-task timeout on
-    the remaining window cancels it. The outer 10 s bound is the
+    the remaining window cancels it. The outer 5 s bound is the
     discrimination: without the timeout in _settle_sample the injected
     hang is unguarded, the bound fires TimeoutError, and this test goes
     red instead of passing after 30 s.
     """
     monkeypatch.setattr(soak_driver, "_STABILITY_SETTLE_WINDOW_S", 0.05)
     script = _process_script([48, 48, 48, 56, 55, 54, 48, 48, 48])
-    started = time.monotonic()
     driver, sleeps = await asyncio.wait_for(
         _run_cycle_with_process_script(
             monkeypatch,
             script,
             hang_call=2 * soak_driver._STABILITY_PROBE_COUNT + 1,
         ),
-        timeout=10.0,
+        timeout=5.0,
     )
-    assert time.monotonic() - started < 5.0
     (entry,) = driver._reconnects
     assert entry["recovered"] is True
     assert entry["fdsPost"] == 48
@@ -1339,8 +1353,7 @@ async def test_stability_settle_counts_no_task_of_its_own(
     baseline_runtime = len(asyncio.all_tasks())
     baseline_fallback = soak_driver._server_asyncio_task_count()
     extras = [
-        asyncio.create_task(asyncio.sleep(30.0))
-        for _ in range(soak_driver.STABILITY_TOLERANCE)
+        asyncio.create_task(_parked()) for _ in range(soak_driver.STABILITY_TOLERANCE)
     ]
     try:
         pre = soak_driver.ProcessSample(
@@ -2143,7 +2156,7 @@ async def test_fallback_pre_runtime_post_excludes_slow_probe_close(
         for _ in range(leaked_fds):
             leaks.append(socket.create_connection(live.leak_addr))
         for _ in range(leaked_tasks):
-            leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+            leak_tasks.append(asyncio.create_task(_parked()))
         post, routes = await live.probe(2.0)
         assert routes == ("runtime", "runtime")
         verdict = _stability_criteria_for(
@@ -2186,7 +2199,7 @@ async def test_runtime_outage_keeps_one_owned_population_and_verdict() -> None:
         leak_size = soak_driver.IN_PROCESS_TASK_STABILITY_TOLERANCE + 1
         for _ in range(leak_size):
             leaks.append(socket.create_connection(live.leak_addr))
-            leak_tasks.append(asyncio.create_task(asyncio.sleep(3600.0)))
+            leak_tasks.append(asyncio.create_task(_parked()))
         live.serving["up"] = False
         post, routes = await live.probe(4.0)
         assert routes == ("driver", "driver")
@@ -2232,7 +2245,9 @@ async def test_stability_probe_drains_replay_without_hiding_socket_leaks(
                 f"127.0.0.1:{stack.rigctld_port}",
                 stack.sim,
             )
-            driver._t0 = time.monotonic()
+            # Anchor elapsed time through the driver's own clock: identical to
+            # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
+            driver._t0 = driver._elapsed()
             driver._connection_state = "connected"
             driver._runtime_task_adapter = adapter
             driver._sampler = soak_driver.ProcessMetricsSampler(
@@ -2311,7 +2326,9 @@ async def test_stability_probe_defers_new_periodic_actions_until_trio_finishes(
     driver = soak_driver.SoakDriver(
         _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
     )
-    driver._t0 = time.monotonic()
+    # Anchor elapsed time through the driver's own clock: identical to
+    # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
+    driver._t0 = driver._elapsed()
     driver._sampler = live.sampler
     sampling = asyncio.Event()
     finish = asyncio.Event()
@@ -2361,7 +2378,9 @@ async def test_stability_drain_is_bounded_and_restores_admission(
     driver = soak_driver.SoakDriver(
         _smoke_config(), "", "", SimpleNamespace(fault_plan=None)
     )
-    driver._t0 = time.monotonic()
+    # Anchor elapsed time through the driver's own clock: identical to
+    # time.monotonic() with the fresh 0.0 _t0, and no wall read here.
+    driver._t0 = driver._elapsed()
     entered = asyncio.Event()
     release = asyncio.Event()
 
