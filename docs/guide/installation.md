@@ -9,6 +9,16 @@ description: Install RigPlane from PyPI on macOS, Linux, or Windows — Python 3
 - **Python 3.11+**
 - A supported radio: see [Supported Radios](radios.md)
 - For a LAN radio, network access to it; auto-discovery needs the same subnet
+- For USB audio capture or a local audio bridge on Debian, Ubuntu, or Raspberry
+  Pi OS (including aarch64), install the native PortAudio library:
+
+  ```bash
+  sudo apt install libportaudio2
+  ```
+
+  If RX reports "Audio library missing", install the package and restart
+  RigPlane. The Python `sounddevice` dependency alone does not supply this
+  system library on Linux.
 
 ## Install from PyPI
 

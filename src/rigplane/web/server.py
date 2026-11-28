@@ -1619,8 +1619,20 @@ class WebServer:
         """Create a background task and prevent GC from collecting it."""
         task = asyncio.get_running_loop().create_task(coro)
         self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        task.add_done_callback(self._background_task_done)
         return task
+
+    def _background_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.log(
+                logging.DEBUG if isinstance(error, ControllerError) else logging.ERROR,
+                "web: background task failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     # ------------------------------------------------------------------
     # Helpers for scope callback operations

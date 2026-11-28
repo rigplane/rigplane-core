@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, TypedDict, cast
 
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
+from rigplane.audio.backend import AudioLibraryMissingError
 from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
 from ...audio import route as audio_route
 from ...audio.bus import STAGE_RX_POST_DSP
@@ -584,6 +585,7 @@ class AudioBroadcaster:
         *,
         preferred_rx_codec: int | None = None,
         identity: str | None = None,
+        retry_start: bool = False,
     ) -> asyncio.Queue[bytes]:
         """Register a new WebSocket client and start relaying if first.
 
@@ -593,11 +595,24 @@ class AudioBroadcaster:
         socket is reaped — is dropped and its WS closed before the new
         client is registered, so subscribers converge to exactly one per
         browser on reconnect instead of leaking a zombie fan-out target.
+
+        ``retry_start`` is set by the client's ``audio_start`` action;
+        background tap demand leaves a missing-library failure latched.
         """
         queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self.HIGH_WATERMARK)
         client_id = id(queue)
         stale_ws: list[Connection] = []
         async with self._lock:
+            if retry_start:
+                bus = getattr(self._radio, "audio_bus", None)
+                reset = getattr(bus, "reset_rx_start_failure", None)
+                if callable(reset):
+                    await reset()
+                if (
+                    self._rx_start_failure is not None
+                    and self._rx_start_failure[2] == "audio_library_missing"
+                ):
+                    self.invalidate_rx_start_status()
             if identity is not None:
                 for old_id in [
                     cid
@@ -638,7 +653,17 @@ class AudioBroadcaster:
                         self._relay_task = None
                     await self._release_subscription()
                 if self._radio:
+                    previous_failure = self._rx_start_failure
                     await self._start_relay()
+                    if (
+                        ws is not None
+                        and previous_failure is not None
+                        and self._rx_start_failure is previous_failure
+                        and previous_failure[2] == "audio_library_missing"
+                    ):
+                        await self._notify_relay_start_failure(
+                            AudioLibraryMissingError(), client=ws
+                        )
         # Close any superseded sockets OUTSIDE the lock — the close awaits a
         # drain and must never block subscribe under the broadcaster lock.
         for old_ws in stale_ws:
@@ -778,6 +803,8 @@ class AudioBroadcaster:
             }
             if holder:
                 payload["holder"] = holder
+            if reason == "audio_library_missing":
+                payload["message"] = AudioLibraryMissingError.MESSAGE
             if candidates:
                 payload["candidates"] = [
                     audio_candidate_record(candidate) for candidate in candidates
@@ -928,7 +955,8 @@ class AudioBroadcaster:
                 # so session RX demand never leaks across a restart.
                 await self._release_subscription()
                 await self._start_relay()
-                logger.info("audio-broadcaster: relay started for PCM tap")
+                if self._subscription is not None:
+                    logger.info("audio-broadcaster: relay started for PCM tap")
 
     async def reap_dead_clients(self) -> int:
         """Remove clients whose WebSocket is no longer alive. Returns count removed."""
@@ -1423,6 +1451,14 @@ class AudioBroadcaster:
             if route is None:
                 return
             route_kind, source = route
+            failure = self._rx_start_failure
+            if (
+                failure is not None
+                and failure[0] is radio
+                and failure[1] is source
+                and failure[2] == "audio_library_missing"
+            ):
+                return
             await self._apply_phones_mix_off()
             self._refresh_codec_state(first=True)
             if route_kind == "session":
@@ -1458,7 +1494,8 @@ class AudioBroadcaster:
                 attempt, radio, source
             ):
                 return
-            logger.exception("audio-broadcaster: failed to start relay")
+            if audio_start_failure_reason(exc) != "audio_library_missing":
+                logger.exception("audio-broadcaster: failed to start relay")
             self._subscription = None
             if source is not None:
                 reason, candidates = audio_start_failure_details(exc)
@@ -1505,6 +1542,7 @@ class AudioBroadcaster:
         *,
         reason: AudioStartFailureReason | None = None,
         holder: str | None = None,
+        client: Connection | None = None,
     ) -> None:
         """Surface a relay/RX start failure to connected WS clients (MOR-582).
 
@@ -1515,7 +1553,8 @@ class AudioBroadcaster:
         MOR-3823: the frame never carries exception text — host-side refusal
         detail ("select explicit RX/TX devices") is meaningless to a remote
         client. ``message`` keeps the fixed prefix the frontend matches on
-        and appends only the category token; the same token rides in
+        and appends the category token or fixed library-install guidance;
+        the category token rides in
         ``reason`` so clients can branch without parsing the message. The one
         extra detail is ``holder``, the executable file name of the program
         holding the device, on the ``device_in_use`` category only (MOR-4030).
@@ -1534,13 +1573,18 @@ class AudioBroadcaster:
         payload = encode_json(
             {
                 "type": "error",
-                "message": f"audio_start: RX audio failed to start: {reason}",
+                "message": "audio_start: RX audio failed to start: "
+                + (
+                    AudioLibraryMissingError.MESSAGE
+                    if reason == "audio_library_missing"
+                    else reason
+                ),
                 "reason": reason,
                 # The holding program's file name for the in-use category only.
                 **({"holder": holder} if holder else {}),
             }
         )
-        for ws in list(self._client_ws.values()):
+        for ws in [client] if client is not None else list(self._client_ws.values()):
             try:
                 await ws.send_text(payload)
             except Exception:
@@ -2475,6 +2519,7 @@ class AudioHandler:
             ws=self._ws,
             preferred_rx_codec=preferred_rx_codec,
             identity=identity,
+            retry_start=True,
         )
         if old_queue is not None:
             await self._broadcaster.unsubscribe(old_queue)

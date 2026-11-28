@@ -46,6 +46,7 @@ from .backend import (
     AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
+    AudioLibraryMissingError,
     DeviceRefreshingBackend,
     DuplexStream,
     PortAudioBackend,
@@ -184,6 +185,7 @@ class AudioFormatUnsupportedError(AudioDriverLifecycleError):
 
 
 AudioStartFailureReason = Literal[
+    "audio_library_missing",
     "usb_topology_names",
     "usb_topology_unavailable",
     "usb_ambiguous",
@@ -286,6 +288,7 @@ def audio_start_failure_details(
     reasons: tuple[
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (
+        ((AudioLibraryMissingError,), "audio_library_missing"),
         ((AudioCaptureOpenTimeoutError,), "open_timeout"),
         ((AudioDeviceBusyError,), "device_in_use"),
         ((AudioFormatUnsupportedError,), "format"),
@@ -2316,6 +2319,7 @@ class UsbAudioDriver:
             AudioAlreadyStartedError,
             AudioCaptureOpenTimeoutError,
             AudioDeviceBusyError,
+            AudioLibraryMissingError,
         ):
             raise
         except Exception as first:

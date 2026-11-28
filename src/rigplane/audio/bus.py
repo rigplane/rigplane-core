@@ -45,7 +45,11 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from rigplane.audio.usb_driver import AudioAlreadyStartedError
+from rigplane.audio.backend import AudioLibraryMissingError
+from rigplane.audio.usb_driver import (
+    AudioAlreadyStartedError,
+    audio_start_failure_reason,
+)
 from rigplane.dsp.tap_registry import TapRegistry
 
 if TYPE_CHECKING:
@@ -318,6 +322,7 @@ class AudioBus:
         self._subscribers: list[AudioSubscription] = []
         self._rx_active = False
         self._lock = asyncio.Lock()
+        self._rx_library_missing = False
         self._last_rx_frame_monotonic: float | None = None
         # Named RX tap stages (MOR-565): the bus hosts ``rx.pcm`` — a passive
         # observer of radio-native frames, fed alongside (never instead of)
@@ -456,13 +461,26 @@ class AudioBus:
         """
         if self._rx_active:
             return
+        if self._rx_library_missing:
+            raise RuntimeError(
+                f"radio RX failed to start: {AudioLibraryMissingError.MESSAGE}"
+            ) from AudioLibraryMissingError()
         try:
             await self._begin_rx()
         except Exception as exc:
+            if audio_start_failure_reason(exc) == "audio_library_missing":
+                self._rx_library_missing = True
+                logger.warning("audio-bus: %s", AudioLibraryMissingError.MESSAGE)
+                raise RuntimeError(f"radio RX failed to start: {exc}") from exc
             logger.exception("audio-bus: failed to start RX")
             raise RuntimeError(f"radio RX failed to start: {exc}") from exc
         self._rx_active = True
         logger.info("audio-bus: RX started")
+
+    async def reset_rx_start_failure(self) -> None:
+        """Allow an explicit RX retry after a missing native audio library."""
+        async with self._lock:
+            self._rx_library_missing = False
 
     async def restart_rx(self) -> None:
         """Re-establish RX on the radio using the bus's own callback.

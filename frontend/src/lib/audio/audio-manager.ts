@@ -709,6 +709,11 @@ class AudioManager {
               'rxAudioDeviceInUse',
             );
           }
+        } else if (msg.reason === 'audio_library_missing') {
+          const reason = 'Audio library missing on the station computer. On Debian or Raspberry Pi OS, run sudo apt install libportaudio2, then restart RigPlane.';
+          this._operatorNotifier?.(
+            'error', reason, 'rxAudioStartFailed', { reason },
+          );
         } else if (msg.reason === SERVER_RX_ACCESS_DENIED) {
           this._operatorNotifier?.(
             'error',
