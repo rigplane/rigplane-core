@@ -1,3 +1,4 @@
+# mypy: disable-error-code=untyped-decorator
 """Tests for the external Hamlib ``rigctld`` client backend."""
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
     ManagedTxEffect,
 )
+from rigplane.testing.timing import VirtualClock
 
 
 def test_supports_command_gates_vfo_operations_on_observed_provider_support() -> None:
@@ -265,9 +267,10 @@ async def _exchange_progress(task: asyncio.Task, entered: asyncio.Event) -> None
         await asyncio.gather(waiter, return_exceptions=True)
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("active_kind", ["query", "command"])
 async def test_urgent_exchange_preserves_active_frame_and_each_fifo(
-    active_kind: str, monkeypatch: pytest.MonkeyPatch
+    active_kind: str, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     stream = _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, stream)
@@ -340,10 +343,14 @@ async def test_urgent_exchange_preserves_active_frame_and_each_fifo(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("after_grant", [False, True], ids=["queued", "granted"])
 @pytest.mark.parametrize("urgent", [False, True], ids=["normal", "urgent"])
 async def test_cancelled_admission_releases_only_its_reservation(
-    after_grant: bool, urgent: bool, monkeypatch: pytest.MonkeyPatch
+    after_grant: bool,
+    urgent: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     stream = _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, stream)
@@ -380,9 +387,10 @@ async def test_cancelled_admission_releases_only_its_reservation(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("failure", ["false", "raises"])
 async def test_write_currency_is_checked_after_stale_drain(
-    failure: str, monkeypatch: pytest.MonkeyPatch
+    failure: str, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     stream = _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, stream)
@@ -417,8 +425,9 @@ async def test_write_currency_is_checked_after_stale_drain(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.timeout(30)
 async def test_managed_actuator_forwards_live_currency_to_final_write(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     stream = _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, stream)
@@ -436,12 +445,12 @@ async def test_managed_actuator_forwards_live_currency_to_final_write(
     stream.responses.put_nowait(b"RPRT 0\n")
     try:
         assert callable(radio.actuate)
-        lane = ManagedTxEffectLane(radio)
+        lane = ManagedTxEffectLane(radio, clock=virtual_clock)
         tasks.append(
             asyncio.create_task(
                 lane.settle(
                     ManagedTxEffect(ActuationOperation.PTT_ON, EffectToken(7, 3, "on")),
-                    deadline_monotonic=asyncio.get_running_loop().time() + 3,
+                    deadline_monotonic=virtual_clock.now + 3,
                     is_current=lambda: current[0],
                 )
             )
@@ -459,8 +468,9 @@ async def test_managed_actuator_forwards_live_currency_to_final_write(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.timeout(30)
 async def test_tokened_queue_cannot_retarget_or_drain_replacement(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     old, replacement = _ExchangeStream(), _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, old, replacement)
@@ -493,8 +503,9 @@ async def test_tokened_queue_cannot_retarget_or_drain_replacement(
         await _finish_exchanges(transport, (old, replacement), tasks)
 
 
+@pytest.mark.timeout(30)
 async def test_tokened_write_cannot_cross_replacement_during_drain(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     old, replacement = _ExchangeStream(), _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, old)
@@ -637,8 +648,9 @@ async def test_force_receive_malformed_readback_is_uncertain() -> None:
     assert server.commands_seen == ["T 0", "t"]
 
 
+@pytest.mark.timeout(30)
 async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     entered, release, late_settled = (asyncio.Event() for _ in range(3))
     write_response = fake_rigctld._write_response
@@ -664,10 +676,11 @@ async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
         try:
             assert callable(radio.actuate)
             managed = ManagedTxAuthority(
-                ManagedTxEffectLane(radio),
+                ManagedTxEffectLane(radio, clock=virtual_clock),
                 ManagedTxTotConfigStore(tmp_path / "tot.json"),
                 TxAbortFence(),
                 provider_generation=7,
+                clock=virtual_clock,
             )
             await managed._stop_scheduler(managed._scheduler_task)
             tasks.append(asyncio.create_task(managed.transmit_on()))
@@ -719,8 +732,9 @@ async def test_rigctld_unsupported_abort_does_not_emit_a_command(
         await transport.close()
 
 
+@pytest.mark.timeout(30)
 async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
-    tmp_path: Path,
+    tmp_path: Path, virtual_clock: VirtualClock
 ) -> None:
     async with FakeRigctldServer() as server:
         transport = RigctldTransport(host=server.host, port=server.port)
@@ -733,10 +747,11 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
             fence = TxAbortFence()
             fence.register(fence.issue(), finish_cleanup.wait)
             managed = ManagedTxAuthority(
-                ManagedTxEffectLane(radio),
+                ManagedTxEffectLane(radio, clock=virtual_clock),
                 ManagedTxTotConfigStore(tmp_path / "tot.json"),
                 fence,
                 provider_generation=7,
+                clock=virtual_clock,
             )
             await managed._stop_scheduler(managed._scheduler_task)
             await asyncio.wait_for(managed.transmit_on(), 1)
@@ -761,6 +776,7 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
             await transport.close()
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("operation", "phase"),
     [
@@ -773,7 +789,10 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
     ],
 )
 async def test_cancelled_exchange_quarantines_before_close_barrier(
-    operation: str, phase: str, monkeypatch: pytest.MonkeyPatch
+    operation: str,
+    phase: str,
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     stream = _ExchangeStream(phase, hold_close=True)
     replacement = _ExchangeStream()
@@ -825,8 +844,9 @@ async def test_cancelled_exchange_quarantines_before_close_barrier(
         await _finish_exchanges(transport, (stream, replacement), tasks)
 
 
+@pytest.mark.timeout(30)
 async def test_cancelled_lock_waiter_keeps_active_exchange(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     stream = _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, stream)
@@ -853,9 +873,10 @@ async def test_cancelled_lock_waiter_keeps_active_exchange(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("operation", ["close", "connect"])
 async def test_cancelled_lifecycle_preserves_real_stream_close_future(
-    operation: str, monkeypatch: pytest.MonkeyPatch
+    operation: str, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     class DelayedCloseTransport(asyncio.Transport):
         def __init__(self) -> None:
@@ -946,9 +967,10 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
         )
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("interruption", ["cancel", "eof", "oserror", "timeout"])
 async def test_old_exchange_interruption_does_not_retire_replacement(
-    interruption: str, monkeypatch: pytest.MonkeyPatch
+    interruption: str, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     old, new = _ExchangeStream(), _ExchangeStream()
     transport = await _connect_exchange(monkeypatch, old, new)
@@ -983,8 +1005,9 @@ async def test_old_exchange_interruption_does_not_retire_replacement(
         await _finish_exchanges(transport, (old, new), tasks)
 
 
+@pytest.mark.timeout(30)
 async def test_delayed_cancelled_rprt_cannot_complete_next_command(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
 ) -> None:
     entered, release, next_written = asyncio.Event(), asyncio.Event(), asyncio.Event()
     write_response = fake_rigctld._write_response
