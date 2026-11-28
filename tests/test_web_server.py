@@ -22,6 +22,7 @@ import json
 import logging
 import socket
 import struct
+import time
 from pathlib import Path
 from collections.abc import Callable
 from dataclasses import replace
@@ -323,29 +324,25 @@ async def _elapse_until(
 async def _skip_handshake_virtual(
     clock: VirtualClock, reader: asyncio.StreamReader
 ) -> None:
-    """Run :func:`_ws_skip_handshake` to completion on a virtual clock.
+    """Skip the connect-time hello/state_update while on a virtual loop.
 
-    The skip proves absence (no more handshake frames) with a short
-    per-frame timeout, which on a virtual loop only fires while the clock
-    advances — so drive it the same way timer-parked production code is
-    driven instead of awaiting it directly.
+    The handshake frames arrive over real TCP, and ``VirtualClock.elapse()``
+    settles the loop's own callbacks, not bytes still in the kernel
+    (``src/rigplane/testing/timing.py``). Driving the skip with virtual time
+    could therefore exhaust its absence-proving timeout before a delayed
+    frame is delivered and return early — the next command read would then
+    consume a leftover handshake frame. Run the original skip on the real
+    clock instead (temporarily uninstalling this loop's clock; the
+    ``finally`` reinstalls it so a failing handshake cannot leak the real
+    clock into the timed phase). Everything after the handshake stays
+    virtual; the name marks the call sites that need this scoping.
     """
-    skip = asyncio.create_task(_ws_skip_handshake(reader))
+    loop = asyncio.get_running_loop()
+    clock.uninstall(loop)
     try:
-        await _elapse_until(
-            clock,
-            skip.done,
-            budget=5.0,
-            step=0.1,
-            description="handshake frames to settle",
-        )
+        await _ws_skip_handshake(reader)
     finally:
-        if not skip.done():
-            skip.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await skip
-        else:
-            skip.result()
+        clock.install(loop)
 
 
 # ---------------------------------------------------------------------------
@@ -2701,13 +2698,11 @@ class TestHalfOpenWsReaper:
         finally:
             await _close_ws(writer)
 
-    @pytest.mark.timeout(30)
     async def test_saturated_peer_reaper_not_wedged(
         self,
         server: WebServer,
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
-        virtual_clock: VirtualClock,
     ) -> None:
         """A stale connection whose transport write buffer is saturated
         above the high-water mark, against a peer that has stopped
@@ -2723,16 +2718,13 @@ class TestHalfOpenWsReaper:
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            await _skip_handshake_virtual(virtual_clock, reader)
+            await _ws_skip_handshake(reader)
 
             before = len(server._client_tasks)  # noqa: SLF001
             assert before >= 1
 
             ws = self._server_ws(server, "127.0.0.1", "/api/v1/ws")
-            # Stale on the shared virtual clock; the liveness verdict and
-            # the reaper passes below all read it, deterministically.
-            ws._clock = virtual_clock  # noqa: SLF001
-            ws._last_pong = virtual_clock() - 1000.0  # noqa: SLF001
+            ws._last_pong = time.monotonic() - 1000.0  # noqa: SLF001
             ws._pong_timeout = 0.01  # noqa: SLF001
             assert ws.is_alive() is False
 
@@ -2793,10 +2785,8 @@ class TestHalfOpenWsReaper:
                         saturated = True
                         break
                 # Yield so the loop's _write_ready() flushes whatever the
-                # kernel will take before the next measurement. A bare
-                # yield parks on no timer, so it works on a virtual loop
-                # where a fixed sleep would never fire.
-                await asyncio.sleep(0)
+                # kernel will take before the next measurement.
+                await asyncio.sleep(0.05)
             # `reader` is intentionally never read from below -- the peer
             # stops consuming, so both the OS socket buffers and the
             # transport's own queue fill and stay full.
@@ -2817,17 +2807,16 @@ class TestHalfOpenWsReaper:
                     # Bounded budget -- must fail FAST (not hang for
                     # minutes/TCP-RTO) if the reaper's close() is not
                     # bounded with an abort() fallback.
-                    await _elapse_until(
-                        virtual_clock,
-                        lambda: len(server._client_tasks) < before,  # noqa: SLF001
-                        budget=5.0,
-                        step=0.05,
-                        description="zombie reaper to reap the saturated peer",
+                    await asyncio.wait_for(
+                        await_until(
+                            lambda: len(server._client_tasks) < before,  # noqa: SLF001
+                        ),
+                        timeout=5.0,
                     )
                 # The reaper task must still be alive and looping -- proof
                 # a second pass runs, i.e. the reaper itself was not
                 # wedged by the saturated close().
-                await virtual_clock.elapse(0.2)
+                await asyncio.sleep(0.2)
                 assert not reaper.done(), (
                     "zombie-reaper task died or is wedged after reaping "
                     "the saturated-peer connection"
@@ -2959,11 +2948,31 @@ class TestConfigurableKeepalive:
             host, port = _addr(srv)
             reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
             try:
+                # The hello arrives over real TCP, and elapse() settles the
+                # loop's own callbacks, not bytes still in the kernel — so
+                # wait for the first frame with a real deadline before
+                # advancing any virtual timer. Otherwise a delayed hello
+                # could miss the virtual quiet window and leave `frames`
+                # empty. (The quiet window itself stays virtual: with
+                # keepalive_interval=9999 no ping can be due in 5 virtual
+                # seconds, so the window proves absence deterministically.)
+                first = asyncio.create_task(_ws_recv_frame(reader))
+                try:
+                    await await_until(
+                        first.done,
+                        timeout=10.0,
+                        description="hello frame delivery",
+                    )
+                    frames: list[tuple[int, bytes]] = [first.result()]
+                finally:
+                    if not first.done():
+                        first.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await first
+
                 # Collect frames until a quiet window proves no pings follow
                 # the hello. The quiet-window timeout only fires while the
                 # virtual clock advances, so collect in a task and drive it.
-                frames: list[tuple[int, bytes]] = []
-
                 async def _collect() -> None:
                     try:
                         while True:
