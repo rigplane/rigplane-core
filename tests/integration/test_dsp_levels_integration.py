@@ -24,7 +24,6 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -39,6 +38,7 @@ pytestmark = pytest.mark.mock_integration
 
 from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
+from rigplane.testing.timing import await_until  # noqa: E402
 from rigplane.types import FilterShape, SsbTxBandwidth  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
@@ -338,10 +338,23 @@ async def dsp_radio(dsp_mock: DspLevelsMockRadio) -> AsyncGenerator[IcomRadio, N
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Helpers
 # ---------------------------------------------------------------------------
 
-_SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
+# Bound for a fire-and-forget SET (or an injected unsolicited frame) to travel
+# the real loopback socket and be processed. A bound for a stuck run, not the
+# expected wait: expiry fails with the description naming what never arrived.
+_DELIVERY_TIMEOUT_S = 5.0
+
+
+def _observed_control(dsp_radio: IcomRadio, receiver_id: str, name: str) -> object:
+    """State-store value of a receiver operator control, None if never observed."""
+    try:
+        return dsp_radio.state_store.snapshot().field(
+            f"receiver.{receiver_id}.operator_controls.{name}"
+        ).value
+    except KeyError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +375,11 @@ class TestApfTypeLevel:
     ) -> None:
         """Set APF level 150 on MAIN, verify GET returns 150."""
         await dsp_radio.set_apf_type_level(150, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._apf_level[RECEIVER_MAIN] == 150,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving APF level 150 on MAIN",
+        )
         got = await dsp_radio.get_apf_type_level(receiver=RECEIVER_MAIN)
         assert got == 150
         assert dsp_mock._apf_level[RECEIVER_MAIN] == 150
@@ -373,7 +390,12 @@ class TestApfTypeLevel:
         """MAIN and SUB APF levels are independent."""
         await dsp_radio.set_apf_type_level(100, receiver=RECEIVER_MAIN)
         await dsp_radio.set_apf_type_level(200, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._apf_level[RECEIVER_MAIN] == 100
+            and dsp_mock._apf_level[RECEIVER_SUB] == 200,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving APF levels 100/200 on MAIN/SUB",
+        )
 
         main = await dsp_radio.get_apf_type_level(receiver=RECEIVER_MAIN)
         sub = await dsp_radio.get_apf_type_level(receiver=RECEIVER_SUB)
@@ -385,7 +407,11 @@ class TestApfTypeLevel:
     ) -> None:
         """APF level 0 (minimum) round-trips correctly."""
         await dsp_radio.set_apf_type_level(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._apf_level[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving APF level 0 on MAIN",
+        )
         assert await dsp_radio.get_apf_type_level(receiver=RECEIVER_MAIN) == 0
 
     async def test_apf_level_boundary_max(
@@ -393,7 +419,11 @@ class TestApfTypeLevel:
     ) -> None:
         """APF level 255 (maximum) round-trips correctly."""
         await dsp_radio.set_apf_type_level(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._apf_level[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving APF level 255 on MAIN",
+        )
         assert await dsp_radio.get_apf_type_level(receiver=RECEIVER_MAIN) == 255
 
     async def test_apf_level_unsolicited_frame(
@@ -410,7 +440,11 @@ class TestApfTypeLevel:
             data=_level_bcd_encode(75),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: _observed_control(dsp_radio, "0", "apf_type_level") == 75,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio observing unsolicited APF level 75 on MAIN",
+        )
         got = await dsp_radio.get_apf_type_level(receiver=RECEIVER_MAIN)
         assert got == 75
 
@@ -433,16 +467,27 @@ class TestNrLevel:
     ) -> None:
         """Set NR level 150 on MAIN, verify GET returns 150."""
         await dsp_radio.set_nr_level(150, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 150,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NR level 150 on MAIN",
+        )
         got = await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN)
         assert got == 150
         assert dsp_mock._nr_level[RECEIVER_MAIN] == 150
 
-    async def test_nr_level_main_sub_independent(self, dsp_radio: IcomRadio) -> None:
+    async def test_nr_level_main_sub_independent(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """MAIN and SUB NR levels are independent."""
         await dsp_radio.set_nr_level(100, receiver=RECEIVER_MAIN)
         await dsp_radio.set_nr_level(200, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 100
+            and dsp_mock._nr_level[RECEIVER_SUB] == 200,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NR levels 100/200 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_SUB) == 200
@@ -450,13 +495,21 @@ class TestNrLevel:
     async def test_nr_level_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """NR level 0 round-trips correctly."""
         await dsp_radio.set_nr_level(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NR level 0 on MAIN",
+        )
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 0
 
     async def test_nr_level_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """NR level 255 round-trips correctly."""
         await dsp_radio.set_nr_level(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NR level 255 on MAIN",
+        )
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 255
 
     async def test_nr_level_unsolicited_frame(
@@ -473,7 +526,11 @@ class TestNrLevel:
             data=_level_bcd_encode(180),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: _observed_control(dsp_radio, "0", "nr_level") == 180,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio observing unsolicited NR level 180 on MAIN",
+        )
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 180
 
 
@@ -494,16 +551,27 @@ class TestPbtInner:
     ) -> None:
         """Set PBT Inner 50 on MAIN, verify GET returns 50."""
         await dsp_radio.set_pbt_inner(50, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_inner[RECEIVER_MAIN] == 50,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Inner 50 on MAIN",
+        )
         got = await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN)
         assert got == 50
         assert dsp_mock._pbt_inner[RECEIVER_MAIN] == 50
 
-    async def test_pbt_inner_main_sub_independent(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_inner_main_sub_independent(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """MAIN and SUB PBT Inner are independent."""
         await dsp_radio.set_pbt_inner(100, receiver=RECEIVER_MAIN)
         await dsp_radio.set_pbt_inner(200, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_inner[RECEIVER_MAIN] == 100
+            and dsp_mock._pbt_inner[RECEIVER_SUB] == 200,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Inner 100/200 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_SUB) == 200
@@ -511,13 +579,21 @@ class TestPbtInner:
     async def test_pbt_inner_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """PBT Inner 0 round-trips correctly."""
         await dsp_radio.set_pbt_inner(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_inner[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Inner 0 on MAIN",
+        )
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 0
 
     async def test_pbt_inner_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """PBT Inner 255 round-trips correctly."""
         await dsp_radio.set_pbt_inner(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_inner[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Inner 255 on MAIN",
+        )
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 255
 
     async def test_pbt_inner_unsolicited_frame(
@@ -534,7 +610,11 @@ class TestPbtInner:
             data=_level_bcd_encode(60),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: dsp_radio.radio_state.receiver("MAIN").pbt_inner == 60,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio mirroring unsolicited PBT Inner 60 on MAIN",
+        )
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 60
 
 
@@ -555,16 +635,27 @@ class TestPbtOuter:
     ) -> None:
         """Set PBT Outer 75 on MAIN, verify GET returns 75."""
         await dsp_radio.set_pbt_outer(75, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_outer[RECEIVER_MAIN] == 75,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Outer 75 on MAIN",
+        )
         got = await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN)
         assert got == 75
         assert dsp_mock._pbt_outer[RECEIVER_MAIN] == 75
 
-    async def test_pbt_outer_main_sub_independent(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_outer_main_sub_independent(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """MAIN and SUB PBT Outer are independent."""
         await dsp_radio.set_pbt_outer(100, receiver=RECEIVER_MAIN)
         await dsp_radio.set_pbt_outer(200, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_outer[RECEIVER_MAIN] == 100
+            and dsp_mock._pbt_outer[RECEIVER_SUB] == 200,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Outer 100/200 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_SUB) == 200
@@ -572,13 +663,21 @@ class TestPbtOuter:
     async def test_pbt_outer_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """PBT Outer 0 round-trips correctly."""
         await dsp_radio.set_pbt_outer(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_outer[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Outer 0 on MAIN",
+        )
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 0
 
     async def test_pbt_outer_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """PBT Outer 255 round-trips correctly."""
         await dsp_radio.set_pbt_outer(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._pbt_outer[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving PBT Outer 255 on MAIN",
+        )
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 255
 
     async def test_pbt_outer_unsolicited_frame(
@@ -595,7 +694,11 @@ class TestPbtOuter:
             data=_level_bcd_encode(190),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: dsp_radio.radio_state.receiver("MAIN").pbt_outer == 190,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio mirroring unsolicited PBT Outer 190 on MAIN",
+        )
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 190
 
 
@@ -616,16 +719,27 @@ class TestNbLevel:
     ) -> None:
         """Set NB level 120 on MAIN, verify GET returns 120."""
         await dsp_radio.set_nb_level(120, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 120,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NB level 120 on MAIN",
+        )
         got = await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN)
         assert got == 120
         assert dsp_mock._nb_level[RECEIVER_MAIN] == 120
 
-    async def test_nb_level_main_sub_independent(self, dsp_radio: IcomRadio) -> None:
+    async def test_nb_level_main_sub_independent(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """MAIN and SUB NB levels are independent."""
         await dsp_radio.set_nb_level(80, receiver=RECEIVER_MAIN)
         await dsp_radio.set_nb_level(160, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 80
+            and dsp_mock._nb_level[RECEIVER_SUB] == 160,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NB levels 80/160 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 80
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_SUB) == 160
@@ -633,13 +747,21 @@ class TestNbLevel:
     async def test_nb_level_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """NB level 0 round-trips correctly."""
         await dsp_radio.set_nb_level(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NB level 0 on MAIN",
+        )
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 0
 
     async def test_nb_level_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """NB level 255 round-trips correctly."""
         await dsp_radio.set_nb_level(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NB level 255 on MAIN",
+        )
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 255
 
     async def test_nb_level_unsolicited_frame(
@@ -656,7 +778,11 @@ class TestNbLevel:
             data=_level_bcd_encode(180),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: _observed_control(dsp_radio, "0", "nb_level") == 180,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio observing unsolicited NB level 180 on MAIN",
+        )
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 180
 
 
@@ -677,18 +803,27 @@ class TestDigiSelShift:
     ) -> None:
         """Set DIGI-SEL shift 200 on MAIN, verify GET returns 200."""
         await dsp_radio.set_digisel_shift(200, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._digisel_shift[RECEIVER_MAIN] == 200,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving DIGI-SEL shift 200 on MAIN",
+        )
         got = await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN)
         assert got == 200
         assert dsp_mock._digisel_shift[RECEIVER_MAIN] == 200
 
     async def test_digisel_shift_main_sub_independent(
-        self, dsp_radio: IcomRadio
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
     ) -> None:
         """MAIN and SUB DIGI-SEL shifts are independent."""
         await dsp_radio.set_digisel_shift(50, receiver=RECEIVER_MAIN)
         await dsp_radio.set_digisel_shift(210, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._digisel_shift[RECEIVER_MAIN] == 50
+            and dsp_mock._digisel_shift[RECEIVER_SUB] == 210,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving DIGI-SEL shifts 50/210 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 50
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_SUB) == 210
@@ -696,13 +831,21 @@ class TestDigiSelShift:
     async def test_digisel_shift_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """DIGI-SEL shift 0 round-trips correctly."""
         await dsp_radio.set_digisel_shift(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._digisel_shift[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving DIGI-SEL shift 0 on MAIN",
+        )
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 0
 
     async def test_digisel_shift_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """DIGI-SEL shift 255 round-trips correctly."""
         await dsp_radio.set_digisel_shift(255, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._digisel_shift[RECEIVER_MAIN] == 255,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving DIGI-SEL shift 255 on MAIN",
+        )
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 255
 
     async def test_digisel_shift_unsolicited_frame(
@@ -719,7 +862,11 @@ class TestDigiSelShift:
             data=_level_bcd_encode(90),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: dsp_radio.radio_state.receiver("MAIN").digisel_shift == 90,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio mirroring unsolicited DIGI-SEL shift 90 on MAIN",
+        )
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 90
 
 
@@ -741,18 +888,27 @@ class TestAgcTimeConstant:
     ) -> None:
         """Set AGC time constant 7, verify GET returns 7."""
         await dsp_radio.set_agc_time_constant(7, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._agc_time_constant[RECEIVER_MAIN] == 7,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AGC time constant 7 on MAIN",
+        )
         got = await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN)
         assert got == 7
         assert dsp_mock._agc_time_constant[RECEIVER_MAIN] == 7
 
     async def test_agc_time_constant_main_sub_independent(
-        self, dsp_radio: IcomRadio
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
     ) -> None:
         """MAIN and SUB AGC time constants are independent."""
         await dsp_radio.set_agc_time_constant(5, receiver=RECEIVER_MAIN)
         await dsp_radio.set_agc_time_constant(10, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._agc_time_constant[RECEIVER_MAIN] == 5
+            and dsp_mock._agc_time_constant[RECEIVER_SUB] == 10,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AGC time constants 5/10 on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 5
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_SUB) == 10
@@ -760,13 +916,21 @@ class TestAgcTimeConstant:
     async def test_agc_time_constant_boundary_min(self, dsp_radio: IcomRadio) -> None:
         """AGC time constant 0 round-trips correctly."""
         await dsp_radio.set_agc_time_constant(0, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._agc_time_constant[RECEIVER_MAIN] == 0,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AGC time constant 0 on MAIN",
+        )
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 0
 
     async def test_agc_time_constant_boundary_max(self, dsp_radio: IcomRadio) -> None:
         """AGC time constant 13 round-trips correctly."""
         await dsp_radio.set_agc_time_constant(13, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._agc_time_constant[RECEIVER_MAIN] == 13,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AGC time constant 13 on MAIN",
+        )
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 13
 
     async def test_agc_time_constant_unsolicited_frame(
@@ -783,7 +947,11 @@ class TestAgcTimeConstant:
             data=bytes([_bcd_byte(9)]),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: _observed_control(dsp_radio, "0", "agc_time_constant") == 9,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio observing unsolicited AGC time constant 9 on MAIN",
+        )
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 9
 
 
@@ -805,29 +973,48 @@ class TestFilterShape:
     ) -> None:
         """Set SOFT, verify GET returns SOFT."""
         await dsp_radio.set_filter_shape(FilterShape.SOFT, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._filter_shape[RECEIVER_MAIN] == int(FilterShape.SOFT),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving filter shape SOFT on MAIN",
+        )
         got = await dsp_radio.get_filter_shape(receiver=RECEIVER_MAIN)
         assert got == FilterShape.SOFT
         assert dsp_mock._filter_shape[RECEIVER_MAIN] == int(FilterShape.SOFT)
 
-    async def test_filter_shape_roundtrip_sharp(self, dsp_radio: IcomRadio) -> None:
+    async def test_filter_shape_roundtrip_sharp(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """SOFT → SHARP round-trip works."""
         await dsp_radio.set_filter_shape(FilterShape.SOFT, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._filter_shape[RECEIVER_MAIN] == int(FilterShape.SOFT),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving filter shape SOFT on MAIN",
+        )
         await dsp_radio.set_filter_shape(FilterShape.SHARP, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._filter_shape[RECEIVER_MAIN] == int(FilterShape.SHARP),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving filter shape SHARP on MAIN",
+        )
         assert (
             await dsp_radio.get_filter_shape(receiver=RECEIVER_MAIN)
             == FilterShape.SHARP
         )
 
     async def test_filter_shape_main_sub_independent(
-        self, dsp_radio: IcomRadio
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
     ) -> None:
         """MAIN and SUB filter shapes are independent."""
         await dsp_radio.set_filter_shape(FilterShape.SOFT, receiver=RECEIVER_MAIN)
         await dsp_radio.set_filter_shape(FilterShape.SHARP, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._filter_shape[RECEIVER_MAIN] == int(FilterShape.SOFT)
+            and dsp_mock._filter_shape[RECEIVER_SUB] == int(FilterShape.SHARP),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving filter shapes SOFT/SHARP on MAIN/SUB",
+        )
 
         assert (
             await dsp_radio.get_filter_shape(receiver=RECEIVER_MAIN) == FilterShape.SOFT
@@ -852,7 +1039,11 @@ class TestFilterShape:
             data=bytes([_bcd_byte(int(FilterShape.SOFT))]),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "filter_shape_changed" for name, _ in events),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio firing filter_shape_changed for SOFT",
+        )
 
         assert any(name == "filter_shape_changed" for name, _ in events), (
             f"filter_shape_changed not fired; got {[n for n, _ in events]}"
@@ -879,7 +1070,11 @@ class TestSsbTxBandwidth:
     ) -> None:
         """Set MID, verify GET returns MID."""
         await dsp_radio.set_ssb_tx_bandwidth(SsbTxBandwidth.MID)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._ssb_tx_bandwidth == int(SsbTxBandwidth.MID),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving SSB TX bandwidth MID",
+        )
         got = await dsp_radio.get_ssb_tx_bandwidth()
         assert got == SsbTxBandwidth.MID
         assert dsp_mock._ssb_tx_bandwidth == int(SsbTxBandwidth.MID)
@@ -890,7 +1085,11 @@ class TestSsbTxBandwidth:
         """Cycle through all SSB TX bandwidth values: WIDE → MID → NAR → WIDE."""
         for target in (SsbTxBandwidth.MID, SsbTxBandwidth.NAR, SsbTxBandwidth.WIDE):
             await dsp_radio.set_ssb_tx_bandwidth(target)
-            await asyncio.sleep(_SETTLE)
+            await await_until(
+                lambda: dsp_mock._ssb_tx_bandwidth == int(target),
+                timeout=_DELIVERY_TIMEOUT_S,
+                description=f"mock receiving SSB TX bandwidth {target.name}",
+            )
             got = await dsp_radio.get_ssb_tx_bandwidth()
             assert got == target, f"SSB TX BW: expected {target}, got {got}"
             assert dsp_mock._ssb_tx_bandwidth == int(target)
@@ -910,7 +1109,11 @@ class TestSsbTxBandwidth:
             data=bytes([_bcd_byte(int(SsbTxBandwidth.NAR))]),
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: any(name == "ssb_tx_bandwidth_changed" for name, _ in events),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio firing ssb_tx_bandwidth_changed for NAR",
+        )
 
         assert any(name == "ssb_tx_bandwidth_changed" for name, _ in events), (
             f"ssb_tx_bandwidth_changed not fired; got {[n for n, _ in events]}"
@@ -936,20 +1139,35 @@ class TestAfMute:
     ) -> None:
         """AF mute: off → on → off round-trip."""
         await dsp_radio.set_af_mute(True, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._af_mute[RECEIVER_MAIN] is True,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AF mute on for MAIN",
+        )
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_MAIN) is True
         assert dsp_mock._af_mute[RECEIVER_MAIN] is True
 
         await dsp_radio.set_af_mute(False, receiver=RECEIVER_MAIN)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._af_mute[RECEIVER_MAIN] is False,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AF mute off for MAIN",
+        )
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_MAIN) is False
         assert dsp_mock._af_mute[RECEIVER_MAIN] is False
 
-    async def test_af_mute_main_sub_independent(self, dsp_radio: IcomRadio) -> None:
+    async def test_af_mute_main_sub_independent(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """MAIN and SUB AF mute states are independent."""
         await dsp_radio.set_af_mute(True, receiver=RECEIVER_MAIN)
         await dsp_radio.set_af_mute(False, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._af_mute[RECEIVER_MAIN] is True
+            and dsp_mock._af_mute[RECEIVER_SUB] is False,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AF mute on/off on MAIN/SUB",
+        )
 
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_MAIN) is True
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_SUB) is False
@@ -959,7 +1177,11 @@ class TestAfMute:
     ) -> None:
         """AF mute True encodes and decodes correctly."""
         await dsp_radio.set_af_mute(True, receiver=RECEIVER_SUB)
-        await asyncio.sleep(_SETTLE)
+        await await_until(
+            lambda: dsp_mock._af_mute[RECEIVER_SUB] is True,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AF mute on for SUB",
+        )
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_SUB) is True
 
     async def test_af_mute_unsolicited_frame(
@@ -976,5 +1198,9 @@ class TestAfMute:
             data=b"\x01",
         )
         dsp_mock.inject_unsolicited_civ(frame)
-        await asyncio.sleep(0.15)
+        await await_until(
+            lambda: dsp_radio.radio_state.receiver("MAIN").af_mute is True,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="radio mirroring unsolicited AF mute on for MAIN",
+        )
         assert await dsp_radio.get_af_mute(receiver=RECEIVER_MAIN) is True
