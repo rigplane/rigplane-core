@@ -71,17 +71,6 @@ from test_radio_poller_coverage import (
 )
 
 
-async def _await_condition(
-    predicate: Callable[[], bool], *, timeout: float = 5.0, interval: float = 0.01
-) -> None:
-    """Wait until ``predicate()`` is true, bounded by ``timeout`` seconds."""
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() >= deadline:
-            raise AssertionError(f"condition not met within {timeout} s")
-        await asyncio.sleep(interval)
-
-
 class _FakeSocket:
     def __init__(self, host: str = "127.0.0.1", port: int = 4242) -> None:
         self._host = host
@@ -514,7 +503,11 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         radio.enable_scope.reset_mock()
         await radio._fetch_initial_state()
         radio._reconnect_callback()
-        await _await_condition(lambda: radio.enable_scope.await_count == 1)
+        await await_until(
+            lambda: radio.enable_scope.await_count == 1,
+            timeout=10.0,
+            description="scope re-enable queued by reconnect",
+        )
 
         radio._fetch_initial_state.assert_awaited_once()
         radio.enable_scope.assert_awaited_once()
@@ -630,9 +623,10 @@ async def test_observation_pollable_web_path_builds_no_radio_poller() -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_fallback_observation_store_advances_before_attach_and_detach() -> (
-    None
-):
+@pytest.mark.timeout(30)
+async def test_web_fallback_observation_store_advances_before_attach_and_detach(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _FallbackObservationPollableRadio()
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
     with patch(
@@ -647,13 +641,15 @@ async def test_web_fallback_observation_store_advances_before_attach_and_detach(
         assert poller.capture() == 1  # type: ignore[operator]
         server._broadcast_state_update = MagicMock()
         path = FieldPath.active("main", "freq_mode", "freq_hz")
-        stale = _store_observation(path, 7_074_000, at=time.monotonic())
+        stale = _store_observation(path, 7_074_000, at=virtual_clock())
         poller._callback((stale,))
         assert path not in {
             item.path for item in server.command_state_store.snapshot().fields
         }
         server._broadcast_state_update.assert_not_called()
-        current = _store_observation(path, 7_074_000, at=time.monotonic(), generation=1)
+        current = _store_observation(
+            path, 7_074_000, at=virtual_clock(), generation=1
+        )
         poller._callback((current,))
         poller._callback((current,))
         assert server._broadcast_state_update.call_count == 2
@@ -687,7 +683,7 @@ def test_state_store_s_meter_change_broadcasts_without_legacy_revision_event() -
     queue = BoundedQueue[dict[str, object]](maxsize=4)
     srv.register_control_event_queue(queue)
     path = FieldPath.receiver("0", "meters", "s_meter")
-    srv.command_state_store.apply(_store_observation(path, 73, at=time.monotonic()))
+    srv.command_state_store.apply(_store_observation(path, 73, at=1.0))
 
     srv._on_radio_state_change("state_store_changed", {"paths": [str(path)]})
 
@@ -773,7 +769,11 @@ async def test_control_delivers_simulator_liveness_on_cached_state(
             assert store_after.fields == store_before.fields
         finally:
             await _close_ws(writer)
-            await _await_condition(lambda: not srv._control_event_queues)
+            await await_until(
+                lambda: not srv._control_event_queues,
+                timeout=10.0,
+                description="control event queue unregistration",
+            )
 
 
 def test_control_queue_lifecycle_broadcasts_ws_client_count_changes() -> None:
@@ -951,7 +951,10 @@ def test_shutdown_signal_handler_falls_back_when_loop_does_not_support_signals(
     assert triggered == 1
 
 
-async def test_stop_hands_its_ptt_drain_to_the_tx_release_hook(monkeypatch) -> None:
+@pytest.mark.timeout(30)
+async def test_stop_hands_its_ptt_drain_to_the_tx_release_hook(
+    monkeypatch, virtual_clock: VirtualClock
+) -> None:
     """MOR-2875: the shutdown's PTT drain reaches ``serve_forever``'s
     ``on_tx_release`` with its own bound, so the CLI's shutdown bound can let
     it finish."""
@@ -981,11 +984,14 @@ async def test_stop_hands_its_ptt_drain_to_the_tx_release_hook(monkeypatch) -> N
         serve = asyncio.create_task(
             srv.serve_forever(on_tx_release=lambda *args: releases.append(args))
         )
-        while not handlers:
-            await asyncio.sleep(0)
+        await await_until(
+            lambda: len(handlers) > 0,
+            timeout=10.0,
+            description="shutdown signal handler registration",
+        )
         srv._radio_poller = _Poller()
         handlers[0]()  # type: ignore[operator]
-        await asyncio.wait_for(serve, 1.0)
+        await serve
 
     ((drain, name, bound),) = releases
     assert (name, bound) == ("web PTT drain", _SHUTDOWN_TX_DRAIN_TIMEOUT_S)
@@ -1015,8 +1021,10 @@ def test_web_stop_timeout_is_the_sum_of_its_timed_waits() -> None:
     )
 
 
+@pytest.mark.timeout(30)
 async def test_first_signal_leaves_the_shutdown_bound_to_the_caller(
     monkeypatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     """MOR-2875: ``serve_forever`` reports the first signal and arms nothing.
 
@@ -1045,14 +1053,17 @@ async def test_first_signal_leaves_the_shutdown_bound_to_the_caller(
         serve = asyncio.create_task(
             srv.serve_forever(on_shutdown_signal=lambda: signals.append("first"))
         )
-        while not handlers:
-            await asyncio.sleep(0)
+        await await_until(
+            lambda: len(handlers) > 0,
+            timeout=10.0,
+            description="shutdown signal handler registration",
+        )
         before = asyncio.all_tasks()
         handlers[0]()  # type: ignore[operator]
         scheduled_by_the_signal = asyncio.all_tasks() - before
-        await asyncio.wait_for(stopping.wait(), 1.0)
+        await stopping.wait()
         release.set()
-        await asyncio.wait_for(serve, 1.0)
+        await serve
         await WebServer.stop(srv)
 
     assert signals == ["first"]
@@ -1546,7 +1557,10 @@ async def test_set_freq_success_does_not_publish_sub_truth_before_readback() -> 
 
 
 @pytest.mark.asyncio
-async def test_set_freq_command_overlay_reconciles_with_matching_readback() -> None:
+@pytest.mark.timeout(30)
+async def test_set_freq_command_overlay_reconciles_with_matching_readback(
+    virtual_clock: VirtualClock,
+) -> None:
     # MOR-485: a poll readback carrying the same freq must not leak an overlay
     # or change the stored value (reconcile, not regress).
     radio = SimpleNamespace(connected=True, capabilities=set())
@@ -1567,7 +1581,7 @@ async def test_set_freq_command_overlay_reconciles_with_matching_readback() -> N
             path=freq_path,
             value=14_074_000,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id=None,
         )
     )
@@ -1576,7 +1590,10 @@ async def test_set_freq_command_overlay_reconciles_with_matching_readback() -> N
 
 
 @pytest.mark.asyncio
-async def test_set_freq_command_overlay_yields_to_newer_external_readback() -> None:
+@pytest.mark.timeout(30)
+async def test_set_freq_command_overlay_yields_to_newer_external_readback(
+    virtual_clock: VirtualClock,
+) -> None:
     # MOR-484 guard: a later front-panel readback with a DIFFERENT value must
     # win (last-writer-wins); the optimistic overlay must not pin the value.
     radio = SimpleNamespace(connected=True, capabilities=set())
@@ -1597,7 +1614,7 @@ async def test_set_freq_command_overlay_yields_to_newer_external_readback() -> N
             path=freq_path,
             value=14_200_000,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id=None,
         )
     )
@@ -1606,7 +1623,10 @@ async def test_set_freq_command_overlay_yields_to_newer_external_readback() -> N
 
 
 @pytest.mark.asyncio
-async def test_set_freq_optimistic_overlay_suppressed_during_external_cat() -> None:
+@pytest.mark.timeout(30)
+async def test_set_freq_optimistic_overlay_suppressed_during_external_cat(
+    virtual_clock: VirtualClock,
+) -> None:
     # Regression: during an external-CAT session (WSJT-X/rigctld owns the wire),
     # RigPlane's own poller pauses and rigctld get_freq serves the cached store
     # projection — so an optimistic set_freq overlay can never be reconciled by a
@@ -1630,7 +1650,7 @@ async def test_set_freq_optimistic_overlay_suppressed_during_external_cat() -> N
             path=freq_path,
             value=14_074_000,
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id=None,
         )
     )
@@ -1722,7 +1742,10 @@ async def test_set_mode_success_does_not_publish_truth_before_readback() -> None
 
 
 @pytest.mark.asyncio
-async def test_set_mode_overlay_yields_to_newer_external_readback() -> None:
+@pytest.mark.timeout(30)
+async def test_set_mode_overlay_yields_to_newer_external_readback(
+    virtual_clock: VirtualClock,
+) -> None:
     # MOR-334 regression: front-panel tracking preserved. A later readback with
     # a DIFFERENT mode must win (last-writer-wins); the optimistic value must
     # not pin the mode.
@@ -1744,7 +1767,7 @@ async def test_set_mode_overlay_yields_to_newer_external_readback() -> None:
             path=mode_path,
             value="USB",
             source=SourceMetadata(source="poll_response", provider="icom_civ"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id=None,
         )
     )
@@ -1819,7 +1842,10 @@ async def test_set_mod_input_success_does_not_publish_truth_before_readback() ->
 
 
 @pytest.mark.asyncio
-async def test_set_mod_input_overlay_yields_to_newer_external_readback() -> None:
+@pytest.mark.timeout(30)
+async def test_set_mod_input_overlay_yields_to_newer_external_readback(
+    virtual_clock: VirtualClock,
+) -> None:
     # MOR-616 regression: front-panel tracking preserved. A later poll readback
     # with a DIFFERENT source must win (last-writer-wins); the optimistic value
     # must not pin the source.
@@ -1841,7 +1867,7 @@ async def test_set_mod_input_overlay_yields_to_newer_external_readback() -> None
             path=mod_path,
             value=3,
             source=SourceMetadata(source="poll_response", provider="web_poller"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id=None,
         )
     )
@@ -2214,11 +2240,13 @@ async def test_bridge_patch_updates_running_gain_and_get_reports_values(
             AudioPacket(ident=0x80, send_seq=sequence, data=pcm)
         )
         backend.rx_streams[0].inject_frame(pcm)
-        await _await_condition(
+        await await_until(
             lambda: (
                 len(radio.pushed) == sequence
                 and len(backend.tx_streams[0].written_frames) == sequence
-            )
+            ),
+            timeout=10.0,
+            description="bridge gain stage frames through worker threads",
         )
         assert radio.pushed[-1] == (
             tx_sample.to_bytes(2, "little", signed=True) * SAMPLES_PER_FRAME
@@ -2512,6 +2540,7 @@ async def test_serve_static_rejects_name_prefix_sibling_dir(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_handle_websocket_missing_key_unknown_channel_and_control_handler() -> (
     None
 ):
@@ -2536,7 +2565,8 @@ async def test_handle_websocket_missing_key_unknown_channel_and_control_handler(
     ws_ok = MagicMock()
 
     async def keepalive_loop(_interval: float) -> None:
-        await asyncio.sleep(3600)
+        # Park until the handler outcome cancels us: no wall-clock sleep.
+        await asyncio.Event().wait()
 
     ws_ok.keepalive_loop = keepalive_loop
     ws_ok.close = AsyncMock()
@@ -3570,7 +3600,11 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     # it directly. MOR-4382: the initial fetch is the radio layer's, and
     # with ``radio_ready`` False the radio layer skips it — it is never
     # the Web's to run, so nothing here may wait on it.
-    await _await_condition(lambda: radio.enable_scope.await_count == 1)
+    await await_until(
+        lambda: radio.enable_scope.await_count == 1,
+        timeout=10.0,
+        description="scope re-enable queued by reconnect",
+    )
 
     radio.enable_scope.assert_awaited_once()
     assert srv._radio_scope_session.enabled
@@ -3579,7 +3613,10 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
 
 
 @pytest.mark.asyncio
-async def test_passive_reconnect_attempts_no_vfo_select_or_swap() -> None:
+@pytest.mark.timeout(30)
+async def test_passive_reconnect_attempts_no_vfo_select_or_swap(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _make_radio(model="IC-7300")
     radio.radio_ready = False
     radio._fetch_initial_state = AsyncMock()
@@ -3593,7 +3630,7 @@ async def test_passive_reconnect_attempts_no_vfo_select_or_swap() -> None:
             path=FieldPath.active_slot("0"),
             value="B",
             source=SourceMetadata(source="command_response", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             provider_generation=generation,
         )
     )
@@ -3601,7 +3638,11 @@ async def test_passive_reconnect_attempts_no_vfo_select_or_swap() -> None:
     srv._radio_poller = poller  # noqa: SLF001
 
     srv._on_radio_reconnect()  # noqa: SLF001
-    await _await_condition(poller._initial_fetch_done.is_set)  # noqa: SLF001
+    await await_until(
+        poller._initial_fetch_done.is_set,  # noqa: SLF001
+        timeout=10.0,
+        description="passive reconnect initial fetch completion",
+    )
 
     assert poller._initial_fetch_done.is_set()  # noqa: SLF001
     assert ledger.mutation_counts() == {
@@ -3634,7 +3675,11 @@ async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
     srv._radio_poller = poller  # noqa: SLF001
 
     srv._on_radio_reconnect()  # noqa: SLF001
-    await _await_condition(lambda: seed_call_count >= 1)
+    await await_until(
+        lambda: seed_call_count >= 1,
+        timeout=10.0,
+        description="scan-facts reseed on reconnect",
+    )
 
     assert seed_call_count == 1
     field = store.snapshot().field(FieldPath.global_("slow_state", "scanning"))
@@ -3681,20 +3726,26 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
     assert _scope_hidden_verdict(srv) is True
 
 
-@pytest.mark.asyncio
-async def test_scope_health_monitor_unconfirmed_session_does_not_reenable() -> None:
+@pytest.mark.timeout(30)
+async def test_scope_health_monitor_unconfirmed_session_does_not_reenable(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     radio = _scope_radio(ready=True, connected=True)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
     srv._radio_scope_demand = True
     srv._scope_enabled = False
     srv._scope_health_interval = 0.01
-    srv._scope_started_at = time.monotonic() - 1.0
+    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
+    virtual_clock.scope_to(monkeypatch, server_module)
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    await asyncio.sleep(0.03)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    try:
+        await _elapse_scope_windows(virtual_clock, 3, interval=0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     assert not srv.command_queue.has_commands
 
@@ -3852,17 +3903,11 @@ async def _elapse_scope_windows(
     await asyncio.sleep(0)
 
 
-def _observe_scope_ptt(srv: WebServer, value: ObservedPtt, max_age: float) -> None:
-    srv.command_state_store.apply_current(
-        _store_observation(
-            OBSERVED_PTT_PATH, value, at=time.monotonic(), max_age=max_age
-        )
-    )
-
-
-@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_scope_health_monitor_keyed_tx_queues_nothing(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: keyed managed TX pauses scope re-enable writes and retries."""
     radio = _scope_radio(ready=True, connected=True)
@@ -3871,14 +3916,15 @@ async def test_scope_health_monitor_keyed_tx_queues_nothing(
     srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_started_at = time.monotonic() - 1.0
+    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
     srv._managed_tx_keyed = True  # noqa: SLF001
     queued: list[EnableScope] = []
     _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+    virtual_clock.scope_to(monkeypatch, server_module)
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.06)  # several monitor intervals under TX
+        await _elapse_scope_windows(virtual_clock, 6, interval=0.01)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -3887,9 +3933,11 @@ async def test_scope_health_monitor_keyed_tx_queues_nothing(
     assert "giving up" not in caplog.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: fresh observed PTT ON pauses scope writes without keyed intent."""
     radio = _scope_radio(ready=True, connected=True)
@@ -3898,15 +3946,20 @@ async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
     srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_started_at = time.monotonic() - 1.0
-    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=60.0)
+    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
+    srv.command_state_store.apply_current(
+        _store_observation(
+            OBSERVED_PTT_PATH, ObservedPtt.ON, at=virtual_clock(), max_age=60.0
+        )
+    )
     assert srv._managed_tx_keyed is False  # noqa: SLF001
     queued: list[EnableScope] = []
     _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+    virtual_clock.scope_to(monkeypatch, server_module)
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.06)  # several monitor intervals under TX
+        await _elapse_scope_windows(virtual_clock, 6, interval=0.01)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -3915,9 +3968,11 @@ async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
     assert "giving up" not in caplog.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_scope_health_monitor_long_tx_never_gives_up(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """MOR-2859: a TX longer than the retry budget logs no give-up."""
     radio = _scope_radio(ready=True, connected=True)
@@ -3926,14 +3981,16 @@ async def test_scope_health_monitor_long_tx_never_gives_up(
     srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_started_at = time.monotonic() - 1.0
+    srv._scope_started_at = virtual_clock() - 1.0  # noqa: SLF001
     srv._managed_tx_keyed = True  # noqa: SLF001
     queued: list[EnableScope] = []
     _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
+    virtual_clock.scope_to(monkeypatch, server_module)
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.15)  # well past three retries under TX
+        # Well past three retries under TX, on the clock.
+        await _elapse_scope_windows(virtual_clock, 15, interval=0.01)
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -4376,7 +4433,10 @@ async def test_forged_interlock_refusal_details_are_rejected(
 
 
 @pytest.mark.asyncio
-async def test_provider_generation_invalidates_only_active_web_commands() -> None:
+@pytest.mark.timeout(30)
+async def test_provider_generation_invalidates_only_active_web_commands(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     service = srv.command_service
@@ -4430,7 +4490,7 @@ async def test_provider_generation_invalidates_only_active_web_commands() -> Non
                 command_source="websocket",
                 session_id="session-issuer",
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id="same-id",
             provider_generation=0,
         )
@@ -4458,7 +4518,10 @@ def test_provider_generation_subscribers_serialize_reentrant_advances() -> None:
 
 
 @pytest.mark.asyncio
-async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None:
+@pytest.mark.timeout(30)
+async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(None, WebConfig(radio_model="IC-7610"))
     issuer_q, bystander_q = _register_two_sessions(srv)
     await _ack_held(srv)
@@ -4483,7 +4546,7 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
                 command_source="websocket",
                 session_id="session-issuer",
             ),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             correlation_id="cmd-held",
             provider_generation=srv.command_state_store.provider_generation,
         )
@@ -4979,7 +5042,10 @@ async def test_state_response_includes_lifecycle_observations_without_poller() -
 
 
 @pytest.mark.asyncio
-async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> None:
+@pytest.mark.timeout(30)
+async def test_on_radio_state_change_broadcasts_canonical_state_payload(
+    virtual_clock: VirtualClock,
+) -> None:
     """State callbacks broadcast StateStore-backed payloads without poller revision."""
     radio = MagicMock()
     radio.capabilities = set()
@@ -4998,7 +5064,7 @@ async def test_on_radio_state_change_broadcasts_canonical_state_payload() -> Non
         _store_observation(
             FieldPath.active("0", "freq_mode", "freq_hz"),
             14_074_000,
-            at=time.monotonic(),
+            at=virtual_clock(),
         )
     )
 
