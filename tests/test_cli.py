@@ -41,7 +41,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxState,
     ReleasePlan,
 )
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
 
 
 class TestParseFrequency:
@@ -3179,7 +3179,10 @@ class TestStartupBusyHoldOrdering:
         )
 
     @pytest.mark.asyncio
-    async def test_normal_first_connect_is_awaited_before_cmd_web(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_normal_first_connect_is_awaited_before_cmd_web(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """Without a busy hold the first connect still completes first."""
 
         import asyncio
@@ -3194,7 +3197,7 @@ class TestStartupBusyHoldOrdering:
         with p1, p2, p3, p4:
             run_task = asyncio.ensure_future(_run(args))
             await await_until(lambda: radio.enter_calls == 1, timeout=2.0)
-            await asyncio.sleep(0.2)
+            await virtual_clock.elapse(0.2)
             assert _BusyHoldWebServer.instances == []
             radio._grant.set()
             await await_until(
@@ -3206,7 +3209,7 @@ class TestStartupBusyHoldOrdering:
             )
             server = _BusyHoldWebServer.instances[-1]
             server._serve_done.set()
-            result = await asyncio.wait_for(run_task, timeout=10.0)
+            result = await run_task
 
         assert result == 0
         assert radio.events == ["enter-start", "enter-done", "radio-exit"]
@@ -3607,7 +3610,10 @@ class TestDisconnectDuringStartupBusyHold:
         )
 
     @pytest.mark.asyncio
-    async def test_disconnect_during_busy_hold_keeps_serving(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_disconnect_during_busy_hold_keeps_serving(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """The cancelled background enter ends serving only at shutdown."""
 
         import asyncio
@@ -3651,7 +3657,7 @@ class TestDisconnectDuringStartupBusyHold:
 
             # Still serving after a bounded wait: no Error, no exit, the
             # listener task still held.
-            await asyncio.sleep(1.0)
+            await virtual_clock.elapse(1.0)
             assert not run_task.done()
             assert "serve-cancelled" not in server.events
             assert "serve-returned" not in server.events
@@ -3659,14 +3665,17 @@ class TestDisconnectDuringStartupBusyHold:
 
             # Intentional shutdown ends cleanly: rc 0, radio exit once.
             run_task.cancel()
-            result = await asyncio.wait_for(run_task, timeout=10.0)
+            result = await run_task
 
         assert result == 0
         assert len(radio.exits) == 1
         composition.transport_ready.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_disconnect_after_normal_start_keeps_serving(self) -> None:
+    @pytest.mark.timeout(30)
+    async def test_disconnect_after_normal_start_keeps_serving(
+        self, virtual_clock: VirtualClock
+    ) -> None:
         """Control: the same disconnect after a normal start keeps serving."""
 
         import asyncio
@@ -3699,13 +3708,13 @@ class TestDisconnectDuringStartupBusyHold:
 
             await radio.disconnect()
 
-            await asyncio.sleep(1.0)
+            await virtual_clock.elapse(1.0)
             assert not run_task.done()
             assert "serve-cancelled" not in server.events
             assert "serve-returned" not in server.events
 
             run_task.cancel()
-            result = await asyncio.wait_for(run_task, timeout=10.0)
+            result = await run_task
 
         assert result == 0
         assert len(radio.exits) == 1
@@ -3747,8 +3756,12 @@ class TestFirstSignalShutdownBound:
         return composition
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     async def test_a_release_slower_than_the_bound_unkeys_before_the_bound_acts(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        virtual_clock: VirtualClock,
     ) -> None:
         import asyncio
 
@@ -3773,16 +3786,19 @@ class TestFirstSignalShutdownBound:
         backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
         session = _ManagedTxRadioSession(radio, composition, backstop)
         backstop.arm()
-        await asyncio.wait({shutdown}, timeout=2.0)
-        await asyncio.wait({session._shutdown_task}, timeout=2.0)  # noqa: SLF001
+        await virtual_clock.elapse(1.0)
+        await shutdown
+        assert session._shutdown_task is not None
+        await session._shutdown_task  # noqa: SLF001
         backstop.disarm()
 
         assert events == ["unkey", "radio exit"]
         assert self._errors(caplog) == []
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     async def test_the_forced_exit_waits_for_a_release_started_after_the_cancel(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
     ) -> None:
         import asyncio
 
@@ -3809,15 +3825,18 @@ class TestFirstSignalShutdownBound:
         shutdown = asyncio.create_task(shutdown_sequence())
         backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
         backstop.arm()
-        await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
+        await virtual_clock.elapse(1.0)
+        assert backstop._clock is not None
+        await backstop._clock  # noqa: SLF001
         hang.set()
         await asyncio.gather(shutdown, return_exceptions=True)
 
         assert events == ["unkey", "exit 130"]
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     async def test_the_forced_exit_waits_for_a_web_ptt_drain_started_after_the_cancel(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
     ) -> None:
         """The web stop outlasts the bound, then resumes into its PTT drain,
         which reaches the backstop through serve_forever's on_tx_release."""
@@ -3870,16 +3889,18 @@ class TestFirstSignalShutdownBound:
         ):
             shutdown = asyncio.create_task(shutdown_sequence())
             backstop = _ShutdownBackstop(shutdown, bound_s=0.1)
-            while not handlers:
-                await asyncio.sleep(0)
+            await await_until(
+                lambda: handlers,
+                timeout=5.0,
+                description="the shutdown signal handler",
+            )
             srv._discovery = _StuckDiscovery()
             srv._radio_poller = _Poller()
             handlers[0]()  # the first SIGTERM
-            await asyncio.wait_for(backstop._clock, 2.0)  # noqa: SLF001
-            for _ in range(100):  # the drain outlives a wrong exit; let it end
-                if "unkey" in events:
-                    break
-                await asyncio.sleep(0.01)
+            await virtual_clock.elapse(2.0)
+            assert backstop._clock is not None
+            await backstop._clock  # noqa: SLF001
+            assert "unkey" in events
             hang.set()
             await asyncio.gather(shutdown, return_exceptions=True)
 
@@ -3995,8 +4016,12 @@ class TestFirstSignalShutdownBound:
         assert cli._first_signal_shutdown_bound_s() == sum(steps) + margin
 
     @pytest.mark.asyncio
+    @pytest.mark.timeout(30)
     async def test_a_managed_tx_shutdown_that_never_finishes_is_left_after_its_bound(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        virtual_clock: VirtualClock,
     ) -> None:
         import asyncio
 
@@ -4021,9 +4046,11 @@ class TestFirstSignalShutdownBound:
             ),
             never_finishes,
         )
-        await asyncio.wait_for(cli._shutdown_managed_tx_composition(composition), 1.0)
+        work = asyncio.ensure_future(cli._shutdown_managed_tx_composition(composition))
+        await virtual_clock.elapse(1.0)
+        await work
         release.set()
-        await asyncio.sleep(0.01)
+        await virtual_clock.elapse(0)
 
         assert terminated == [True]
         (error,) = self._errors(caplog)
@@ -4283,25 +4310,6 @@ class _AlwaysBusyMechanism:
         self.release_calls += 1
 
 
-class _StartupClock:
-    """Virtual clock seam for the start-up busy-cap row.
-
-    The lifecycle sizes the start-up busy wait in its own clock seam
-    (``session_lifecycle.time.monotonic`` and ``session_lifecycle.asyncio.sleep``);
-    advancing it inside the fake cooldown sleep plays a full budget in
-    real milliseconds.
-    """
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def monotonic(self) -> float:
-        return self.now
-
-    async def sleep(self, delay: float) -> None:
-        self.now += delay
-
-
 class _RecordingCapRadio(_LifecycleBusyHoldRadio):
     """A lifecycle radio that records the connect error before re-raising."""
 
@@ -4474,14 +4482,10 @@ class TestLiveOwnerExitCode:
             ConnectionError as RigplaneConnectionError,
         )
         from rigplane.core.exceptions import RadioSessionHeldError
+        from rigplane.runtime import session_lifecycle
 
-        clock = _StartupClock()
-        monkeypatch.setattr(
-            "rigplane.runtime.session_lifecycle.time.monotonic", clock.monotonic
-        )
-        monkeypatch.setattr(
-            "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
-        )
+        clock = VirtualClock()
+        clock.scope_to(monkeypatch, session_lifecycle)
         radio = self._cap_lifecycle_radio()
         args = _build_parser().parse_args(
             ["--host", "1.2.3.4", "--model", "IC-7610", "status"]
