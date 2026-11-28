@@ -21,7 +21,7 @@ from rigplane.core.state_store import FreshnessClock
 from rigplane.profiles import get_radio_profile
 import rigplane.rigctld.handler as rigctld_handler_module
 import rigplane.runtime._civ_rx as civ_rx_module
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import Mode
 from test_controller_authority import Safety
 from test_rigctld_wsjtx_split_mk2 import (
@@ -207,7 +207,10 @@ async def _hold_commander_before_set(monkeypatch, radio, peer):
 
     monkeypatch.setattr(commander, "send", observe_send)
     try:
-        await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+        await await_until(
+            peer.relative_mode_read.is_set,
+            description="the held write reaching its preservation read",
+        )
         yield queued, release
     finally:
         release.set()
@@ -268,7 +271,9 @@ async def test_split_selection_change_after_preservation_never_sets(
         read_done, release = _pause_mode_preservation(monkeypatch, radio)
         reply = asyncio.create_task(_exchange(writer, reader, command))
         try:
-            await asyncio.wait_for(read_done.wait(), 1)
+            await await_until(
+                read_done.is_set, description="the preservation read returning"
+            )
             async with _client(server) as (other_reader, other_writer):
                 assert (
                     await _exchange(other_writer, other_reader, b"V VFOB\n")
@@ -322,7 +327,10 @@ async def test_split_competing_client_write_is_rechecked_not_overwritten(
         reply_b = None
         try:
             reply_a = asyncio.create_task(_exchange(writer, reader, b"X USB 0\n"))
-            await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+            await await_until(
+                peer.relative_mode_read.is_set,
+                description="client A's preservation read reaching the peer",
+            )
             # Later relative mode reads (A's retry) pass ungated.
             peer.relative_mode_read_gate = None
             async with _client(server) as (b_reader, b_writer):
@@ -335,10 +343,17 @@ async def test_split_competing_client_write_is_rechecked_not_overwritten(
                         + b"\n",
                     )
                 )
-                await asyncio.wait_for(raw_queued.wait(), 1)
+                await await_until(
+                    raw_queued.is_set,
+                    description="the competing raw write reaching the wire",
+                )
                 gate.set()
-                assert await asyncio.wait_for(reply_a, 2) == b"RPRT 0\n"
-                assert await asyncio.wait_for(reply_b, 2) == (
+                await await_until(
+                    lambda: reply_a.done() and reply_b.done(),
+                    description="both clients' writes answering",
+                )
+                assert await reply_a == b"RPRT 0\n"
+                assert await reply_b == (
                     f"FE FE E0 {addr:02X} FB FD\n".encode()
                 )
             assert peer.slots["B"] == (7_076_000, Mode.USB, 1, 0)
@@ -390,16 +405,23 @@ async def test_split_direct_raw_transaction_marks_interference_scope(
         foreign = None
         try:
             reply = asyncio.create_task(_exchange(writer, reader, b"X USB\n"))
-            await asyncio.wait_for(read_done.wait(), 1)
+            await await_until(
+                read_done.is_set,
+                description="the X write's first preservation read returning",
+            )
             foreign = asyncio.create_task(
                 radio.send_civ_transaction(
                     0x26, data=b"\x01\x05\x01\x01", expect="ack", timeout=1.0
                 )
             )
-            result = await asyncio.wait_for(foreign, 1)
+            await await_until(
+                foreign.done, description="the raw transaction answering"
+            )
+            result = await foreign
             assert result.status == "ack"
             release.set()
-            assert await asyncio.wait_for(reply, 2) == b"RPRT 0\n"
+            await await_until(reply.done, description="client A's write answering")
+            assert await reply == b"RPRT 0\n"
         finally:
             release.set()
             radio._commander = None
@@ -445,7 +467,9 @@ async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
         reply = None
         try:
             reply = asyncio.create_task(_exchange(writer, reader, b"X FM 0\n"))
-            await asyncio.wait_for(read_done.wait(), 1)
+            await await_until(
+                read_done.is_set, description="the write parking at its readback"
+            )
             async with _client(server) as (other_reader, other_writer):
                 assert (
                     await _exchange(other_writer, other_reader, b"V VFOB\n")
@@ -453,7 +477,8 @@ async def test_split_vfo_switch_during_readback_sends_exactly_one_set(
                 )
             assert peer.selected == "B"
             release.set()
-            assert await asyncio.wait_for(reply, 2) == b"RPRT -11\n"
+            await await_until(reply.done, description="the write failing")
+            assert await reply == b"RPRT -11\n"
         finally:
             release.set()
             radio._commander = None
@@ -507,7 +532,10 @@ async def test_split_vfo_switch_between_attempts_fails_the_write(model, monkeypa
         reply = None
         try:
             reply = asyncio.create_task(_exchange(writer, reader, b"X USB\n"))
-            await asyncio.wait_for(read_done.wait(), 1)
+            await await_until(
+                read_done.is_set,
+                description="the first attempt's preservation read returning",
+            )
             async with _client(server) as (b_reader, b_writer):
                 assert (
                     await _exchange(
@@ -520,7 +548,10 @@ async def test_split_vfo_switch_between_attempts_fails_the_write(model, monkeypa
                     == f"FE FE E0 {addr:02X} FB FD\n".encode()
                 )
             release.set()
-            await asyncio.wait_for(attempt2_started.wait(), 1)
+            await await_until(
+                attempt2_started.is_set,
+                description="the retry reaching its preservation read",
+            )
             async with _client(server) as (other_reader, other_writer):
                 assert (
                     await _exchange(other_writer, other_reader, b"V VFOB\n")
@@ -528,7 +559,8 @@ async def test_split_vfo_switch_between_attempts_fails_the_write(model, monkeypa
                 )
             assert peer.selected == "B"
             attempt2_release.set()
-            assert await asyncio.wait_for(reply, 2) == b"RPRT -9\n"
+            await await_until(reply.done, description="the write failing")
+            assert await reply == b"RPRT -9\n"
         finally:
             release.set()
             attempt2_release.set()
@@ -812,7 +844,10 @@ async def test_split_mode_authority_change_during_preservation_never_sets(
         gate = peer.relative_mode_read_gate = asyncio.Event()
         reply = asyncio.create_task(_exchange(writer, reader, command))
         try:
-            await asyncio.wait_for(peer.relative_mode_read.wait(), 1)
+            await await_until(
+                peer.relative_mode_read.is_set,
+                description="the preservation read reaching the peer",
+            )
             await controller.set_mode("remote")
             gate.set()
             assert await reply == b"RPRT -22\n"
@@ -854,7 +889,10 @@ async def test_split_authority_change_while_commander_queued_never_sets(
         ):
             reply = asyncio.create_task(_exchange(writer, reader, command))
             try:
-                await asyncio.wait_for(queued.wait(), 1)
+                await await_until(
+                    queued.is_set,
+                    description="the competing frame queueing behind the held write",
+                )
                 assert radio._commander._queue.qsize() == 1
                 await controller.set_mode("remote")
                 release.set()
