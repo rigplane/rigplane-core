@@ -61,7 +61,7 @@ async function until(deadlineMs: number, condition: () => Promise<boolean>): Pro
 
 export async function startJourneyServer(
   port: number,
-  freqHz: number,
+  freqHz: number | null,
   extraArgs: string[] = [],
   script = 'tests/e2e/journey_web_server.py',
 ): Promise<JourneyServerHandle> {
@@ -74,7 +74,9 @@ export async function startJourneyServer(
     'uv',
     [
       'run', 'python', script,
-      '--port', String(port), '--freq', String(freqHz),
+      '--port', String(port),
+      // null: a script (the remote station) that takes no --freq flag.
+      ...(freqHz === null ? [] : ['--freq', String(freqHz)]),
       ...extraArgs,
     ],
     { cwd: REPO_ROOT, detached: true, stdio: 'ignore' },
