@@ -39,6 +39,7 @@ from mock_server import (
     MockIcomRadio,
 )
 from rigplane.testing.timing import VirtualClock, await_until
+from rigplane_testkit.icom import simulator
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,8 +81,18 @@ class _RawClient:
         self._transport.sendto(pkt, ("127.0.0.1", port))
 
     async def _recv(self, timeout: float = 1.0) -> bytes:
+        # Shared await_until keeps a REAL deadline: on the virtual loop the
+        # wait parks on real time while loop turns still run (so localhost
+        # UDP delivers), whereas asyncio.wait_for would freeze with the
+        # clock and hang instead of failing if a reply never arrived.
         assert self._proto is not None
-        return await asyncio.wait_for(self._proto.queue.get(), timeout)
+        proto = self._proto
+        await await_until(
+            lambda: not proto.queue.empty(),
+            timeout=timeout,
+            description="simulator reply",
+        )
+        return proto.queue.get_nowait()
 
     # -- header helper --------------------------------------------------
 
@@ -421,8 +432,13 @@ async def test_token_renew_refreshes_keepalive(virtual_clock: VirtualClock) -> N
 
 
 async def test_force_civ_unavailable_returns_not_ready_then_recovers(
-    sim: MockIcomRadio, virtual_clock: VirtualClock
+    sim: MockIcomRadio, virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The not-ready knob is a monotonic timestamp: point the simulator
+    # module's own time reads at the shared clock (asyncio stays real, so
+    # scheduling is unchanged) and elapse through the original 0.2 s window.
+    virtual_clock.scope_to(monkeypatch, simulator)
+    monkeypatch.setattr(simulator, "asyncio", asyncio)
     owner = await _client(0x10001)
     try:
         sim.force_civ_unavailable_for(0.2)
@@ -432,9 +448,10 @@ async def test_force_civ_unavailable_returns_not_ready_then_recovers(
         assert sim.session_held is False
         assert sim.busy_rejects == 0
 
-        # End the not-ready window deterministically instead of sleeping out
-        # the wall-clock knob; the recovery path below is what this pins.
-        sim.clear_civ_unavailable()
+        # The window expires on the virtual clock: elapse past the original
+        # 0.2 s deadline instead of cancelling it by hand; the recovery path
+        # below is what this pins.
+        await virtual_clock.elapse(0.25)
         # Now available -> claims and returns the real port.
         civ_port2, error2 = await _claim(sim, owner)
         assert error2 == _ERR_OK and civ_port2 == sim.civ_port
@@ -462,9 +479,15 @@ async def test_unsolicited_stream_emits_frames(virtual_clock: VirtualClock) -> N
         # Open the data stream so the radio knows where to send unsolicited frames.
         start_freq = sim._frequency
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
+        # The open is a real UDP delivery: wait for the simulator to observe
+        # it before advancing cadence, or the elapse could run ownerless.
+        await await_until(
+            lambda: sim.openclose_open_count >= 1,
+            timeout=5.0,
+            description="openclose open processed",
+        )
         # The emission cadence is a loop timer, so elapsing the virtual clock
-        # drives the stream deterministically (delivery of the open settles
-        # first, then the cadence timers fire).
+        # drives the stream deterministically.
         await virtual_clock.elapse(0.2)
         assert sim.unsolicited_sent > 0
         # Autonomous state evolution: frequency drifted.
@@ -475,8 +498,13 @@ async def test_unsolicited_stream_emits_frames(virtual_clock: VirtualClock) -> N
 
 
 async def test_stall_for_suppresses_unsolicited_stream(
-    virtual_clock: VirtualClock,
+    virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The stall knob is a monotonic timestamp: point the simulator module's
+    # own time reads at the shared clock (asyncio stays real, so scheduling
+    # is unchanged) and elapse through the original 0.3 s window.
+    virtual_clock.scope_to(monkeypatch, simulator)
+    monkeypatch.setattr(simulator, "asyncio", asyncio)
     sim = MockIcomRadio(
         single_owner=True,
         keepalive_hold_s=5.0,
@@ -488,21 +516,28 @@ async def test_stall_for_suppresses_unsolicited_stream(
     try:
         await _claim(sim, c)
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
+        # The open is a real UDP delivery: wait for the simulator to observe
+        # it before advancing cadence, or the elapse could run ownerless.
+        await await_until(
+            lambda: sim.openclose_open_count >= 1,
+            timeout=5.0,
+            description="openclose open processed",
+        )
         await virtual_clock.elapse(0.1)
         assert sim.unsolicited_sent > 0
 
-        # Stall: no frames should be emitted for the window. The stall knob
-        # is a wall-clock timestamp, so while it is armed the virtual cadence
-        # timers run but emit nothing — a deterministic absence.
+        # Stall: no frames should be emitted for the window. While it is
+        # armed the virtual cadence timers run but emit nothing — a
+        # deterministic absence.
         sim.stall_for(0.3)
         before = sim.unsolicited_sent
         await virtual_clock.elapse(0.15)
         assert sim.unsolicited_sent == before  # watchdog would trip here
 
-        # After the stall window, the stream resumes. End the wall-clock
-        # window deterministically (a zero stall expires at once) and drive
-        # the cadence timers again.
-        sim.stall_for(0)
+        # After the stall window, the stream resumes. Elapse past the
+        # original 0.3 s deadline (0.15 s already elapsed inside it), then
+        # drive the cadence timers again.
+        await virtual_clock.elapse(0.2)
         await virtual_clock.elapse(0.25)
         assert sim.unsolicited_sent > before
     finally:
@@ -524,9 +559,21 @@ async def test_drop_rate_suppresses_unsolicited_frames(
     c = await _client(0x10001)
     try:
         await _claim(sim, c)
+        start_freq = sim._frequency
         c.openclose(sim.civ_port, _OPENCLOSE_OPEN)
+        # The open is a real UDP delivery: wait for the simulator to observe
+        # it before advancing cadence, or the elapse could run ownerless and
+        # this assertion would pass with no emission attempted.
+        await await_until(
+            lambda: sim.openclose_open_count >= 1,
+            timeout=5.0,
+            description="openclose open processed",
+        )
         await virtual_clock.elapse(0.15)
-        # Every unsolicited frame is dropped -> none counted as sent.
+        # Every unsolicited frame is dropped -> none counted as sent. The
+        # loop drifts the frequency before applying drop_rate, so the drift
+        # is the positive evidence that emission was attempted.
+        assert sim._frequency > start_freq
         assert sim.unsolicited_sent == 0
     finally:
         await c.close()
