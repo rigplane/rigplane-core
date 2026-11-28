@@ -32,13 +32,14 @@ simulated.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+import rigplane.runtime._civ_rx as civ_rx_module
+import rigplane.runtime.radio as runtime_radio_module
 from rigplane.commands import CONTROLLER_ADDR
 from rigplane.commands._frame import build_civ_frame
 from rigplane.commands.memory import (
@@ -50,6 +51,7 @@ from rigplane.core.types import CivFrame, MemoryWriteField, MemoryWriteLayout
 from rigplane.profiles import MemoryWriteUnverifiedError, get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import MemoryChannel
 from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from test_radio import MockTransport
@@ -695,6 +697,7 @@ def test_a_layout_cannot_silently_drop_optional_memory_fields(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("model", "overrides", "match"),
     [
@@ -711,10 +714,15 @@ def test_a_layout_cannot_silently_drop_optional_memory_fields(
     ],
 )
 async def test_unstorable_memory_values_refuse_before_sending(
-    model: str, overrides: dict, match: str
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    overrides: dict,
+    match: str,
 ) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match=match):
             await radio.set_memory_contents(_mem(model, **overrides))
@@ -724,13 +732,20 @@ async def test_unstorable_memory_values_refuse_before_sending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     "model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2", "IC-7610"]
 )
 @pytest.mark.parametrize("name", [None, [], {}, 123, b"NAME"])
-async def test_non_string_names_refuse_before_sending(model: str, name: object) -> None:
+async def test_non_string_names_refuse_before_sending(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    name: object,
+) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="name must be a string"):
             await radio.set_memory_contents(_mem(model, name=name))
@@ -740,11 +755,15 @@ async def test_non_string_names_refuse_before_sending(model: str, name: object) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
-async def test_a_refused_write_sends_nothing_on_the_wire(model: str) -> None:
+async def test_a_refused_write_sends_nothing_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """The builder refusal surfaces at the radio and nothing is sent."""
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="name"):
             await radio.set_memory_contents(_mem(model, name="X" * 40))
@@ -790,10 +809,14 @@ def test_the_ic7610_keeps_its_legacy_clear_frame() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-7300"])
-async def test_an_out_of_range_clear_address_refuses(model: str) -> None:
+async def test_an_out_of_range_clear_address_refuses(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="channel"):
             await radio.memory_clear(100, group=_CASES[model][1])
@@ -882,29 +905,40 @@ class _MemoryStoreTransport(_MemoryAckTransport):
         await super().send_tracked(data)
 
 
-def _radio(model: str, transport: MockTransport) -> IcomRadio:
+def _scope_clock(monkeypatch: pytest.MonkeyPatch, clock: VirtualClock) -> None:
+    """Point the exercised runtime modules' own ``time``/``asyncio`` at ``clock``.
+
+    The send-gate stamps and the ``_civ_min_interval`` sleeps live in
+    ``runtime/_civ_rx.py``; the construction stamp and the readiness window
+    live in ``runtime/radio.py``. Only those two modules' names are replaced
+    (``VirtualClock.scope_to``); the event loop itself keeps working because
+    the ``virtual_clock`` fixture installs the same clock as ``loop.time``.
+    """
+    clock.scope_to(monkeypatch, civ_rx_module)
+    clock.scope_to(monkeypatch, runtime_radio_module)
+
+
+def _sim_radio(model: str, transport: MockTransport, clock: VirtualClock) -> IcomRadio:
+    """Build the simulator double with its stamps on the virtual clock.
+
+    The caller scopes ``clock`` to the runtime modules first
+    (``_scope_clock``), so the stamps below read virtual time and the
+    radio's own finite idle window (``_civ_ready_idle_timeout``, default
+    5 s) covers the whole test: the instant in-process transports advance
+    the clock by milliseconds at most. No timeout is raised, and none is
+    infinite.
+    """
     radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
     radio._civ_transport = radio._ctrl_transport = transport
     radio._connected = True
     radio._civ_stream_ready = True
-    radio._last_civ_data_received = time.monotonic()
-    return radio
-
-
-def _sim_radio(model: str, transport: MockTransport) -> IcomRadio:
-    """The ``_radio`` harness without a wall-clock read: new tests are not
-    allowed one (the realtime guard), so a fixed timestamp plus an infinite
-    idle timeout keeps the link "ready" for the simulator double."""
-    radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
-    radio._civ_transport = radio._ctrl_transport = transport
-    radio._connected = True
-    radio._civ_stream_ready = True
-    radio._last_civ_data_received = 0.0
-    radio._civ_ready_idle_timeout = float("inf")
+    radio._last_civ_data_received = clock()
+    radio._civ_last_waiter_gc_monotonic = clock()
     return radio
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
 @pytest.mark.parametrize(
     "overrides",
@@ -917,10 +951,14 @@ def _sim_radio(model: str, transport: MockTransport) -> IcomRadio:
     ],
 )
 async def test_sdk_memory_write_refuses_before_sending(
-    model: str, overrides: dict
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    overrides: dict,
 ) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = _MemoryAckTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError):
             await radio.set_memory_contents(_mem(model, **overrides))
@@ -930,16 +968,22 @@ async def test_sdk_memory_write_refuses_before_sending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("default_tone", [-1, 12345])
 @pytest.mark.parametrize("operation", ["write", "clear"])
 async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
-    model: str, default_tone: int, operation: str
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    default_tone: int,
+    operation: str,
 ) -> None:
     """The SDK gate applies the loader's domain rule: a spliced-in default
     tone the profile's CTCSS table lacks refuses like no layout at all."""
+    _scope_clock(monkeypatch, virtual_clock)
     transport = _MemoryAckTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     profile = radio._profile
     layout = replace(profile.memory.write_layout, default_tone_centihz=default_tone)
     radio._profile = replace(
@@ -957,11 +1001,18 @@ async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("operation", ["write", "clear"])
-async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
+async def test_memory_mutations_report_nak(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    operation: str,
+) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = _MemoryAckTransport(reply_command=0xFA)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(CommandRejectedError):
             if operation == "write":
@@ -974,13 +1025,19 @@ async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 @pytest.mark.parametrize("operation", ["write", "clear"])
 @pytest.mark.parametrize("reply", [None, CivFrame(0xE0, 0xA4, 0x1A, 0, b"", 0)])
 async def test_memory_mutations_need_an_ack(
-    model: str, operation: str, reply: CivFrame | None
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    model: str,
+    operation: str,
+    reply: CivFrame | None,
 ) -> None:
-    radio = _radio(model, MockTransport())
+    _scope_clock(monkeypatch, virtual_clock)
+    radio = _sim_radio(model, MockTransport(), virtual_clock)
     radio._send_civ_raw = AsyncMock(return_value=reply)
     try:
         with pytest.raises(CommandError):
@@ -994,8 +1051,11 @@ async def test_memory_mutations_need_an_ack(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_write_then_read_returns_what_was_written(model: str) -> None:
+async def test_write_then_read_returns_what_was_written(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """Simulated round trip: the decoded entry equals the written channel
     (frequency, mode, duplex, tone mode/frequency, name) -- the write
     record and the merged read model agree through the production radio
@@ -1004,10 +1064,11 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     split TX copy), then the name."""
     from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
 
+    _scope_clock(monkeypatch, virtual_clock)
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         await radio.set_memory_contents(mem)
         entries = await radio.read_memory_entries(group, [channel])
@@ -1038,16 +1099,20 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_write_with_offset_and_dtcs_reads_back_equals(model: str) -> None:
+async def test_write_with_offset_and_dtcs_reads_back_equals(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """Simulated repeater write (MOR-3648): a caller duplex offset and DTCS
     code cross the production write path and read back exactly."""
     from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
 
+    _scope_clock(monkeypatch, virtual_clock)
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model, tonemode=3, dtcs_code=125, duplex_offset_hz=5_000_000)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _sim_radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         await radio.set_memory_contents(mem)
         entry = (await radio.read_memory_entries(group, [channel]))[0]
@@ -1063,8 +1128,11 @@ async def test_write_with_offset_and_dtcs_reads_back_equals(model: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_read_modify_write_round_trip_preserves_the_channel(model: str) -> None:
+async def test_read_modify_write_round_trip_preserves_the_channel(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """Read-modify-write is exact (MOR-3648): the read model carries the
     filter, the DTCS code and polarity, the offset and the split block, so
     rewriting a saved channel with one changed field loses nothing else."""
@@ -1081,12 +1149,13 @@ async def test_read_modify_write_round_trip_preserves_the_channel(model: str) ->
         RepeaterShiftDirection.MINUS: 1,
         RepeaterShiftDirection.PLUS: 2,
     }
+    _scope_clock(monkeypatch, virtual_clock)
     radio_addr, group, channel = _CASES[model]
     original = _mem(
         model, tonemode=3, dtcs_code=125, duplex_offset_hz=5_000_000, filter=2
     )
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _sim_radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         await radio.set_memory_contents(original)
         saved = (await radio.read_memory_entries(group, [channel]))[0]
@@ -1127,10 +1196,14 @@ async def test_read_modify_write_round_trip_preserves_the_channel(model: str) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_a_refused_offset_or_dtcs_sends_nothing_on_the_wire(model: str) -> None:
+async def test_a_refused_offset_or_dtcs_sends_nothing_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _sim_radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="DTCS"):
             await radio.set_memory_contents(_mem(model, dtcs_code=88))
@@ -1146,13 +1219,17 @@ async def test_a_refused_offset_or_dtcs_sends_nothing_on_the_wire(model: str) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_boolean_addresses_refuse_without_sending(model: str) -> None:
+async def test_boolean_addresses_refuse_without_sending(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """``True`` is an ``int`` to a range check and would silently encode
     group/band 1; the shared encoder refuses it before any byte is built
     (the SDK path -- the dispatch arm checks the same rule eagerly)."""
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="group must be an integer"):
             await radio.memory_clear(5, group=True)  # type: ignore[arg-type]
@@ -1168,15 +1245,19 @@ async def test_boolean_addresses_refuse_without_sending(model: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-async def test_a_grouped_radio_refuses_an_unnamed_group(model: str) -> None:
+async def test_a_grouped_radio_refuses_an_unnamed_group(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """MOR-3644: a grouped memory never accepts an unnamed group -- a
     channel-only clear or write would silently hit group/band 0 and could
     erase or overwrite a slot in a group the caller never named (the UI's
     channel-only store/clear flow is exactly that hazard; it is refused
     until the UI carries one explicit slot address)."""
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(ValueError, match="a memory group/band is required"):
             await radio.memory_clear(5)
@@ -1188,17 +1269,21 @@ async def test_a_grouped_radio_refuses_an_unnamed_group(model: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2"])
-async def test_the_written_wire_bytes_are_the_manual_record(model: str) -> None:
+async def test_the_written_wire_bytes_are_the_manual_record(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
     """The IC-7300/IC-7300MK2 read reply shape is not in the provided
     manual extracts, so the read listing stays off for them; the round
     trip pins the write side: the write crosses the production radio
     path, the wire carries exactly the manual record, and the clear then
     empties the slot in its declared form."""
+    _scope_clock(monkeypatch, virtual_clock)
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         await radio.set_memory_contents(mem)
         await radio.memory_clear(channel, group=group)
@@ -1223,12 +1308,16 @@ async def test_the_written_wire_bytes_are_the_manual_record(model: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_cleared_slot_reads_back_empty_ic705() -> None:
+@pytest.mark.timeout(30)
+async def test_a_cleared_slot_reads_back_empty_ic705(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
     """Simulated: after the 1A 00 + address + FF clear, the slot answers
     empty on the next read."""
+    _scope_clock(monkeypatch, virtual_clock)
     radio_addr, group, channel = _CASES["IC-705"]
     transport = _MemoryStoreTransport(_memory("IC-705"), radio_addr)
-    radio = _radio("IC-705", transport)
+    radio = _sim_radio("IC-705", transport, virtual_clock)
     try:
         await radio.set_memory_contents(_mem("IC-705"))
         entry = (await radio.read_memory_entries(group, [channel]))[0]
@@ -1246,10 +1335,14 @@ async def test_a_cleared_slot_reads_back_empty_ic705() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", ["X6100", "X6200"])
-async def test_radios_without_a_layout_still_refuse(model: str) -> None:
+async def test_radios_without_a_layout_still_refuse(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, model: str
+) -> None:
+    _scope_clock(monkeypatch, virtual_clock)
     transport = MockTransport()
-    radio = _radio(model, transport)
+    radio = _sim_radio(model, transport, virtual_clock)
     try:
         with pytest.raises(MemoryWriteUnverifiedError) as excinfo:
             await radio.set_memory_contents(_mem("IC-705"))
