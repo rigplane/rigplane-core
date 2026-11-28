@@ -12,16 +12,25 @@ by MOR-443 / MOR-448.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
-from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane.web.runtime_helpers import (
+    build_public_state_payload_from_snapshot,
+    snapshot_field_status_inputs,
+)
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import FilterWidthReading
@@ -168,6 +177,23 @@ def _profile_state_acquisition() -> RadioAcquisitionProfile:
     profile = get_radio_profile("FTX-1")
     assert profile.state_acquisition is not None
     return profile.state_acquisition
+
+
+def _profile_payload(
+    snapshot: StateSnapshot, acquisition: RadioAcquisitionProfile, receiver_count: int
+) -> dict[str, Any]:
+    unavailable_modes: dict[FieldPath, str] = {}
+    availability, declared = snapshot_field_status_inputs(
+        acquisition, snapshot, unavailable_modes=unavailable_modes
+    )
+    return build_public_state_payload_from_snapshot(
+        snapshot,
+        radio=None,
+        receiver_count=receiver_count,
+        availability=availability,
+        declared=declared,
+        unavailable_modes=unavailable_modes,
+    )
 
 
 def _make_radio() -> MagicMock:
@@ -602,6 +628,73 @@ async def test_nb_nr_notch_project_available() -> None:
         status = payload["fieldStatus"][public_path]
         assert status["observed"] is True
         assert status["availability"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_ftx1_notch_is_unavailable_in_fm_and_recovers_in_usb() -> None:
+    store = StateStore()
+    radio = _make_radio()
+    radio._state_store = store
+    acquisition = _profile_state_acquisition()
+    mode_path = FieldPath.active("main", "freq_mode", "mode")
+    source = SourceMetadata(source="poll_response", provider="yaesu_cat")
+
+    def observe_mode(mode: str, at: float) -> None:
+        store.apply(
+            Observation(
+                path=mode_path, value=mode, source=source, timestamp_monotonic=at
+            )
+        )
+
+    observe_mode("USB", _clock() - 1)
+    await _apply_slow_controls(store, radio)
+    reading = _profile_payload(store.snapshot(), acquisition, 2)
+    assert reading["main"]["autoNotch"] is True
+    assert reading["main"]["manualNotch"] is True
+
+    observe_mode("FM", _clock() + 1)
+    reading = _profile_payload(store.snapshot(), acquisition, 2)
+    for leaf in ("autoNotch", "manualNotch", "manualNotchFreq"):
+        assert reading["main"][leaf] is None
+        status = reading["fieldStatus"][f"main.{leaf}"]
+        assert status["observed"] is False
+        assert status["availability"] == "unavailable"
+        assert status["message"] == "Control is unavailable in FM mode."
+
+    radio.read_auto_notch.reset_mock()
+    radio.read_manual_notch.reset_mock()
+    radio.read_manual_notch_freq.reset_mock()
+    await _apply_slow_controls(store, radio)
+    radio.read_auto_notch.assert_awaited_once_with(1)
+    radio.read_manual_notch.assert_not_awaited()
+    radio.read_manual_notch_freq.assert_not_awaited()
+
+    observe_mode("USB", _clock() + 2)
+    await _apply_slow_controls(store, radio)
+    reading = _profile_payload(store.snapshot(), acquisition, 2)
+    assert reading["main"]["autoNotch"] is True
+    assert reading["main"]["manualNotch"] is True
+
+
+def test_ic705_notch_toggles_keep_their_fm_readbacks() -> None:
+    acquisition = get_radio_profile("IC-705").state_acquisition
+    assert acquisition is not None
+    store = StateStore()
+    source = SourceMetadata(source="poll_response", provider="icom")
+    for path, value in (
+        (FieldPath.active("main", "freq_mode", "mode"), "FM"),
+        (FieldPath.receiver("main", "operator_toggles", "auto_notch"), True),
+        (FieldPath.receiver("main", "operator_toggles", "manual_notch"), True),
+    ):
+        store.apply(
+            Observation(
+                path=path, value=value, source=source, timestamp_monotonic=_clock()
+            )
+        )
+    reading = _profile_payload(store.snapshot(), acquisition, 1)
+    for leaf in ("autoNotch", "manualNotch"):
+        assert reading["main"][leaf] is True
+        assert reading["fieldStatus"][f"main.{leaf}"]["availability"] == "available"
 
 
 @pytest.mark.asyncio

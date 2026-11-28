@@ -27,6 +27,11 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.runtime._poller_types import (
+    CommandQueue,
+    CommandQueueEntry,
+    execute_command_queue_entry,
+)
 from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
@@ -1250,17 +1255,28 @@ async def test_websocket_manual_notch_position_off_wire_contract_rejected_before
 @pytest.mark.asyncio
 async def test_enqueue_manual_notch_position_ftx1_domain_top_accepted() -> None:
     """The FTX-1 domain's top raw position queues (MOR-2474)."""
-    queue = _QueueRecorder()
+    queue = CommandQueue()
     radio = _Ftx1NotchDomainRadio()
     handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
 
-    result = await handler._enqueue_command(
-        "set_notch_filter", {"value": 320, "receiver": 0}
-    )
+    async def write(entry: CommandQueueEntry) -> None:
+        command = entry.command
+        assert isinstance(command, SetNotchFilter)
+        await radio.set_notch_filter(command.level, receiver=command.receiver)
 
-    assert result == {"value": 320, "receiver": 0}
-    assert queue.items == [SetNotchFilter(320, receiver=0)]
-    await radio.set_notch_filter(320)
+    async with asyncio.timeout(5.0), asyncio.TaskGroup() as group:
+        request = group.create_task(
+            handler._enqueue_command("set_notch_filter", {"value": 320, "receiver": 0})
+        )
+        await queue.wait()
+        entry = queue.take_entry()
+        assert entry is not None
+        assert entry.command == SetNotchFilter(320, receiver=0)
+        assert entry.future is not None
+        assert not request.done()
+        await execute_command_queue_entry(entry, write)
+
+    assert request.result() == {"value": 320, "receiver": 0}
     assert radio.notch_calls == [320]
 
 

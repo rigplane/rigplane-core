@@ -19,10 +19,15 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.acquisition_scheduler import (
+    availability_clause_holds,
+    receiver_mode_clauses,
+)
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.serial_open import serial_open_diagnostic
 from ...core.state_diagnostics import UNKNOWN_STATUS
+from ...core.state_pipeline_contracts import FieldPath
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
@@ -30,6 +35,7 @@ from ...exceptions import (
     CatReplyValidationError,
     CommandError,
     CommandRejectedError,
+    ControlUnavailableInModeError,
     ModeReadbackError,
 )
 from ...exceptions import ConnectionError as RadioConnectionError
@@ -76,7 +82,7 @@ if TYPE_CHECKING:
     from ...audio.session import AudioSession
     from ...audio.usb_driver import AudioCandidateList, UsbAudioDriver
     from ...audio_bus import AudioBus
-    from ...core.state_pipeline_contracts import FieldPath, Observation
+    from ...core.state_pipeline_contracts import Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -2728,10 +2734,28 @@ class YaesuCatRadio:
         """Get auto notch state (True = ON)."""
         return await self.read_auto_notch(receiver)
 
+    async def _write_mode_scoped_control(
+        self, name: str, family: str, receiver: int, **params: int | str
+    ) -> None:
+        key = self._receiver_level_write_key(f"set_{name}", receiver)
+        path = FieldPath.receiver("main" if receiver == 0 else "sub", family, name)
+        clauses = receiver_mode_clauses(self.profile.state_acquisition, path)
+        if not clauses:
+            await self._write(key, **params)
+            return
+        # Serialize with Core mode changes and check the radio at dispatch,
+        # since the dial or another command can change mode after enqueue.
+        async with self._mode_lock:
+            mode, _ = await self.read_mode(receiver, require_assigned=True)
+            if any(not availability_clause_holds(clause, mode) for clause in clauses):
+                raise ControlUnavailableInModeError(mode)
+            await self._write(key, **params)
+
     async def set_auto_notch(self, state: bool, receiver: int = 0) -> None:
         """Set auto notch state."""
-        key = self._receiver_level_write_key("set_auto_notch", receiver)
-        await self._write(key, state="1" if state else "0")
+        await self._write_mode_scoped_control(
+            "auto_notch", "operator_toggles", receiver, state="1" if state else "0"
+        )
 
     async def read_manual_notch(self, receiver: int = 0) -> bool:
         """Read manual notch ON/OFF state without mutating legacy state.
@@ -2758,8 +2782,9 @@ class YaesuCatRadio:
 
     async def set_manual_notch(self, state: bool, receiver: int = 0) -> None:
         """Set manual notch ON/OFF."""
-        key = self._receiver_level_write_key("set_manual_notch", receiver)
-        await self._write(key, state=1 if state else 0)
+        await self._write_mode_scoped_control(
+            "manual_notch", "operator_toggles", receiver, state=1 if state else 0
+        )
 
     async def read_manual_notch_freq(self, receiver: int = 0) -> int:
         """Read manual notch frequency index without mutating legacy state.
@@ -2788,8 +2813,9 @@ class YaesuCatRadio:
         domain; off-domain values raise ``ValueError`` before any CAT write.
         """
         validate_control_raw_value(self.profile.controls, "manual_notch_freq", freq)
-        key = self._receiver_level_write_key("set_manual_notch_freq", receiver)
-        await self._write(key, freq=freq)
+        await self._write_mode_scoped_control(
+            "manual_notch_freq", "operator_controls", receiver, freq=freq
+        )
 
     async def set_notch_filter(self, level: int, receiver: int = 0) -> None:
         """Set notch filter position (manual notch frequency raw index).

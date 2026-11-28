@@ -2158,9 +2158,15 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.main.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
+        # MOR-4875: BC00 left BC0 reporting ON in FM and toggled in USB.
+        ("FTX-1", "receiver.main.operator_toggles.auto_notch"),
+        # Each BP toggle shares the FM restriction of its receiver's
+        # existing notch-position policy.
+        ("FTX-1", "receiver.main.operator_toggles.manual_notch"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
+        ("FTX-1", "receiver.sub.operator_toggles.manual_notch"),
         # FT-991A: the four TX meters take the FTX-1 tx_only PTT gate as
         # profile policy. No probe ran on one (fidelity-C sim profile, no
         # hardware capture yet), but the gate is structural, not probed:

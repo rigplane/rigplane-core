@@ -13,6 +13,8 @@ import pytest
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
 
+from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -301,6 +303,37 @@ async def test_http_single_set_freq_nak_reports_409_radio_nak() -> None:
         if event.state == "failed"
     ]
     assert failed and failed[-1].source == "http"
+
+
+@pytest.mark.asyncio
+async def test_http_notch_write_returns_409_in_fm() -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock(return_value="MD04")
+    radio._transport.write = AsyncMock()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = YaesuCatPoller(radio, command_queue=srv.command_queue)
+
+    async with asyncio.timeout(5.0), asyncio.TaskGroup() as group:
+        request = group.create_task(
+            _post_json(
+                srv,
+                "/api/v1/commands",
+                {"id": "notch", "name": "set_auto_notch", "params": {"on": False}},
+            )
+        )
+        await srv.command_queue.wait()
+        await poller._drain_commands()
+
+    writer = request.result()
+    assert writer.response_status == 409
+    assert writer.response_body == {
+        "ok": False,
+        "error": "control_unavailable_in_mode",
+        "message": "Control is unavailable in FM mode.",
+    }
+    radio._transport.query.assert_awaited_once_with("MD0;")
+    radio._transport.write.assert_not_awaited()
 
 
 @pytest.mark.asyncio

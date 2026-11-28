@@ -1341,7 +1341,11 @@ class YaesuObservationAdapter:
                             native_id="read_nr_level",
                         )
                     )
-        if self._has_runtime_capability("notch") and self._can_poll(_MAIN_AUTO_NOTCH):
+        if (
+            self._has_runtime_capability("notch")
+            and self._can_poll(_MAIN_AUTO_NOTCH)
+            and self._available(_MAIN_AUTO_NOTCH)
+        ):
             ok, value = await self._safe_read(
                 "main.auto_notch",
                 lambda: self.radio.read_auto_notch(0),
@@ -1370,7 +1374,11 @@ class YaesuObservationAdapter:
                         _SUB_AUTO_NOTCH, value, native_id="read_auto_notch"
                     )
                 )
-        if self._has_runtime_capability("notch") and self._can_poll(_MAIN_MANUAL_NOTCH):
+        if (
+            self._has_runtime_capability("notch")
+            and self._can_poll(_MAIN_MANUAL_NOTCH)
+            and self._available(_MAIN_MANUAL_NOTCH)
+        ):
             ok, value = await self._safe_read(
                 "main.manual_notch",
                 lambda: self.radio.read_manual_notch(0),

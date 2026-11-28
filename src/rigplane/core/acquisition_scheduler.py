@@ -33,9 +33,11 @@ from rigplane.core.state_pipeline_contracts import (
     AcquisitionClass,
     ChangeSet,
     FieldChange,
+    FieldFamily,
     FieldPath,
     Observation,
     SourceMetadata,
+    VfoSlot,
     acquisition_class_for_path,
     demoted_acquisition_class,
     startup_critical_path,
@@ -75,6 +77,7 @@ __all__ = [
     "derive_active_receiver_value",
     "derive_tx_active",
     "provider_uses_civ_acquisition",
+    "receiver_mode_clauses",
     "resolve_available_when",
     "tx_active",
 ]
@@ -3021,6 +3024,23 @@ def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
     return float(value) <= float(clause.value)
 
 
+def receiver_mode_clauses(
+    profile: RadioAcquisitionProfile | None, path: FieldPath
+) -> tuple[AvailabilityClause, ...]:
+    """Return the field's declared conditions on its own active mode."""
+
+    if profile is None or path.receiver_id is None:
+        return ()
+    policy = profile.field_policies.get(path)
+    if policy is None:
+        return ()
+    mode_path = FieldPath.active(path.receiver_id, "freq_mode", "mode")
+    mode_paths = (mode_path, mode_path.receiver_alias())
+    return tuple(
+        clause for clause in policy.available_when if clause.field in mode_paths
+    )
+
+
 def _clause_source(snapshot: StateSnapshot, path: FieldPath) -> FieldSnapshot | None:
     """The stored field a clause reads, under either spelling of its receiver.
 
@@ -3042,6 +3062,8 @@ def _clause_source(snapshot: StateSnapshot, path: FieldPath) -> FieldSnapshot | 
 def resolve_available_when(
     profile: RadioAcquisitionProfile,
     snapshot: StateSnapshot,
+    *,
+    unavailable_modes: dict[FieldPath, str] | None = None,
 ) -> dict[FieldPath, bool | None]:
     """Resolve each conditional field's declared availability in ``snapshot``.
 
@@ -3050,6 +3072,9 @@ def resolve_available_when(
     absent. ``True`` when every clause holds, ``False`` when one is
     contradicted, ``None`` while a clause's source field has not been
     observed and none of the others is contradicted.
+
+    When supplied, ``unavailable_modes`` records the mode behind a refusal
+    so callers can report it with the field status.
     """
 
     resolved: dict[FieldPath, bool | None] = {}
@@ -3063,6 +3088,14 @@ def resolve_available_when(
                 state = None
                 continue
             if not availability_clause_holds(clause, source.value):
+                if (
+                    unavailable_modes is not None
+                    and clause.field.family is FieldFamily.FREQ_MODE
+                    and clause.field.slot is VfoSlot.ACTIVE
+                    and clause.field.name == "mode"
+                    and isinstance(source.value, str)
+                ):
+                    unavailable_modes[path] = source.value
                 state = False
                 break
         resolved[path] = state

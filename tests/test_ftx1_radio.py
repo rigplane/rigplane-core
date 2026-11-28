@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 from zipfile import Path as ZipPath
 from zipfile import ZipFile
@@ -20,7 +23,15 @@ from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import TxPolicy
 from rigplane.rig_loader import load_rig
+from rigplane.runtime._poller_types import (
+    CommandQueue,
+    CommandQueueEntry,
+    SetAutoNotch,
+    execute_command_queue_entry,
+)
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import BreakInMode, RepeaterShiftDirection
+from rigplane.web.handlers.control import ControlHandler
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -939,6 +950,7 @@ async def test_get_auto_notch_off(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_auto_notch(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_auto_notch(True)
     connected_radio._transport.write.assert_called_once_with("BC01;")
@@ -953,8 +965,10 @@ async def test_get_auto_notch_sub_sends_bc1(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_auto_notch_sub_sends_bc1(connected_radio):
+    connected_radio._transport.query = AsyncMock()
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_auto_notch(True, receiver=1)
+    connected_radio._transport.query.assert_not_awaited()
     connected_radio._transport.write.assert_called_once_with("BC11;")
 
 
@@ -970,6 +984,7 @@ async def test_get_manual_notch(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_manual_notch(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch(True)
     connected_radio._transport.write.assert_called_once_with("BP00001;")
@@ -984,6 +999,7 @@ async def test_get_manual_notch_sub_sends_bp10(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_manual_notch_sub_sends_bp10(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD12")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch(True, receiver=1)
     connected_radio._transport.write.assert_called_once_with("BP10001;")
@@ -991,6 +1007,7 @@ async def test_set_manual_notch_sub_sends_bp10(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_manual_notch_freq(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch_freq(80)
     connected_radio._transport.write.assert_called_once_with("BP01080;")
@@ -999,6 +1016,7 @@ async def test_set_manual_notch_freq(connected_radio):
 @pytest.mark.asyncio
 async def test_set_notch_filter_delegates_to_manual_notch_freq(connected_radio):
     """Cross-vendor set_notch_filter alias forwards to BP01 (issue #1102)."""
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_notch_filter(80)
     connected_radio._transport.write.assert_called_once_with("BP01080;")
@@ -1017,6 +1035,7 @@ async def test_get_notch_filter_returns_freq_index(connected_radio):
 async def test_set_manual_notch_freq_accepts_domain_values(connected_radio, freq):
     """Values on the profile's manual_notch_freq raw domain (1-320, step 1)
     are encoded as BP01 frames (MOR-1680)."""
+    connected_radio._transport.query = AsyncMock(return_value="MD02")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch_freq(freq)
     connected_radio._transport.write.assert_called_once_with(f"BP01{freq:03d};")
@@ -1044,9 +1063,81 @@ async def test_get_manual_notch_freq_sub_sends_bp11(connected_radio):
 
 @pytest.mark.asyncio
 async def test_set_manual_notch_freq_sub_sends_bp11(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="MD12")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_manual_notch_freq(120, receiver=1)
     connected_radio._transport.write.assert_called_once_with("BP11120;")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receiver", "setter", "value"),
+    [
+        (0, "set_auto_notch", True),
+        (0, "set_auto_notch", False),
+        (0, "set_manual_notch", True),
+        (0, "set_manual_notch", False),
+        (0, "set_notch_filter", 120),
+        (1, "set_manual_notch", True),
+        (1, "set_manual_notch", False),
+        (1, "set_notch_filter", 120),
+    ],
+)
+async def test_notch_write_refused_in_fm(connected_radio, receiver, setter, value):
+    connected_radio._transport.query = AsyncMock(return_value=f"MD{receiver}4")
+    connected_radio._transport.write = AsyncMock()
+
+    with pytest.raises(CommandError, match="Control is unavailable in FM mode"):
+        await getattr(connected_radio, setter)(value, receiver=receiver)
+
+    connected_radio._transport.query.assert_awaited_once_with(f"MD{receiver};")
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_websocket_notch_write_returns_fm_refusal(
+    connected_radio, virtual_clock: VirtualClock
+):
+    connected_radio._transport.query = AsyncMock(return_value="MD04")
+    connected_radio._transport.write = AsyncMock()
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = CommandQueue()
+    handler = ControlHandler(
+        ws,
+        connected_radio,
+        "test",
+        "FTX-1",
+        server=SimpleNamespace(command_queue=queue),
+    )
+
+    async def write(entry: CommandQueueEntry) -> None:
+        assert isinstance(entry.command, SetAutoNotch)
+        await connected_radio.set_auto_notch(entry.command.on, entry.command.receiver)
+
+    async with asyncio.TaskGroup() as group:
+        dispatch = group.create_task(
+            handler._dispatch_command("notch", "set_auto_notch", {"on": False})
+        )
+        await virtual_clock.elapse(0)
+        entry = queue.take_entry()
+        assert entry is not None
+        assert entry.future is not None
+        ws.send_text.assert_not_awaited()
+        with pytest.raises(CommandError, match="Control is unavailable in FM mode"):
+            await execute_command_queue_entry(entry, write)
+        await virtual_clock.elapse(0)
+        assert dispatch.done()
+
+    response = json.loads(ws.send_text.await_args.args[0])
+    assert response == {
+        "type": "response",
+        "id": "notch",
+        "ok": False,
+        "error": "control_unavailable_in_mode",
+        "message": "Control is unavailable in FM mode.",
+    }
+    connected_radio._transport.write.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
