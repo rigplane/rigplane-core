@@ -215,7 +215,7 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
       const { component } = mountReactive({
         value: 1.0, label: 'Po', displayValue: '100W', showPeak: true,
       });
-      expect(listenerCount()).toBe(2);
+      expect(listenerCount()).toBe(1);
       expect(netActiveIntervals()).toBe(1);
       expect(netActiveFrames()).toBe(1);
 
@@ -228,7 +228,7 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
       const remounted = mountReactive({
         value: 0.5, label: 'Po', displayValue: '50W', showPeak: true,
       });
-      expect(listenerCount()).toBe(2);
+      expect(listenerCount()).toBe(1);
       expect(netActiveIntervals()).toBe(1);
       expect(netActiveFrames()).toBe(1);
 

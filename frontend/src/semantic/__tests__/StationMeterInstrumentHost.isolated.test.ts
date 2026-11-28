@@ -208,6 +208,85 @@ describe('StationMeterInstrumentHost', () => {
     expect([motion.signals.length, motion.bars.length]).toEqual([1, 6]);
   });
 
+  it('updates all seven meter frames at animation cadence across shared preference changes', () => {
+    let now = 0;
+    let id = 0;
+    let reduced = false;
+    const listeners = new Set<() => void>();
+    window.matchMedia = vi.fn().mockReturnValue({
+      get matches() { return reduced; },
+      addEventListener: (_type: string, callback: () => void) => listeners.add(callback),
+      removeEventListener: (_type: string, callback: () => void) => listeners.delete(callback),
+    });
+    const frames = new Map<number, FrameRequestCallback>();
+    const intervals = new Set<number>();
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.set(++id, callback);
+      return id;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frame) => { frames.delete(frame); });
+    vi.spyOn(window, 'setInterval').mockImplementation(() => {
+      intervals.add(++id);
+      return id as any;
+    });
+    vi.spyOn(window, 'clearInterval').mockImplementation((interval) => { intervals.delete(Number(interval)); });
+    const sample = (value: number) => {
+      let current = view();
+      for (const key of Object.keys(paths) as Key[]) current = field(current, key, {
+        reading: { status: 'known', value }, domain: { kind: 'raw' },
+      });
+      return { view: current, session: { controlSessionEpoch: 1 } };
+    };
+    const { publisher } = render(sample(255));
+    const meters = [motion.signals[0].frame, ...motion.bars.map((binding) => binding.frame)];
+    expect(meters).toHaveLength(7);
+    const displayed = () => meters.map((frame) => frame.smoothedFraction as number);
+    const advanceFrame = () => {
+      now += 16;
+      const pending = [...frames];
+      for (const [frame, callback] of pending) {
+        if (frames.delete(frame)) callback(now);
+      }
+      flushSync();
+    };
+    const setReduced = (next: boolean) => {
+      reduced = next;
+      for (const callback of [...listeners]) callback();
+      flushSync();
+    };
+    const expectReleaseFrame = (previous: number[], target: number) => {
+      advanceFrame();
+      displayed().forEach((value, index) => {
+        const releaseSeconds = index === 0 ? 0.3 : 0.2;
+        expect(value).toBeCloseTo(target + (previous[index] - target) * Math.exp(-0.016 / releaseSeconds), 8);
+        expect(value).toBeLessThan(previous[index]);
+        expect(value).toBeGreaterThan(target);
+      });
+    };
+
+    displayed().forEach((value) => expect(value).toBe(1));
+    publisher.emit(sample(0)); flushSync();
+    for (let frame = 0; frame < 3; frame++) expectReleaseFrame(displayed(), 0);
+
+    setReduced(true);
+    displayed().forEach((value) => expect(value).toBe(0));
+    expect(frames.size).toBe(0);
+    expect(intervals.size).toBe(0);
+    publisher.emit(sample(255)); flushSync();
+    displayed().forEach((value) => expect(value).toBe(1));
+    expect(frames.size).toBe(0);
+    expect(intervals.size).toBe(0);
+
+    setReduced(false);
+    publisher.emit(sample(0)); flushSync();
+    expectReleaseFrame(displayed(), 0);
+    unmount(component!); component = null;
+    expect(frames.size).toBe(0);
+    expect(intervals.size).toBe(0);
+    expect(listeners.size).toBe(0);
+  });
+
   it('owns seven live bindings, stable passive frames, and tears them down once', () => {
     let id = 0; const add = vi.fn(); const remove = vi.fn();
     window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: add, removeEventListener: remove });
@@ -217,7 +296,8 @@ describe('StationMeterInstrumentHost', () => {
     const clear = vi.spyOn(window, 'clearInterval').mockImplementation(() => {});
     const { publisher, props } = render();
     expect([motion.signals.length, motion.bars.length]).toEqual([1, 6]);
-    expect(raf).toHaveBeenCalledTimes(8); expect(interval).toHaveBeenCalledTimes(3); expect(add.mock.calls.length).toBeGreaterThanOrEqual(7);
+    expect(raf).toHaveBeenCalledTimes(8); expect(interval).toHaveBeenCalledTimes(3);
+    expect(add).toHaveBeenCalledOnce();
     expect([...stationMeterProbe.frames.keys()].sort()).toEqual(Object.keys(paths).sort());
     const initial = new Map(stationMeterProbe.frames);
     for (const [key, frame] of initial) {

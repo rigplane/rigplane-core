@@ -1,3 +1,4 @@
+import { browserRenderTiming } from '$lib/canvas/scope-render-scheduler';
 import {
   createSmoother,
   onReducedMotionChange,
@@ -62,8 +63,8 @@ type AfterglowSample = Readonly<{ time: number; value: number }>;
 
 const browserMotionHost: MeterMotionHost = {
   now: () => performance.now(),
-  requestFrame: (callback) => requestAnimationFrame(callback),
-  cancelFrame: (id) => cancelAnimationFrame(id),
+  requestFrame: (callback) => browserRenderTiming.requestFrame(callback),
+  cancelFrame: (id) => browserRenderTiming.cancelFrame(id),
   setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
   clearInterval: (id) => clearInterval(id),
   prefersReducedMotion,
@@ -98,7 +99,7 @@ export function createSignalMeterMotion(
 
   function cancelAfterglow(): void {
     if (afterglowFrameId) {
-      cancelAnimationFrame(afterglowFrameId);
+      browserRenderTiming.cancelFrame(afterglowFrameId);
       afterglowFrameId = 0;
     }
   }
@@ -134,7 +135,7 @@ export function createSignalMeterMotion(
     const delayed = afterglowDelayed(now);
     afterglowValue = Math.max(displayed, delayed);
     if (afterglowValue > displayed + AFTERGLOW_EPSILON && !prefersReducedMotion()) {
-      afterglowFrameId = requestAnimationFrame(afterglowTick);
+      afterglowFrameId = browserRenderTiming.requestFrame(afterglowTick);
     } else {
       afterglowValue = displayed;
       afterglowTrail = [];
@@ -152,7 +153,7 @@ export function createSignalMeterMotion(
       { time: now, value: preDrop },
     ];
     afterglowValue = Math.max(preDrop, sample);
-    afterglowFrameId = requestAnimationFrame(afterglowTick);
+    afterglowFrameId = browserRenderTiming.requestFrame(afterglowTick);
   }
 
   const frame: SignalMeterFrame = {

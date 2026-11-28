@@ -722,12 +722,10 @@
   let panoramaCenter = new PanoramaViewportCenter(0);  let visualCenterHz = $state(0);
   // MOR-4271: the one redraw scheduler paces the panorama glide too — woken
   // while the center is settling, cancelled when it settles or on retarget.
-  // The document gate pauses the glide while hidden: no animation frame is
-  // ever requested for a panorama nobody can see.
   const panoramaScheduler = new ScopeRenderScheduler((now) => {
     visualCenterHz = panoramaCenter.sample(now);
     if (panoramaCenter.settling(now)) panoramaScheduler.wake('view');
-  }, { active: () => !document.hidden });
+  });
   let panoramaKeyApplied = $state<string | null>(null);
   let panoramaTargetApplied: number | null = null;
 

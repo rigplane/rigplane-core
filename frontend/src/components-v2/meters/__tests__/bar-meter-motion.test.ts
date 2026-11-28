@@ -206,7 +206,7 @@ describe('createBarMeterMotion', () => {
     expect(harness!.activeFrames).toBe(1);
     expect(harness!.activeIntervals).toBe(1);
     expect(harness!.intervalDelays).toEqual([100]);
-    expect(harness!.listenerCount).toBe(2);
+    expect(harness!.listenerCount).toBe(1);
 
     binding.stop();
     binding.stop();

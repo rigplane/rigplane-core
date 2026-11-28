@@ -1,15 +1,66 @@
-/**
- * MOR-1233: live (uncached) prefers-reduced-motion check. Shared by the
- * ballistics loop below and by rAF-driven peak-hold consumers (e.g.
- * LinearSMeter) so both respect the same signal without duplicating the
- * matchMedia guard.
- */
+import { browserRenderTiming } from '../canvas/scope-render-scheduler';
+
+// MOR-2551 P2a: ONE shared reactive state object for the life of the module.
+// Recreating it on every re-subscribe stranded surviving reactive readers of
+// prefersReducedMotion() on the discarded object. The unsubscribe/subscribe
+// cycle below only adds/removes the native media-query listener; the cached
+// query and this state survive it, so getter consumers (which own no
+// teardown handle) and late subscribers always observe the same object.
+const motionState = $state({ reduced: false });
+let motionQuery: MediaQueryList | null = null;
+let queryFactory: typeof window.matchMedia | null = null;
+let detachMotionQuery: (() => void) | null = null;
+let motionListening = false;
+const motionSubscribers = new Set<(reduced: boolean) => void>();
+
+function attachMotionListener(query: MediaQueryList): void {
+  const handler = () => {
+    motionState.reduced = query.matches;
+    // MOR-2551 P2b: re-check membership per callback — a subscriber removed
+    // by an earlier callback in this same dispatch must not run (its
+    // snapshotted entry is stale and could resurrect disposed animation).
+    for (const callback of [...motionSubscribers]) {
+      if (motionSubscribers.has(callback)) callback(motionState.reduced);
+    }
+  };
+  if (typeof query.addEventListener === 'function') {
+    query.addEventListener('change', handler);
+    detachMotionQuery = () => query.removeEventListener('change', handler);
+  } else if (typeof query.addListener === 'function') {
+    query.addListener(handler);
+    detachMotionQuery = () => query.removeListener?.(handler);
+  } else {
+    detachMotionQuery = null;
+  }
+  motionListening = true;
+}
+
+function ensureMotionQuery(): void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  if (motionQuery && queryFactory === window.matchMedia) {
+    if (!motionListening) {
+      // Re-attaching after a detached spell: resync first so a change that
+      // landed while detached is not missed, then listen again. Reads stay
+      // cached while the listener is attached (no .matches polling here).
+      motionState.reduced = motionQuery.matches;
+      attachMotionListener(motionQuery);
+    }
+    return;
+  }
+  detachMotionQuery?.();
+  detachMotionQuery = null;
+  motionListening = false;
+  queryFactory = window.matchMedia;
+  const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+  motionQuery = query;
+  motionState.reduced = query.matches;
+  attachMotionListener(query);
+}
+
 export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
+  ensureMotionQuery();
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? motionState.reduced : false;
 }
 
 /**
@@ -23,17 +74,20 @@ export function onReducedMotionChange(callback: (reduced: boolean) => void): () 
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return () => {};
   }
-  const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const handler = () => callback(mql.matches);
-  if (typeof mql.addEventListener === 'function') {
-    mql.addEventListener('change', handler);
-    return () => mql.removeEventListener('change', handler);
-  }
-  if (typeof mql.addListener === 'function') {
-    mql.addListener(handler);
-    return () => mql.removeListener?.(handler);
-  }
-  return () => {};
+  ensureMotionQuery();
+  const subscriber = (reduced: boolean) => callback(reduced);
+  motionSubscribers.add(subscriber);
+  return () => {
+    motionSubscribers.delete(subscriber);
+    if (motionSubscribers.size !== 0) return;
+    // MOR-2551 P2a: only the native listener is removed here. The cached
+    // query and the shared $state survive so surviving reactive readers and
+    // getter consumers keep observing the same object; re-subscribing only
+    // re-attaches the listener (see ensureMotionQuery).
+    detachMotionQuery?.();
+    detachMotionQuery = null;
+    motionListening = false;
+  };
 }
 
 /**
@@ -90,17 +144,17 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
       return;
     }
 
-    frameId = requestAnimationFrame(tick);
+    frameId = browserRenderTiming.requestFrame(tick);
   }
 
   function loop() {
     lastTime = performance.now();
-    frameId = requestAnimationFrame(tick);
+    frameId = browserRenderTiming.requestFrame(tick);
   }
 
   function start() {
     if (frameId) {
-      cancelAnimationFrame(frameId);
+      browserRenderTiming.cancelFrame(frameId);
       frameId = 0;
     }
     started = true;
@@ -115,11 +169,15 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
     unsubscribe = onReducedMotionChange((reduced) => {
       if (reduced) {
         if (frameId) {
-          cancelAnimationFrame(frameId);
+          browserRenderTiming.cancelFrame(frameId);
           frameId = 0;
         }
         current = target;
-      } else if (!frameId) {
+      } else if (started && !frameId) {
+        // MOR-2551 P2b: never restart the loop after stop(). A stale
+        // dispatch entry removed mid-dispatch is already skipped by the
+        // membership check, but started === false means this callback is
+        // teardown-orphaned — looping here would resurrect disposed work.
         loop();
       }
     });
@@ -128,7 +186,7 @@ export function createSmoother(attack = 0.12, release = 0.32, initialValue = 0) 
   function stop() {
     started = false;
     if (frameId) {
-      cancelAnimationFrame(frameId);
+      browserRenderTiming.cancelFrame(frameId);
       frameId = 0;
     }
     unsubscribe?.();

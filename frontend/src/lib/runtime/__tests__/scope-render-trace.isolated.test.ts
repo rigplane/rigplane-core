@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { scopeWire } from './scope-wire-fixture';
 import { ScopeRenderTrace } from '../scope-render-trace';
 import { parseCurrentScopeFrame } from '../adapters/scope-adapter';
+import { ScopeRenderScheduler } from '../../canvas/scope-render-scheduler';
 
 const audioBuffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', viewStartHz: 1, viewEndHz: 2, pixels: new Uint8Array(2049) });
 const parsed = parseCurrentScopeFrame(audioBuffer, { source: 'audio_fft', sourceId: 'audio-scope', epoch: 1 });
@@ -13,6 +14,7 @@ const receipt = (sequence: number, wireSequence: number, transportEpoch = 1) => 
 });
 
 describe('ScopeRenderTrace', () => {
+  // Per-file globals isolate visibility/focus listeners and fake timers (vite.config.ts).
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -185,6 +187,70 @@ describe('ScopeRenderTrace', () => {
     window.dispatchEvent(new Event('blur'));
     hidden = true; document.dispatchEvent(new Event('visibilitychange'));
     expect(trace.export()).toBe(JSON.stringify(report));
+  });
+
+  it('traces hidden intake without rendering and records only the latest frame on visible resume', () => {
+    let hidden = false;
+    let now = 0;
+    let nextId = 0;
+    let latestSequence = 0;
+    const pending = new Map<number, FrameRequestCallback>();
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => hidden ? 'hidden' : 'visible');
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      pending.set(++nextId, callback);
+      return nextId;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { pending.delete(id); });
+    const trace = new ScopeRenderTrace(undefined, undefined, 'scheduled-transition', { captureTransition: true });
+    const paint = vi.fn(() => {
+      trace.record('raf', trace.tokenForAcceptedSequence(latestSequence, 'audio_fft'));
+    });
+    const scheduler = new ScopeRenderScheduler(paint);
+    const deliver = (sequence: number) => {
+      latestSequence = sequence;
+      trace.observe(receipt(sequence, sequence));
+      scheduler.wake();
+    };
+    try {
+      deliver(1);
+      expect(pending.size).toBe(1);
+      hidden = true;
+      now = 10;
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(pending.size).toBe(0);
+      now = 20; deliver(2);
+      now = 30; deliver(3);
+      expect(trace.status).toBe('recording');
+      expect(paint).not.toHaveBeenCalled();
+      expect(request).toHaveBeenCalledTimes(1);
+      hidden = false;
+      now = 40;
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(pending.size).toBe(1);
+      for (const [id, callback] of [...pending]) {
+        pending.delete(id);
+        callback(now);
+      }
+      expect(paint).toHaveBeenCalledTimes(1);
+      expect(pending.size).toBe(0);
+      trace.stop();
+      const report = JSON.parse(trace.export()!);
+      expect(report.counts.accepted).toBe(3);
+      expect(report.timeline.filter((event: { stage: string }) => event.stage === 'callback')).toMatchObject([
+        { acceptedSequence: 1, document: { hidden: false } },
+        { acceptedSequence: 2, document: { hidden: true } },
+        { acceptedSequence: 3, document: { hidden: true } },
+      ]);
+      expect(report.timeline.filter((event: { stage: string }) => event.stage === 'raf')).toEqual([
+        expect.objectContaining({ acceptedSequence: 3, document: expect.objectContaining({ hidden: false }) }),
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      scheduler.dispose();
+      trace.dispose();
+    }
   });
 
   it('can explicitly start while hidden without changing the ordinary hidden constructor', () => {
