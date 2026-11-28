@@ -24,6 +24,7 @@ from test_web_managed_ptt_rejection import (
 )
 
 from rigplane.core.exceptions import CommandError
+from rigplane.diagnostics._logging import _DIAGNOSTIC_FORMATTER
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web.protocol import decode_json
@@ -72,6 +73,7 @@ async def test_http_controller_gate_adds_code_before_route_dispatch() -> None:
 async def test_refusal_goldens_from_real_queue_and_authority(
     surface: str,
     releasing: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     stack = _QueueStack()
     stack.server._production_managed_tx_port = SimpleNamespace(
@@ -115,6 +117,19 @@ async def test_refusal_goldens_from_real_queue_and_authority(
             else decode_json(ws.send_text.await_args.args[0])
         )
         assert body == WIRE[surface + ("Releasing" if releasing else "Held")]
+        if surface == "ws":
+            records = [
+                record
+                for record in caplog.records
+                if record.name == "rigplane.web.handlers.control"
+                and record.getMessage().startswith("control: command 'ptt_on' failed:")
+            ]
+            assert len(records) == 1
+            line = _DIAGNOSTIC_FORMATTER.format(records[0])
+            assert len(line.splitlines()) == 1
+            assert line.endswith(
+                f"control: command 'ptt_on' failed: {body['message']} code={body['code']}"
+            )
         if surface == "http":
             assert writer.status == 409
         if gate is not None:

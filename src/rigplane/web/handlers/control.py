@@ -1799,6 +1799,10 @@ class ControlHandler:
                 exc,
                 exc_info=exc,
             )
+        elif isinstance(exc, _ManagedPttRefused):
+            logger.warning(
+                "control: command %r failed: %s code=%s", name, exc, exc.reason.value
+            )
         else:
             logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
