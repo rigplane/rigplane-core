@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,7 +36,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
     ManagedTxEffect,
 )
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 
 
 def test_supports_command_gates_vfo_operations_on_observed_provider_support() -> None:
@@ -251,6 +253,75 @@ async def _finish_exchanges(
             task.cancel()
     await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
     await asyncio.wait_for(transport.close(), 1)
+
+
+def _stale_drain_cell(transport: RigctldTransport) -> dict[str, int]:
+    """In-flight ``_drain_stale`` counter for one transport (MOR-4075).
+
+    The shared ``VirtualClock`` freezes this loop's timers, so the 1 ms
+    ``wait_for`` inside ``_drain_stale`` only expires via ``elapse``. The
+    counter observes readiness: the driver steps time only while a drain is
+    genuinely parked. The wrapper calls the real drain; nothing is bypassed.
+    """
+    cell = getattr(transport, "_rt_stale_drain_cell", None)
+    if cell is not None:
+        return cell
+    real_drain = transport._drain_stale
+    cell = {"depth": 0}
+
+    async def tracked_drain(*args: Any, **kwargs: Any) -> None:
+        cell["depth"] += 1
+        try:
+            await real_drain(*args, **kwargs)
+        finally:
+            cell["depth"] -= 1
+
+    transport._drain_stale = tracked_drain  # type: ignore[method-assign]
+    transport._rt_stale_drain_cell = cell  # type: ignore[attr-defined]
+    return cell
+
+
+async def _drain_driven_await(
+    task: asyncio.Task,
+    transport: RigctldTransport,
+    virtual_clock: VirtualClock,
+    *,
+    description: str,
+) -> Any:
+    """Await *task* on a frozen loop, firing each parked stale-drain timer.
+
+    One ``elapse`` step per parked drain; response reads carry multi-second
+    bounds a 0.01 step cannot fire, and pure event waits need no step at all.
+    The shared ``await_until`` real deadline is the fail-fast bound, and the
+    task's own result or exception propagates unchanged.
+    """
+    cell = _stale_drain_cell(transport)
+    while not task.done():
+        await await_until(
+            lambda: task.done() or cell["depth"] > 0,
+            description=description,
+        )
+        if not task.done():
+            await virtual_clock.elapse(0.01)
+    return await task
+
+
+async def _drain_driven_until(
+    condition: Callable[[], bool],
+    transport: RigctldTransport,
+    virtual_clock: VirtualClock,
+    *,
+    description: str,
+) -> None:
+    """Wait for a real event on a frozen loop, same drain driving as above."""
+    cell = _stale_drain_cell(transport)
+    while not condition():
+        await await_until(
+            lambda: condition() or cell["depth"] > 0,
+            description=description,
+        )
+        if not condition():
+            await virtual_clock.elapse(0.01)
 
 
 async def _exchange_progress(task: asyncio.Task, entered: asyncio.Event) -> None:
@@ -684,22 +755,59 @@ async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
             )
             await managed._stop_scheduler(managed._scheduler_task)
             tasks.append(asyncio.create_task(managed.transmit_on()))
-            await _exchange_progress(tasks[0], entered)
+            await _drain_driven_until(
+                lambda: entered.is_set() or tasks[0].done(),
+                transport,
+                virtual_clock,
+                description="the T 1 write reaching the fake server",
+            )
+            if tasks[0].done():
+                await tasks[0]
+            assert entered.is_set(), "request did not reach the intended exchange boundary"
             assert server.commands_seen == ["T 1"]
-            await asyncio.wait_for(managed.force_off(), 1)
-            await asyncio.wait_for(tasks[0], 1)
+            displacing = asyncio.create_task(managed.force_off())
+            tasks.append(displacing)
+            await _drain_driven_await(
+                displacing,
+                transport,
+                virtual_clock,
+                description="force_off displacing the held transmit",
+            )
+            await _drain_driven_await(
+                tasks[0],
+                transport,
+                virtual_clock,
+                description="the displaced transmit settling UNCERTAIN",
+            )
             assert (await managed.snapshot()).state.release_required
             await transport.connect()
             await managed.provider_unavailable()
-            await asyncio.wait_for(managed.provider_available(8), 1)
+            available = asyncio.create_task(managed.provider_available(8))
+            tasks.append(available)
+            await _drain_driven_await(
+                available,
+                transport,
+                virtual_clock,
+                description="the provider retry writing T 0",
+            )
             before = (await managed.snapshot()).state
             assert before.release_required
             assert before.last_actuation.result is ActuationResult.UNCERTAIN
             release.set()
-            await asyncio.wait_for(late_settled.wait(), 1)
+            await await_until(
+                late_settled.is_set,
+                description="the late RPRT 0 reaching the retired socket",
+            )
             assert (await managed.snapshot()).state == before
             behavior.malformed_responses.clear()
-            await asyncio.wait_for(managed.force_off(), 1)
+            releasing = asyncio.create_task(managed.force_off())
+            tasks.append(releasing)
+            await _drain_driven_await(
+                releasing,
+                transport,
+                virtual_clock,
+                description="the owed release writing T 0 with t readback",
+            )
             assert server.commands_seen == ["T 1", "T 0", "T 0", "t"]
             assert not (await managed.snapshot()).state.release_required
         finally:
@@ -711,7 +819,13 @@ async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
             await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
             if managed is not None:
                 await transport.connect()
-                await managed.force_off()
+                settling = asyncio.create_task(managed.force_off())
+                await _drain_driven_await(
+                    settling,
+                    transport,
+                    virtual_clock,
+                    description="the cleanup force_off settling",
+                )
                 await managed.close()
             await transport.close()
 
@@ -754,10 +868,22 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
                 clock=virtual_clock,
             )
             await managed._stop_scheduler(managed._scheduler_task)
-            await asyncio.wait_for(managed.transmit_on(), 1)
+            transmitting = asyncio.create_task(managed.transmit_on())
+            await _drain_driven_await(
+                transmitting,
+                transport,
+                virtual_clock,
+                description="transmit_on writing T 1",
+            )
             assert server.commands_seen == ["T 1"]
             assert (await managed.snapshot()).state.release_required
-            await asyncio.wait_for(managed.force_off(), 1)
+            releasing = asyncio.create_task(managed.force_off())
+            await _drain_driven_await(
+                releasing,
+                transport,
+                virtual_clock,
+                description="force_off writing T 0 with t readback",
+            )
             state = (await managed.snapshot()).state
             assert server.commands_seen == ["T 1", "T 0", "t"]
             assert not finish_cleanup.is_set() and not state.release_required
@@ -771,7 +897,13 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
         finally:
             finish_cleanup.set()
             if managed is not None:
-                await managed.force_off()
+                settling = asyncio.create_task(managed.force_off())
+                await _drain_driven_await(
+                    settling,
+                    transport,
+                    virtual_clock,
+                    description="the cleanup force_off settling",
+                )
                 await managed.close()
             await transport.close()
 
@@ -927,30 +1059,60 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
     tasks = [asyncio.create_task(transport.command("T 1"))]
     lost = False
     try:
-        await asyncio.wait_for(read_entered.wait(), 1)
+        await _drain_driven_until(
+            read_entered.is_set,
+            transport,
+            virtual_clock,
+            description="the command reaching the instrumented readline",
+        )
         assert wire.written.is_set()
         assert reader._waiter is not None and not reader._waiter.done()
         tasks[0].cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(tasks[0], 1)
+            await _drain_driven_await(
+                tasks[0],
+                transport,
+                virtual_clock,
+                description="the cancelled command quarantining the connection",
+            )
         assert wire.closing and not closed.done()
         finish = transport.close if operation == "close" else transport.connect
         tasks.append(asyncio.create_task(finish()))
-        await asyncio.wait_for(entered.wait(), 1)
+        await _drain_driven_until(
+            entered.is_set,
+            transport,
+            virtual_clock,
+            description="the lifecycle task reaching the close barrier",
+        )
         tasks[-1].cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(tasks[-1], 1)
+            await _drain_driven_await(
+                tasks[-1],
+                transport,
+                virtual_clock,
+                description="the cancelled lifecycle task leaving the close future clean",
+            )
         assert not closed.cancelled(), (
             "caller cancellation poisoned shared close Future"
         )
         assert transport._writer is writer and not closed.done()
         entered.clear()
         tasks.append(asyncio.create_task(finish()))
-        await asyncio.wait_for(entered.wait(), 1)
+        await _drain_driven_until(
+            entered.is_set,
+            transport,
+            virtual_clock,
+            description="the second lifecycle task reaching the close barrier",
+        )
         assert not tasks[-1].done()
         protocol.connection_lost(None)
         lost = True
-        await asyncio.wait_for(tasks[-1], 1)
+        await _drain_driven_await(
+            tasks[-1],
+            transport,
+            virtual_clock,
+            description="the lifecycle task finishing on connection loss",
+        )
         assert closed.done() and not closed.cancelled()
         assert transport.connected == (operation == "connect")
     finally:
@@ -1025,10 +1187,20 @@ async def test_delayed_cancelled_rprt_cannot_complete_next_command(
         await transport.connect()
         tasks = [asyncio.create_task(transport.command("T 1"))]
         try:
-            await asyncio.wait_for(entered.wait(), 1)
+            await _drain_driven_until(
+                entered.is_set,
+                transport,
+                virtual_clock,
+                description="the T 1 write reaching the fake server",
+            )
             tasks[0].cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(tasks[0], 1)
+                await _drain_driven_await(
+                    tasks[0],
+                    transport,
+                    virtual_clock,
+                    description="the cancelled T 1 quarantining the connection",
+                )
             await transport.connect()
             writer = transport._writer
             assert writer is not None
@@ -1040,10 +1212,20 @@ async def test_delayed_cancelled_rprt_cannot_complete_next_command(
 
             monkeypatch.setattr(writer, "write", observe_write)
             tasks.append(asyncio.create_task(transport.command("T 0")))
-            await asyncio.wait_for(next_written.wait(), 1)
+            await _drain_driven_until(
+                next_written.is_set,
+                transport,
+                virtual_clock,
+                description="the T 0 write reaching the fresh connection",
+            )
             release.set()
             with pytest.raises(CommandError) as caught:
-                await asyncio.wait_for(tasks[-1], 1)
+                await _drain_driven_await(
+                    tasks[-1],
+                    transport,
+                    virtual_clock,
+                    description="the T 0 command failing with RPRT -5",
+                )
             assert caught.value.code == -5
         finally:
             release.set()
