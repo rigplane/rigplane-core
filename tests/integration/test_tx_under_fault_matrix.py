@@ -38,7 +38,6 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,12 +48,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # All tests in this module use MockIcomRadio and require no real hardware.
 pytestmark = pytest.mark.mock_integration
 
-from rigplane.core.state_pipeline_contracts import FieldPath  # noqa: E402
+from rigplane.core.state_pipeline_contracts import FieldPath, Observation  # noqa: E402
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.rigctld.contract import RigctldConfig  # noqa: E402
 from rigplane.rigctld.server import RigctldServer  # noqa: E402
-from rigplane.runtime import managed_tx_authority  # noqa: E402
+from rigplane.runtime import managed_tx_authority, managed_tx_effect_lane  # noqa: E402
 from rigplane.runtime._civ_rx import (  # noqa: E402
     _CIV_DATA_WATCHDOG_TIMEOUT,
     _SILENT_OPENCLOSE_DEADLINE,
@@ -527,14 +526,28 @@ async def _wait_ptt_observed(web: WebServer, deadline_s: float) -> None:
     the one observation the TX paths consume — a fresh ``1C 00`` readback.
     """
     path = FieldPath.global_("tx_state", "ptt")
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
-        try:
-            web.command_state_store.snapshot().field(path)
-            return
-        except KeyError:
-            await asyncio.sleep(0.05)
-    raise AssertionError(f"poller never observed {path} within {deadline_s:.1f}s")
+    store = web.command_state_store
+    try:
+        store.snapshot().field(path)
+        return
+    except KeyError:
+        pass
+
+    observed = asyncio.Event()
+
+    def on_observation(observation: Observation) -> None:
+        if observation.path == path:
+            observed.set()
+
+    unsubscribe = store.subscribe_observations(on_observation)
+    try:
+        await asyncio.wait_for(observed.wait(), timeout=deadline_s)
+    except TimeoutError as exc:
+        raise AssertionError(
+            f"poller never observed {path} within {deadline_s:.1f}s"
+        ) from exc
+    finally:
+        unsubscribe()
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +708,9 @@ async def test_ws_reboot_hold_notice_before_control_loss_releases_ptt(
     tmp_path: Path, virtual_clock: VirtualClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = virtual_clock
-    for module in (simulator, managed_tx_authority):
-        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=clock))
+    for module in (simulator, managed_tx_authority, managed_tx_effect_lane):
+        clock.scope_to(monkeypatch, module)
+        monkeypatch.setattr(module, "asyncio", asyncio)
     monkeypatch.setattr(
         "rigplane.runtime._control_phase.ControlPhaseRuntime._STATUS_REJECT_COOLDOWN",
         _REBOOT_BUSY_FOR_S,
@@ -713,13 +727,24 @@ async def test_ws_reboot_hold_notice_before_control_loss_releases_ptt(
     try:
         await complete_on_clock(clock, client.connect(), budget=_GATE_TIMEOUT_S)
         await complete_on_clock(
-            clock, _wait_ptt_observed(stack.web, _GATE_TIMEOUT_S), budget=_GATE_TIMEOUT_S
+            clock,
+            _wait_ptt_observed(stack.web, _GATE_TIMEOUT_S),
+            budget=_GATE_TIMEOUT_S,
         )
         assert await complete_on_clock(
             clock, client.key("reboot-key"), budget=_KEY_DEADLINE_S
         )
         assert sim.ptt_on
         login_count = sim.login_count
+        unkeyed = asyncio.Event()
+        set_ptt = sim._set_simulated_ptt
+
+        def note_ptt(on: bool, *, wire_set: bool) -> None:
+            set_ptt(on, wire_set=wire_set)
+            if not on:
+                unkeyed.set()
+
+        monkeypatch.setattr(sim, "_set_simulated_ptt", note_ptt)
         with hold_control_close(monkeypatch, sim) as (notice_seen, close):
             fault_at = clock.now
             sim.reboot(
@@ -737,12 +762,14 @@ async def test_ws_reboot_hold_notice_before_control_loss_releases_ptt(
                 close.set()
                 await advance_to(
                     clock,
-                    lambda: not sim.ptt_on,
+                    unkeyed.is_set,
                     budget=_REBOOT_BUDGET_S - (clock.now - fault_at),
                 )
-                assert not sim.ptt_on, f"PTT still held: {sim.ptt_transitions}"
+                assert unkeyed.is_set() and not sim.ptt_on, sim.ptt_transitions
                 await complete_on_clock(
-                    clock, _wait_released(stack.composition), budget=_RELEASE_DEBT_GRACE_S
+                    clock,
+                    _wait_released(stack.composition),
+                    budget=_RELEASE_DEBT_GRACE_S,
                 )
                 await clock.elapse(_SETTLE_S)
                 assert not sim.ptt_on
@@ -1103,13 +1130,27 @@ async def _wait_rf(web: WebServer, expected: RfState, deadline_s: float) -> None
 
 async def _wait_released(composition: ManagedTxComposition) -> None:
     """Wait until Core holds and owes no TX (see _RELEASE_DEBT_GRACE_S)."""
-    end = time.monotonic() + _RELEASE_DEBT_GRACE_S
-    while True:
-        state = (await composition.authority.snapshot()).state
+    authority = composition.authority
+    released = asyncio.Event()
+
+    def on_change() -> None:
+        state = authority.snapshot_nowait().state
         if state.intent.kind is ManagedTxIntentKind.RX and not state.release_required:
-            return
-        assert time.monotonic() < end, f"release still owed: {state}"
-        await asyncio.sleep(0.1)
+            released.set()
+        else:
+            released.clear()
+
+    unsubscribe = authority.subscribe_changes(on_change)
+    try:
+        on_change()
+        async with asyncio.timeout(_RELEASE_DEBT_GRACE_S):
+            while not released.is_set():
+                await released.wait()
+    except TimeoutError as exc:
+        state = authority.snapshot_nowait().state
+        raise AssertionError(f"release still owed: {state}") from exc
+    finally:
+        unsubscribe()
 
 
 async def test_a_tx_no_owner_keyed_is_never_keyed_over_and_force_off_unkeys_it(

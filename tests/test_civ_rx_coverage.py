@@ -1088,7 +1088,11 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
     elif blocker == "recovering":
         radio._civ_recovering = True
     else:
-        live: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(60))
+
+        async def pending_recovery() -> None:
+            await asyncio.Event().wait()
+
+        live = asyncio.create_task(pending_recovery())
         radio._civ_runtime._reconnect_task = live
         radio._session_lifecycle.prioritize_full_recovery(live)
     try:
@@ -1324,9 +1328,12 @@ async def test_preempting_recovery_survives_predecessor_teardown(
         )
 
 
+@pytest.mark.timeout(10)
 async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
     radio: IcomRadio,
     transport: MockTransport,
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
 ) -> None:
     """MOR-3350 P1: a waiter on a preempted tail is not cancelled with it.
 
@@ -1340,6 +1347,8 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
     own: it keeps waiting and returns normally once the replacement
     recovery completes (the stub restores ``_civ_transport``/CONNECTED).
     """
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(civ_rx_module, "asyncio", asyncio)
     radio._conn_state = RadioConnectionState.CONNECTED
     radio._civ_recovering = False
     radio._civ_runtime._reconnect_task = None
@@ -1390,10 +1399,8 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
             radio._civ_runtime.request_recovery_now("busy=0 (first)")
             first = radio._civ_runtime._reconnect_task
             assert first is not None
-            try:
-                await asyncio.wait_for(entered.wait(), 10.0)
-            except asyncio.TimeoutError:
-                pytest.fail("the first recovery never reached its tail")
+            await virtual_clock.elapse(0)
+            assert entered.is_set(), "the first recovery never reached its tail"
             waiter = asyncio.create_task(
                 radio._civ_runtime._wait_for_civ_transport_recovery(timeout=5.0)
             )
@@ -1401,29 +1408,28 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
             # the first recovery's tail (MOR-2083: the kick runs as its own
             # task, so the registered waiter is the fast-reconnect task,
             # not the polling waiter itself).
-            await await_until(
-                lambda: (
-                    radio._session_lifecycle._recovery_waiters.get(
-                        radio._civ_runtime._fast_reconnect_task
-                    )
-                    is first
-                ),
-                timeout=10.0,
-                description="the waiter joining the recovery tail",
+            await virtual_clock.elapse(0)
+            assert (
+                radio._session_lifecycle._recovery_waiters.get(
+                    radio._civ_runtime._fast_reconnect_task
+                )
+                is first
             )
             radio._civ_runtime.request_recovery_now("busy=0 (second)")
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first
             # The replacement supersedes the shared tail; the waiter coalesced
             # onto it was never cancelled itself and must not end cancelled.
-            for _ in range(20):
-                await asyncio.sleep(0)
+            await virtual_clock.elapse(0)
             assert not waiter.cancelled(), (
                 "preempting a recovery tail cancelled an unrelated waiter"
             )
-            await asyncio.wait_for(waiter, 5.0)
+            await virtual_clock.elapse(5.0)
+            assert waiter.done(), "the coalesced waiter never completed"
+            await waiter
             assert not waiter.cancelled()
-            await asyncio.wait_for(second, 10.0)
+            assert second.done(), "the replacement recovery never completed"
+            await second
             assert entered_second.is_set(), "the replacement recovery never completed"
             assert calls == 2
     finally:
