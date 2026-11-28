@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, call
 
@@ -20,8 +19,10 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_store import FreshnessClock
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock
 from rigplane.web import server as web_server
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -124,7 +125,7 @@ async def _complete_ordered_commands(
     captured: list[object],
 ) -> None:
     while len(captured) < count:
-        await queue.wait(timeout=1.0)
+        await queue.wait()
         for entry in queue.drain_entries():
             captured.append(entry.command)
             if entry.future is not None and not entry.future.done():
@@ -137,7 +138,7 @@ async def _complete_ordered_entries(
     captured: list[CommandQueueEntry],
 ) -> None:
     while len(captured) < count:
-        await queue.wait(timeout=1.0)
+        await queue.wait()
         for entry in queue.drain_entries():
             captured.append(entry)
             if entry.future is not None and not entry.future.done():
@@ -157,7 +158,7 @@ async def _fail_ordered_commands(
     executing the command against the radio.
     """
     while len(captured) < count:
-        await queue.wait(timeout=1.0)
+        await queue.wait()
         for entry in queue.drain_entries():
             captured.append(entry.command)
             if entry.command_service is not None and entry.command_id is not None:
@@ -172,7 +173,10 @@ async def _fail_ordered_commands(
 
 
 @pytest.mark.asyncio
-async def test_http_command_enqueues_single_structured_command() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_enqueues_single_structured_command(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -265,7 +269,10 @@ async def test_http_attenuator_command_reaches_wire_and_public_readback(
 
 
 @pytest.mark.asyncio
-async def test_http_single_set_freq_nak_reports_409_radio_nak() -> None:
+@pytest.mark.timeout(30)
+async def test_http_single_set_freq_nak_reports_409_radio_nak(
+    virtual_clock: VirtualClock,
+) -> None:
     """POST /api/v1/commands answers a refused write with the execution outcome.
 
     The stand-in drains the ordered entry the way the poller does — failing
@@ -371,6 +378,7 @@ def _expected_enqueue_path_body(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("name", "params"),
     [
@@ -380,7 +388,7 @@ def _expected_enqueue_path_body(
     ],
 )
 async def test_http_single_descriptor_body_matches_enqueue_path(
-    name: str, params: dict[str, object]
+    virtual_clock: VirtualClock, name: str, params: dict[str, object]
 ) -> None:
     """POST /api/v1/commands answers a descriptor command with main's body.
 
@@ -422,6 +430,7 @@ async def test_http_single_descriptor_body_matches_enqueue_path(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("model", "freq", "freq_bcd"),
     [
@@ -435,7 +444,7 @@ async def test_http_single_descriptor_body_matches_enqueue_path(
     ],
 )
 async def test_http_single_set_vfo_freq_reports_readback_body(
-    model: str, freq: int, freq_bcd: str
+    virtual_clock: VirtualClock, model: str, freq: int, freq_bcd: str
 ) -> None:
     """POST /api/v1/commands set_vfo_freq waits for the write and readback.
 
@@ -484,13 +493,15 @@ async def test_http_single_set_vfo_freq_reports_readback_body(
             path=FieldPath.active_slot("0"),
             value="A",
             source=SourceMetadata(source="command_response", provider="vfo_binding"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=virtual_clock(),
             max_age=5,
             provider_generation=store.provider_generation,
         )
     )
     generation = store.provider_generation
-    poller = RadioPoller(radio, srv.command_queue, state_store=store)  # type: ignore[arg-type]
+    poller = RadioPoller(  # type: ignore[arg-type]
+        radio, srv.command_queue, state_store=store, clock=virtual_clock
+    )
     for path, value in (
         (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
         (FieldPath.active("0", "freq_mode", "mode"), "LSB"),
@@ -503,7 +514,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(
                 path=path,
                 value=value,
                 source=SourceMetadata(source="poll_response", provider="icom_civ"),
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=virtual_clock(),
                 provider_generation=generation,
             )
         )
@@ -572,7 +583,10 @@ async def test_http_single_set_vfo_freq_reports_readback_body(
 
 
 @pytest.mark.asyncio
-async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
+@pytest.mark.timeout(30)
+async def test_http_set_vfo_freq_ic7300_4m_receive_envelope(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-3782: IC-7300 direct VFO tuning spans the 4 m receive range.
 
     Receiver coverage is 0.030–74.800 MHz on every version (Advanced
@@ -629,14 +643,14 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
                 source=SourceMetadata(
                     source="command_response", provider="vfo_binding"
                 ),
-                timestamp_monotonic=time.monotonic(),
+                timestamp_monotonic=virtual_clock(),
                 max_age=5,
                 provider_generation=store.provider_generation,
             )
         )
         generation = store.provider_generation
         poller = RadioPoller(  # type: ignore[arg-type]
-            radio, srv.command_queue, state_store=store
+            radio, srv.command_queue, state_store=store, clock=virtual_clock
         )
         for path, value in (
             (FieldPath.active("0", "freq_mode", "freq_hz"), 7_074_000),
@@ -650,7 +664,7 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
                     path=path,
                     value=value,
                     source=SourceMetadata(source="poll_response", provider="icom_civ"),
-                    timestamp_monotonic=time.monotonic(),
+                    timestamp_monotonic=virtual_clock(),
                     provider_generation=generation,
                 )
             )
@@ -722,7 +736,10 @@ async def test_http_set_vfo_freq_ic7300_4m_receive_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_single_unexpected_poller_error_keeps_envelope() -> None:
+@pytest.mark.timeout(30)
+async def test_http_single_unexpected_poller_error_keeps_envelope(
+    virtual_clock: VirtualClock,
+) -> None:
     """A poller failure that is neither CommandError nor a timeout keeps the envelope.
 
     The poller settles the ordered future the way a lost radio link does
@@ -752,7 +769,10 @@ async def test_http_single_unexpected_poller_error_keeps_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_enqueues_raw_civ_command() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_enqueues_raw_civ_command(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -1352,7 +1372,10 @@ async def test_http_command_managed_refuses_tx_family_send_civ() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_managed_passes_set_frequency_send_civ() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_managed_passes_set_frequency_send_civ(
+    virtual_clock: VirtualClock,
+) -> None:
     """A managed set-frequency raw frame still flows through the named
     HTTP command route and queues its SendCiv unchanged."""
     radio = _radio()
@@ -1418,13 +1441,21 @@ _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 _TEST_SOURCE = SourceMetadata(source="test", provider="tests")
 
 
-def _observe_ptt(srv: WebServer, value: bool, *, age_seconds: float = 0.0) -> None:
+def _observe_ptt(
+    srv: WebServer, value: bool, now: float, *, age_seconds: float = 0.0
+) -> None:
+    # The RF-age check recomputes age from the snapshot (generated_at, real by
+    # default) instead of trusting the FRESH flag, so pin the store clock to
+    # the shared virtual time: otherwise wall time leaks into the age while no
+    # virtual time elapses. Fresh rows stay fresh (age 0 < 60 s max_age) and
+    # the stale row stays stale (age 120 s >= max_age).
+    srv.command_state_store._freshness_clock = FreshnessClock(start=now)  # noqa: SLF001
     srv.command_state_store.apply_current(
         Observation(
             path=_PTT_PATH,
             value=value,
             source=_TEST_SOURCE,
-            timestamp_monotonic=time.monotonic() - age_seconds,
+            timestamp_monotonic=now - age_seconds,
             max_age=60.0,
         )
     )
@@ -1455,6 +1486,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("payload", "ptt_value", "age_seconds", "expected_error"),
     [
@@ -1505,6 +1537,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_ptt_on() -> None:
     ],
 )
 async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fresh_rx(
+    virtual_clock: VirtualClock,
     payload: dict,
     ptt_value: bool | None,
     age_seconds: float,
@@ -1521,7 +1554,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
     )
     srv = _unmanaged_server(radio)
     if ptt_value is not None:
-        _observe_ptt(srv, ptt_value, age_seconds=age_seconds)
+        _observe_ptt(srv, ptt_value, virtual_clock(), age_seconds=age_seconds)
 
     writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
 
@@ -1531,6 +1564,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("payload", "ptt_value"),
     [
@@ -1569,6 +1603,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_tx_family_without_fres
     ],
 )
 async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
+    virtual_clock: VirtualClock,
     payload: dict,
     ptt_value: bool | None,
 ) -> None:
@@ -1583,7 +1618,7 @@ async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
     )
     srv = _unmanaged_server(radio)
     if ptt_value is not None:
-        _observe_ptt(srv, ptt_value)
+        _observe_ptt(srv, ptt_value, virtual_clock())
 
     writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
 
@@ -1608,7 +1643,9 @@ async def test_http_raw_civ_transaction_unmanaged_passes_exact_dekey(
     ],
     ids=["smuggled-frame-in-data", "fc-separator-smuggled-frame"],
 )
+@pytest.mark.timeout(30)
 async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
+    virtual_clock: VirtualClock,
     payload: dict,
 ) -> None:
     """A payload that cannot be parsed as one whole CI-V frame — a PTT-on
@@ -1621,7 +1658,7 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
-    _observe_ptt(srv, True)
+    _observe_ptt(srv, True, virtual_clock())
 
     writer = await _post_json(srv, "/api/v1/civ/transaction", payload)
 
@@ -1631,7 +1668,10 @@ async def test_http_raw_civ_transaction_unmanaged_refuses_smuggled_while_tx(
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() -> None:
+@pytest.mark.timeout(30)
+async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx(
+    virtual_clock: VirtualClock,
+) -> None:
     """With a fresh-known RX observation the unmanaged HTTP raw
     seat passes a TX-family frame to the radio, exactly as unmanaged
     rigctld raw ``w`` and the typed ``T 1`` do."""
@@ -1640,7 +1680,7 @@ async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() 
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
-    _observe_ptt(srv, False)
+    _observe_ptt(srv, False, virtual_clock())
 
     writer = await _post_json(
         srv,
@@ -1659,9 +1699,10 @@ async def test_http_raw_civ_transaction_unmanaged_passes_ptt_on_with_fresh_rx() 
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx() -> (
-    None
-):
+@pytest.mark.timeout(30)
+async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-3374: with a fresh-known RX observation the unmanaged HTTP raw
     seat passes a voice TX memory transmit frame to the radio, exactly as
     it passes a raw PTT-on in the same state."""
@@ -1670,7 +1711,7 @@ async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx(
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
-    _observe_ptt(srv, False)
+    _observe_ptt(srv, False, virtual_clock())
 
     writer = await _post_json(
         srv,
@@ -1689,9 +1730,10 @@ async def test_http_raw_civ_transaction_unmanaged_passes_voice_tx_with_fresh_rx(
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while_tx() -> (
-    None
-):
+@pytest.mark.timeout(30)
+async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while_tx(
+    virtual_clock: VirtualClock,
+) -> None:
     """MOR-3374 parity pin: raw CW text ``0x17`` is not TX-family, so it
     keeps passing this seat while TX is observed, exactly as before the
     voice-memory frames joined the family — the typed ``send_cw_text``
@@ -1702,7 +1744,7 @@ async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
-    _observe_ptt(srv, True)
+    _observe_ptt(srv, True, virtual_clock())
 
     writer = await _post_json(
         srv,
@@ -1721,9 +1763,10 @@ async def test_http_raw_civ_transaction_unmanaged_raw_cw_text_still_passes_while
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_tx() -> (
-    None
-):
+@pytest.mark.timeout(30)
+async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_tx(
+    virtual_clock: VirtualClock,
+) -> None:
     """A non-TX frame (set frequency) passes regardless of the observed RF
     state, observed TX included: it is not a TX actuation."""
     radio = _radio()
@@ -1731,7 +1774,7 @@ async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_t
         return_value=SimpleNamespace(status="sent", frame=None, frame_bytes=None)
     )
     srv = _unmanaged_server(radio)
-    _observe_ptt(srv, True)
+    _observe_ptt(srv, True, virtual_clock())
 
     writer = await _post_json(
         srv,
@@ -1750,7 +1793,10 @@ async def test_http_raw_civ_transaction_unmanaged_passes_non_tx_while_observed_t
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_single_commands_preserve_repeated_steps() -> None:
+@pytest.mark.timeout(30)
+async def test_http_raw_civ_single_commands_preserve_repeated_steps(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -1816,7 +1862,10 @@ async def test_http_command_without_auth_keeps_read_only_guard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_preserves_exact_order_and_repeated_commands() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_preserves_exact_order_and_repeated_commands(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -1854,7 +1903,10 @@ async def test_http_command_batch_preserves_exact_order_and_repeated_commands() 
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_preserves_raw_civ_step_order() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_preserves_raw_civ_step_order(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -1895,7 +1947,10 @@ async def test_http_command_batch_preserves_raw_civ_step_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_mixes_command_transaction_command_in_order() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_mixes_command_transaction_command_in_order(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _radio()
     frame = SimpleNamespace(
         command=0x1A,
@@ -1924,7 +1979,7 @@ async def test_http_command_batch_mixes_command_transaction_command_in_order() -
 
     async def complete_commands() -> None:
         while sum(1 for event in events if event[0] == "command") < 2:
-            await srv.command_queue.wait(timeout=1.0)
+            await srv.command_queue.wait()
             for entry in srv.command_queue.drain_entries():
                 events.append(("command", entry.command))
                 if entry.future is not None and not entry.future.done():
@@ -2119,7 +2174,10 @@ async def test_http_command_batch_reports_unknown_typed_step_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_legacy_command_tolerates_extra_type_field() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_legacy_command_tolerates_extra_type_field(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -2208,7 +2266,10 @@ async def test_http_command_batch_raw_civ_transaction_nak_stops_and_skips_later(
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_transaction_timeout_can_continue() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_transaction_timeout_can_continue(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _radio()
     radio.send_civ_transaction = AsyncMock(side_effect=TimeoutError("timed out"))
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -2486,7 +2547,10 @@ async def test_http_command_batch_mixed_legacy_then_transaction_no_radio_stays_s
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_legacy_send_civ_stays_fire_and_forget() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_legacy_send_civ_stays_fire_and_forget(
+    virtual_clock: VirtualClock,
+) -> None:
     radio = _radio()
     radio.send_civ_transaction = AsyncMock()
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -2670,7 +2734,10 @@ async def test_http_command_batch_timeout_cancels_unconsumed_step(
 
 
 @pytest.mark.asyncio
-async def test_http_command_batch_reports_prior_executed_step_before_failure() -> None:
+@pytest.mark.timeout(30)
+async def test_http_command_batch_reports_prior_executed_step_before_failure(
+    virtual_clock: VirtualClock,
+) -> None:
     srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
     captured: list[object] = []
     consumer = asyncio.create_task(
@@ -2866,6 +2933,7 @@ async def _post_level_series(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("path", ["/api/v1/commands", "/api/v1/commands/batch"])
 @pytest.mark.parametrize(
     ("name", "unit", "expected"),
@@ -2880,6 +2948,7 @@ async def _post_level_series(
     ],
 )
 async def test_http_normalized_level_marker_reaches_native_effects(
+    virtual_clock: VirtualClock,
     path: str,
     name: str,
     unit: str,
@@ -2902,6 +2971,7 @@ async def test_http_normalized_level_marker_reaches_native_effects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("path", ["/api/v1/commands", "/api/v1/commands/batch"])
 @pytest.mark.parametrize(
     ("name", "unit", "expected"),
@@ -2917,6 +2987,7 @@ async def test_http_normalized_level_marker_reaches_native_effects(
     ],
 )
 async def test_http_untagged_level_json_type_compatibility(
+    virtual_clock: VirtualClock,
     path: str,
     name: str,
     unit: str,
@@ -3005,6 +3076,7 @@ async def test_http_normalized_level_marker_rejects_malformed_without_effect(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("continue_on_error", "expected_statuses", "expected_commands"),
     [
@@ -3017,6 +3089,7 @@ async def test_http_normalized_level_marker_rejects_malformed_without_effect(
     ],
 )
 async def test_http_batch_malformed_normalized_step_preserves_ordered_policy(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
     continue_on_error: bool,
     expected_statuses: list[str],
@@ -3056,6 +3129,7 @@ async def test_http_batch_malformed_normalized_step_preserves_ordered_policy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize(
     ("name", "level", "expected_level", "expected_expectation"),
     [
@@ -3066,6 +3140,7 @@ async def test_http_batch_malformed_normalized_step_preserves_ordered_policy(
     ],
 )
 async def test_http_batch_watts_power_expectation_uses_profile_max_watts(
+    virtual_clock: VirtualClock,
     name: str,
     level: int | float,
     expected_level: int,
