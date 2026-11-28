@@ -1652,9 +1652,10 @@ class TestRunErrorHandling:
     async def test_run_reports_unsupported_serial_model_cleanly(self, capsys) -> None:
         """create_radio's own ValueError reaches the user as `Error: ...`, not a traceback.
 
-        X6100 has a rig profile (so _resolve_model accepts --model X6100 and
+        TX-500 has a rig profile (so _resolve_model accepts --model TX-500 and
         _build_backend_config returns), but backends.factory.create_radio has no
         serial route for it and raises; that raise used to escape _run uncaught.
+        (MOR-4801 routed the X6100, so TX-500 carries this coverage now.)
         """
         args = Namespace(
             backend="serial",
@@ -1666,7 +1667,7 @@ class TestRunErrorHandling:
             user="",
             password="",
             timeout=0.1,
-            model="X6100",
+            model="TX-500",
             radio_addr=None,
             rx_device=None,
             tx_device=None,
@@ -1676,7 +1677,7 @@ class TestRunErrorHandling:
         rc = await _run(args)
         assert rc == 1
         err = capsys.readouterr().err
-        assert err.startswith("Error: Unsupported serial model 'X6100'")
+        assert err.startswith("Error: Unsupported serial model 'TX-500'")
         assert "Traceback" not in err
 
     @pytest.mark.asyncio

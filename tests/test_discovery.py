@@ -509,6 +509,23 @@ class TestParseXieguModelIdReply:
     def test_short_reply_is_not_a_xiegu(self) -> None:
         assert _parse_xiegu_model_id_reply("/dev/x", bytes([0xFE, 0xFE, 0xE0])) is None
 
+    @pytest.mark.parametrize(
+        "data",
+        [
+            _XIEGU_MODEL_ID_REPLY[:6],
+            _XIEGU_MODEL_ID_REPLY[:7],
+            _XIEGU_MODEL_ID_REPLY[:8],
+            b"\xfe\xfe\xe0\xa4\x1d\x19\xfd",
+            b"\xfe\xfe\xe0\xa4\x1d\x19\xfd\x62\x00\xfd",
+            b"\xfe\xfe\xe0\xa4\x1d\x19\x62\xfe\xfe\xe0\xa4\x03\x00\xfd",
+            b"\xfe\xfe\xe0\xa4\x1d\x19\x62\xff\xfd",
+        ],
+    )
+    def test_incomplete_or_malformed_reply_is_not_an_identity(
+        self, data: bytes
+    ) -> None:
+        assert _parse_xiegu_model_id_reply("/dev/x", data) is None
+
     def test_command_echo_before_reply_is_ignored(self) -> None:
         # The radio's echo of our command (dest 0xA4) lacks the FE FE E0
         # controller preamble, so only the real reply is matched.
@@ -517,6 +534,51 @@ class TestParseXieguModelIdReply:
 
 
 class TestProbeXieguModelId:
+    @pytest.mark.parametrize("split", range(1, len(_XIEGU_MODEL_ID_REPLY)))
+    @pytest.mark.asyncio
+    async def test_fragmented_reply_is_read_to_completion(self, split: int) -> None:
+        reader = _FakeReader(
+            [_XIEGU_MODEL_ID_REPLY[:split], _XIEGU_MODEL_ID_REPLY[split:]]
+        )
+        writer = _FakeWriter()
+        result = await probe_xiegu_model_id(
+            "/dev/x", 19200, 0xA4, timeout=0.1, _open_serial=_make_open(reader, writer)
+        )
+        assert result == b"\x62\x00"
+        assert writer.written == [_XIEGU_MODEL_ID_CMD]
+        assert writer.closed
+
+    @pytest.mark.parametrize("length", [6, 7, 8])
+    @pytest.mark.asyncio
+    async def test_truncated_reply_uses_the_original_deadline(
+        self, length: int, virtual_clock
+    ) -> None:
+        reader = _FakeReader([_XIEGU_MODEL_ID_REPLY[:length]])
+        writer = _FakeWriter()
+        task = asyncio.create_task(
+            probe_xiegu_model_id(
+                "/dev/x",
+                19200,
+                0xA4,
+                timeout=0.1,
+                _open_serial=_make_open(reader, writer),
+            )
+        )
+        try:
+            await virtual_clock.elapse(0.05)
+            assert not task.done()
+            reader._queue.put_nowait(_XIEGU_MODEL_ID_REPLY[length:8] or b"\x00")
+            await virtual_clock.elapse(0.04)
+            assert not task.done()
+            await virtual_clock.elapse(0.02)
+            assert task.done()
+            assert task.result() is None
+            assert writer.closed
+            assert writer.written == [_XIEGU_MODEL_ID_CMD]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     @pytest.mark.asyncio
     async def test_x6200_reply_returns_its_model_id_bytes(self) -> None:
         radio = CivRadioFake("X6200")
@@ -1690,6 +1752,43 @@ class TestDiscoverSerialRadios:
             )
 
         assert len(results) == 1
+        assert results[0].model == "Unknown Xiegu (model id 5100)"
+        assert results[0].profile_id == ""
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_fingerprint_does_not_hide_foreign_model_id(
+        self,
+    ) -> None:
+        """MOR-4801: a radio answering at 0xA4 behind the X6200 CH342
+        fingerprint whose own 0x1D
+        0x19 answer matches no profile must be named "Unknown Xiegu",
+        not mislabeled X6200. Before the fix the fingerprint match
+        suppressed the model-ID probe entirely."""
+        # First read → CI-V transceiver-ID probe response (addr 0xA4);
+        # second read → the Xiegu model-ID reply to 0x1D 0x19.
+        reader = _FakeReader([_IC705_RESPONSE, _XIEGU_UNKNOWN_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/cu.usbmodem58910181093",
+            "USB Dual_Serial",
+            "USB VID:PID=1A86:55D2 SER=5891018109 LOCATION=0-1.2.4",
+            vid=0x1A86,
+            pid=0x55D2,
+            manufacturer=None,
+            product="USB Dual_Serial",
+            serial_number="5891018109",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0xA4
         assert results[0].model == "Unknown Xiegu (model id 5100)"
         assert results[0].profile_id == ""
 

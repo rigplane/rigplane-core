@@ -48,12 +48,19 @@ class TestRadioModels:
         assert r.has_wifi is True
         assert r.receivers == 1
 
+    def test_x6100(self) -> None:
+        r = RADIOS["X6100"]
+        assert r.civ_addr == 0x70
+        assert r.has_lan is False
+        assert r.has_wifi is True
+        assert r.receivers == 1
+
     def test_lan_capable_radios(self) -> None:
         # All Icom rigs in this registry are LAN-capable. The Xiegu X6200
-        # is the USB-only entry; the G7250 gained wfview-mode LAN control
-        # (LIVE G7250 LAN 2026-11-13, MOR-4436). Documented as the
-        # exception so future non-LAN rigs don't trip this assertion.
-        lan_capable = set(RADIOS) - {"X6200"}
+        # and X6100 are the USB-only entries; the G7250 gained wfview-mode
+        # LAN control (LIVE G7250 LAN 2026-11-13, MOR-4436). Documented as
+        # the exceptions so future non-LAN rigs don't trip this assertion.
+        lan_capable = set(RADIOS) - {"X6200", "X6100"}
         for name in lan_capable:
             assert RADIOS[name].has_lan, f"{name} should have LAN"
         assert RADIOS["X6200"].has_lan is False
@@ -72,6 +79,13 @@ class TestGetCivAddr:
         assert get_civ_addr("X6200") == 0xA4
         assert get_civ_addr("x6200") == 0xA4
         assert get_civ_addr("X-6200") == 0xA4
+
+    def test_x6100(self) -> None:
+        # MOR-4801: same registry gap as X6200 had — ``--model X6100``
+        # raised KeyError here, so the serial path could never address it.
+        assert get_civ_addr("X6100") == 0x70
+        assert get_civ_addr("x6100") == 0x70
+        assert get_civ_addr("X-6100") == 0x70
 
     def test_case_insensitive(self) -> None:
         assert get_civ_addr("ic-7300") == 0x94
@@ -125,8 +139,12 @@ class TestIdentifyRadio:
         assert "model id" in caplog.text.lower()
 
     def test_all_map_entries_covered(self) -> None:
-        # 8 since MOR-3984: the IC-905 (0xAC) row joined the table.
         assert len(SERIAL_RADIO_MAP) == 8
+
+    def test_x6100_default_address_requires_explicit_model(self) -> None:
+        assert 0x70 not in SERIAL_RADIO_MAP
+        assert 0x70 not in CIV_PROFILE_MAP
+        assert identify_radio(0x70, b"\x61\x00") == "Unknown (0x70)"
 
 
 class TestCivIdentityDataConsistency:

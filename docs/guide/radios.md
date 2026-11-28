@@ -118,7 +118,11 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Rig profile:** `rigs/x6100.toml`
 - **Features:** HF + 6m, QRP 8W, built-in ATU, WiFi
 - **VFO scheme:** `ab`
-- **Status:** Profile only; the serial backend refuses it. Also a Hamlib assisted-discovery candidate.
+- **Status:** Native serial support (`--model X6100` on the shared Xiegu
+  CI-V session at default address `0x70`); native serial requires
+  explicit model/profile selection because its Xiegu model-ID reply is
+  unverified (`tests/test_serial_capabilities.py: TestX6100SerialSelection`).
+  Also a Hamlib assisted-discovery candidate.
 
 ### Xiegu X6200
 

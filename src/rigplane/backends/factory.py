@@ -54,8 +54,7 @@ def _is_yaesu_serial_model(model: str) -> bool:
 #: second allowlist may grow beside it. Values are deferred constructors:
 #: the class symbol is read from module globals only when the lambda runs,
 #: so ``monkeypatch.setattr(factory, "Ic7300SerialRadio", fake)`` keeps
-#: reaching the dispatch (review R1). X6100 has no serial backend and
-#: stays refused.
+#: reaching the dispatch (review R1).
 _SERIAL_MODEL_CLASSES: dict[str, Callable[[], type[_IcomSerialRadioBase]]] = {
     "IC-705": lambda: Ic705SerialRadio,
     "IC-7300": lambda: Ic7300SerialRadio,
@@ -64,6 +63,11 @@ _SERIAL_MODEL_CLASSES: dict[str, Callable[[], type[_IcomSerialRadioBase]]] = {
     # x6200_caps). Its own subclass keeps the unmeasured 50 ms gap; the
     # command set still comes from the loaded rig via ``model``.
     "X6200": lambda: XieguSerialRadio,
+    # X6100 (MOR-4801) rides the same Xiegu CI-V session at its own
+    # address 0x70 (rigs/x6100.toml); the command set still comes from
+    # the loaded rig via ``model``, so an explicit ``--model X6100``
+    # choice is honoured instead of falling back to the X6200 profile.
+    "X6100": lambda: XieguSerialRadio,
     # G7250 (MOR-4352) shares the Xiegu CI-V session; its command set comes
     # from rigs/g7250.toml (LIVE bench audit 2026-11-09).
     "G7250": lambda: XieguSerialRadio,
@@ -81,7 +85,7 @@ def supports_serial_model(model: str | None) -> bool:
     :func:`create_radio` uses, so route catalogs (setup wizards,
     higher-level products) follow the factory instead of keeping a second
     model allowlist in sync. ``None`` or blank — refused by
-    :func:`create_radio` — is ``False`` here. X6100 stays unsupported.
+    :func:`create_radio` — is ``False`` here.
     """
     if model is None or not model.strip():
         return False

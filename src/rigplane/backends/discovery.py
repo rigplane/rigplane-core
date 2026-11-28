@@ -705,10 +705,13 @@ async def probe_xiegu_model_id(
                 break
             try:
                 chunk = await asyncio.wait_for(reader.read(64), timeout=remaining)
+                if not chunk:
+                    break
                 buf.extend(chunk)
             except asyncio.TimeoutError:
                 break
-            if buf.find(response_preamble) != -1:
+            start = buf.find(response_preamble)
+            if start != -1 and buf.find(0xFD, start + 3) != -1:
                 break
 
         return _parse_xiegu_model_id_reply(port, bytes(buf))
@@ -733,9 +736,13 @@ def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
         logger.debug("probe_xiegu_model_id: no reply from %s (not a Xiegu)", port)
         return None
 
-    frame = data[idx:]
+    end_idx = data.find(0xFD, idx + 3)
+    if end_idx == -1:
+        logger.debug("probe_xiegu_model_id: incomplete reply from %s", port)
+        return None
+    frame = data[idx : end_idx + 1]
     if len(frame) < 6:
-        logger.debug("probe_xiegu_model_id: reply too short from %s", port)
+        logger.debug("probe_xiegu_model_id: malformed reply from %s", port)
         return None
 
     if frame[4] == 0xFA:
@@ -749,11 +756,11 @@ def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
         )
         return None
 
-    end_idx = frame.find(0xFD, 6)
-    model = bytes(frame[6:end_idx]) if end_idx != -1 else b""
-    logger.info(
-        "probe_xiegu_model_id: %s is a Xiegu (model id %s)", port, model.hex() or "?"
-    )
+    if len(frame) < 8 or b"\xfe" in frame[3:-1] or b"\xff" in frame[3:-1]:
+        logger.debug("probe_xiegu_model_id: malformed reply from %s", port)
+        return None
+    model = bytes(frame[6:-1])
+    logger.info("probe_xiegu_model_id: %s is a Xiegu (model id %s)", port, model.hex())
     return model
 
 
@@ -1353,15 +1360,20 @@ async def resolve_civ_radio_identity(
 
     1. the CI-V address/model-ID table
        (:func:`rigplane.radios.identify_radio`, ``CIV_PROFILE_MAP``);
-    2. the X6200 USB-hardware fingerprint override at the shared 0xA4
-       address (MOR-170), when *port* metadata is supplied;
-    3. the Xiegu-only ``0x1D 0x19`` model-ID opcode when the fingerprint
-       is absent or inconclusive at 0xA4 (MOR-226), and at 0x00 for a
-       radio that answered the broadcast probe by echoing the broadcast
-       address (MOR-4352) — the one extra probe, sent to no other address,
-       with *port*/*baud* taken from *civ* and the same ``_open_serial``
-       injection as the CI-V probe. The reply is mapped to a profile
-       through the profiles' ``[radio].xiegu_model_id`` data.
+    2. the Xiegu-only ``0x1D 0x19`` model-ID opcode at 0xA4 (MOR-226) and
+       at 0x00 for a radio that answered the broadcast probe by echoing
+       the broadcast address (MOR-4352) — the one extra probe, sent to no
+       other address, with *port*/*baud* taken from *civ* and the same
+       ``_open_serial`` injection as the CI-V probe. The reply is mapped
+       to a profile through the profiles' ``[radio].xiegu_model_id`` data
+       and outranks the fingerprint below: the opcode answer comes from
+       the radio itself, while a USB VID/PID describes the bridge chip,
+       which custom firmware (or a re-cabled port) can present for any
+       radio. MOR-4801.
+    3. the X6200 USB-hardware fingerprint at the shared 0xA4 address
+       (MOR-170), when *port* metadata is supplied — now a fallback for
+       radios that stay silent on the opcode (NAK/timeout), never a
+       short-circuit that suppresses the radio's own answer.
 
     Callers own the address/model *match* decision; this helper only
     names what answered.
@@ -1371,21 +1383,23 @@ async def resolve_civ_radio_identity(
 
     model = identify_radio(civ.address, civ.model_id)
     profile_id = CIV_PROFILE_MAP.get(civ.address, "")
-    # Hardware-fingerprint override for the IC-705 / X6200 CI-V
+    # Hardware-fingerprint fallback for the IC-705 / X6200 CI-V
     # address collision (both default to 0xA4). MOR-170.
-    xiegu_override = (
+    fingerprint = (
         _resolve_xiegu_x6200_override(civ.address, port) if port is not None else None
     )
-    if xiegu_override is None and civ.address in (0xA4, 0x00):
-        # When the USB fingerprint is missing or inconclusive at the shared
-        # 0xA4 address, confirm via the Xiegu-only CI-V model-ID opcode
-        # (0x1D 0x19) — survives future USB-chip changes the hwid
-        # fingerprint misses and never mislabels an IC-705 (which NAKs the
-        # opcode). MOR-226.
+    xiegu_override = None
+    if civ.address in (0xA4, 0x00):
+        # Always ask the radio itself at the shared 0xA4 address: the
+        # opcode survives USB-chip changes the hwid fingerprint misses and
+        # never mislabels an IC-705 (which NAKs the opcode). MOR-226.
         # MOR-4352 also asks at 0x00: a Xiegu that answered the broadcast
         # probe by echoing the broadcast address (address 0x00 in *civ*,
         # LIVE G7250 2026-11-09) is otherwise "Unknown (0x00)" — the address
         # table cannot name it, but its 0x1D 0x19 reply can.
+        # MOR-4801: this probe used to be skipped on a fingerprint match,
+        # so any non-X6200 Xiegu behind a CH342 bridge (e.g. an X6100 with
+        # custom firmware answering at 0xA4) was silently labeled X6200.
         model_id = await probe_xiegu_model_id(
             civ.port, civ.baud, civ.address, _open_serial=_open_serial
         )
@@ -1402,6 +1416,10 @@ async def resolve_civ_radio_identity(
                     f"Unknown Xiegu (model id {model_id.hex()})",
                     "",
                 )
+    if xiegu_override is None:
+        # No opcode answer (NAK, timeout, or an address the probe is never
+        # sent to): fall back to the fingerprint, then to the address table.
+        xiegu_override = fingerprint
     if xiegu_override is not None:
         model, profile_id = xiegu_override
     return model, profile_id

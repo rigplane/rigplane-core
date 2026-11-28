@@ -92,6 +92,13 @@ RADIOS: dict[str, RadioModel] = {
         has_lan=False,
         has_wifi=True,
     ),
+    # Default address for explicit X6100 selection (rigs/x6100.toml).
+    "X6100": RadioModel(
+        name="X6100",
+        civ_addr=0x70,
+        has_lan=False,
+        has_wifi=True,
+    ),
     # Xiegu G7250 (MOR-4436): 0xA0 is the only address answering over LAN
     # in wfview mode (LIVE 2026-11-13, V1.0.1; the vendor G7250.rig uses
     # CIVAddress=160 too). Over USB serial the radio answers any address
