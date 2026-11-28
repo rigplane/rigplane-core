@@ -34,7 +34,7 @@ from typing import Any, Literal
 import pytest
 
 from rigplane.commands import build_civ_frame, parse_civ_frame
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.types import bcd_decode, bcd_encode
 
 from rigplane_testkit.icom import MockIcomRadio
@@ -280,10 +280,21 @@ async def test_ping_mode_civ_ayt_answers_ping_request(
         assert struct.unpack_from("<H", ayr, 4)[0] == _PT_ARE_YOU_READY
 
 
-async def _drain_audio(client: _UdpClient) -> list[bytes]:
-    """Flush loopback delivery, then take every queued datagram."""
-    for _ in range(10):
-        await asyncio.sleep(0)
+async def _drain_audio(client: _UdpClient, at_least: int = 1) -> list[bytes]:
+    """Wait for loopback delivery of sent datagrams, then take every queued one.
+
+    Every send happened before a virtual-clock ``elapse`` that already ran,
+    so nothing new can be sent while waiting — only real loopback delivery
+    is outstanding, and :func:`await_until` parks on real time for exactly
+    that (MOR-4214: a fixed ``sleep(0)`` count starves under xdist load).
+    ``at_least`` is the number of datagrams already sent but not yet
+    collected; it is exact, never a guess.
+    """
+    assert await await_until(
+        lambda: client.queue.qsize() >= at_least,
+        timeout=5.0,
+        description=f"{at_least} loopback datagrams",
+    )
     out = []
     while not client.queue.empty():
         try:
@@ -308,20 +319,24 @@ async def test_ping_mode_audio_ayt_starts_rx_first_then_pings(
     ) as sim:
         client.send(_ayt(), sim.audio_port)
 
-        # Let the loopback AYT land first: elapse() settles an already
-        # quiet loop, so without this the AYT would still be in flight
-        # when virtual time jumps.
-        for _ in range(100):
-            if sim._audio_client is not None:
-                break
-            await asyncio.sleep(0)
-        assert sim._audio_client is not None, "the AYT started the RX stream"
+        # The loopback AYT lands on real time: elapse() settles an
+        # already quiet loop but moves no kernel bytes, so await the
+        # simulator-side effect instead of spinning a fixed yield count
+        # (MOR-4214: 100 sleep(0) starve under xdist load).
+        assert await await_until(
+            lambda: sim._audio_client is not None,
+            timeout=5.0,
+            description="the audio AYT to start the RX stream",
+        ), "the AYT started the RX stream"
 
         # No immediate ping: the first datagrams are RX data, and the
         # one ping REQUEST follows the first burst (recorded G7250
         # run3: RX data from t=1.055, the first ping at t=1.532).
         await virtual_clock.elapse(0.06)
-        got = await _drain_audio(client)
+        # Every burst the elapse fired is already sent (plus the one
+        # ping, which the RX counter does not count); only loopback
+        # delivery is outstanding, so the count is exact.
+        got = await _drain_audio(client, at_least=sim.audio_rx_frames_sent + 1)
         assert len(got) >= 4, "a first burst plus the ping arrive"
         pings = [
             pkt
@@ -346,7 +361,10 @@ async def test_ping_mode_audio_ayt_starts_rx_first_then_pings(
         # AYR draws no handshake of any kind; the RX stream keeps flowing.
         client.send(_ayr(), sim.audio_port)
         await virtual_clock.elapse(0.3)
-        rested = await _drain_audio(client)
+        # Only the frames sent since the first drain are outstanding.
+        rested = await _drain_audio(
+            client, at_least=sim.audio_rx_frames_sent - len(got)
+        )
         assert rested, "the stream outlives the AYR"
         assert all(len(pkt) > 0x18 for pkt in rested)
         last_inner = _rx_inner_seq(rested[-1])
