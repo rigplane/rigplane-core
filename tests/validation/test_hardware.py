@@ -20,11 +20,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from rigplane.core.exceptions import CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigTimeoutError
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
 from rigplane.core.types import AgcMode
+from rigplane.testing.timing import VirtualClock
 from rigplane.validation.hardware import execute_hardware_checks
 from rigplane.validation.registry import CheckKind, CheckSpec, ValueRule
 from rigplane.validation.runner import build_validation_artifact, load_template
@@ -830,7 +833,10 @@ async def test_tx_and_tuner_blocked_without_flags_and_manual_with():
     radio.set_ptt.assert_not_called()
 
 
-async def test_timeout_yields_fail_command_execution():
+@pytest.mark.timeout(10)
+async def test_timeout_yields_fail_command_execution(
+    virtual_clock: VirtualClock,
+):
     radio = _make_mock_radio()
 
     async def _slow(*_args, **_kwargs):
@@ -843,13 +849,20 @@ async def test_timeout_yields_fail_command_execution():
         level=ValidationLevel.DISCOVERY,
         summary="identify",
     )
-    levels = await execute_hardware_checks(
-        radio,
-        template,
-        OperatorSafetyBlock(),
-        allow_writes=False,
-        per_check_timeout=0.01,
+    task = asyncio.create_task(
+        execute_hardware_checks(
+            radio,
+            template,
+            OperatorSafetyBlock(),
+            allow_writes=False,
+            per_check_timeout=0.01,
+        )
     )
+    # The identify read sleeps past the guard; advance virtual time past the
+    # 0.01 s per-check timeout so ``_guard``'s ``wait_for`` fires with no
+    # wall-clock wait.
+    await virtual_clock.elapse(0.5)
+    levels = await task
     check = _flatten(levels)["discovery.identify"]
     assert check.status is CheckStatus.FAIL
     assert check.failure_domain is FailureDomain.COMMAND_EXECUTION
@@ -1734,9 +1747,12 @@ def _rf_gain_radio(scenario: str, *, original: int = 100):
     return radio
 
 
-async def test_rf_gain_rejected_write_reports_outcome():
+async def test_rf_gain_rejected_write_reports_outcome(
+    virtual_clock: VirtualClock,
+):
     """A CommandRejectedError on the write leg is outcome=rejected at the
     generic RMVR site, not only at _check_mode_set's hand-copy (MOR-2103)."""
+    _ = virtual_clock  # virtual loop covers the shared helper's sleep arm
     radio = _rf_gain_radio("rejected_write")
     template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
     levels = await execute_hardware_checks(
@@ -1747,9 +1763,12 @@ async def test_rf_gain_rejected_write_reports_outcome():
     assert check.evidence["outcome"] == "rejected"
 
 
-async def test_rf_gain_ignored_reports_outcome():
+async def test_rf_gain_ignored_reports_outcome(
+    virtual_clock: VirtualClock,
+):
     """A write that returns cleanly but never moves the readback is
     outcome=ignored at the generic RMVR site (MOR-2103)."""
+    _ = virtual_clock  # virtual loop covers the shared helper's sleep arm
     radio = _rf_gain_radio("ignored")
     template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
     levels = await execute_hardware_checks(
@@ -1760,10 +1779,13 @@ async def test_rf_gain_ignored_reports_outcome():
     assert check.evidence["outcome"] == "ignored"
 
 
-async def test_rf_gain_value_error_on_read_is_not_rejected():
+async def test_rf_gain_value_error_on_read_is_not_rejected(
+    virtual_clock: VirtualClock,
+):
     """A local/parse ValueError on the verify-read never reached the radio
     -- must not be labelled outcome=rejected at the generic site either
     (MOR-2103)."""
+    _ = virtual_clock  # virtual loop covers the shared helper's sleep arm
     radio = _rf_gain_radio("value_error_read")
     template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
     levels = await execute_hardware_checks(
@@ -1774,28 +1796,41 @@ async def test_rf_gain_value_error_on_read_is_not_rejected():
     assert "outcome" not in check.evidence
 
 
-async def test_rf_gain_timed_out_on_read_reports_outcome():
+@pytest.mark.timeout(10)
+async def test_rf_gain_timed_out_on_read_reports_outcome(
+    virtual_clock: VirtualClock,
+):
     """A per-check _guard timeout on the verify-read leg is outcome=timed_out
     -- proves the read-leg wiring itself is present at the generic site, not
     only the write-leg one (MOR-2103)."""
     radio = _rf_gain_radio("timed_out_read")
     template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
-    levels = await execute_hardware_checks(
-        radio,
-        template,
-        OperatorSafetyBlock(),
-        allow_writes=True,
-        per_check_timeout=0.05,
+    task = asyncio.create_task(
+        execute_hardware_checks(
+            radio,
+            template,
+            OperatorSafetyBlock(),
+            allow_writes=True,
+            per_check_timeout=0.05,
+        )
     )
+    # The verify-read leg sleeps past the guard; advance virtual time past the
+    # 0.05 s per-check timeout so ``_guard``'s ``wait_for`` fires with no
+    # wall-clock wait.
+    await virtual_clock.elapse(0.5)
+    levels = await task
     check = _flatten(levels)["rf_gain.set"]
     assert check.status is CheckStatus.FAIL
     assert check.evidence["outcome"] == "timed_out"
 
 
-async def test_rf_gain_rejected_read_is_not_reported_as_rejected():
+async def test_rf_gain_rejected_read_is_not_reported_as_rejected(
+    virtual_clock: VirtualClock,
+):
     """A read-leg CommandRejectedError can never mean the write was refused
     -- the write already succeeded by the time this leg runs. Pins the leg
     guard's sense at the generic site (MOR-2103)."""
+    _ = virtual_clock  # virtual loop covers the shared helper's sleep arm
     radio = _rf_gain_radio("rejected_read")
     template = _single_entry_template(check_id="rf_gain.set", capability="rf_gain")
     levels = await execute_hardware_checks(
