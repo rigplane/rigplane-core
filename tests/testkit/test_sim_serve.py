@@ -13,8 +13,10 @@ import asyncio
 import io
 import json
 import signal
+import struct
 import sys
 import wave
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +28,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock, await_until
 
 from rigplane_testkit.icom.simulator import _HEADER_SIZE, _PT_DISCONNECT
 from rigplane_testkit.icom.simulator_audio import TxAudioFormat
@@ -42,6 +45,8 @@ from rigplane_testkit.sim.serve import (
 
 from _perf_helpers import fast_connect
 from testkit.test_simulator_audio import (
+    _PT_I_AM_HERE,
+    _audio_openclose,
     _await_client_seq_value,
     _claim,
     _open_audio,
@@ -49,6 +54,7 @@ from testkit.test_simulator_audio import (
     _udp,
 )
 from testkit.test_simulator_faults import (
+    _ayt,
     _bare_conninfo,
     _conninfo_tx_format,
     _header,
@@ -379,10 +385,11 @@ async def test_audio_tx_capture_routes() -> None:
             client.send(_tx_audio(1, 0, pcm, radio_id), radio.audio_port)
             # inner_seq 0 -> 2: one sequence gap in the stats.
             client.send(_tx_audio(2, 2, pcm, radio_id), radio.audio_port)
-            end = asyncio.get_running_loop().time() + 2.0
-            while len(radio.audio_tx_frames) < 2:
-                assert asyncio.get_running_loop().time() < end, "frames not sunk"
-                await asyncio.sleep(0.02)
+            await await_until(
+                lambda: len(radio.audio_tx_frames) >= 2,
+                timeout=2.0,
+                description="tx frames sunk",
+            )
         finally:
             client.close()
             ctrl.close()
@@ -423,10 +430,138 @@ async def _stream_tx_frame(radio, payload: bytes) -> None:
         radio_id = await _open_audio(client, radio)
         before = len(radio.audio_tx_frames)
         client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port)
-        end = asyncio.get_running_loop().time() + 2.0
-        while len(radio.audio_tx_frames) <= before:
-            assert asyncio.get_running_loop().time() < end, "frame not sunk"
-            await asyncio.sleep(0.02)
+        await await_until(
+            lambda: len(radio.audio_tx_frames) > before,
+            timeout=2.0,
+            description="tx frame sunk",
+        )
+    finally:
+        client.close()
+
+
+def _receive_counter(radio) -> Callable[[], int]:
+    """Count datagrams reaching the simulator under test.
+
+    ``_receive`` runs on receipt, before ``response_delay`` defers the
+    reply with ``loop.call_later`` — so the count observes exactly the
+    moment a send has been delivered and its response timer armed.
+    """
+    seen: list[int] = []
+    orig_receive = radio._receive
+
+    def _counting_receive(*args, **kwargs):
+        seen.append(1)
+        return orig_receive(*args, **kwargs)
+
+    radio._receive = _counting_receive  # type: ignore[method-assign]
+    return lambda: len(seen)
+
+
+async def _send_and_arm(
+    received: Callable[[], int],
+    send: Callable[[], None],
+    clock: VirtualClock,
+    delay: float,
+    what: str,
+) -> None:
+    """One request send, observed at the simulator before driving its timer.
+
+    ``elapse`` settles only ready callbacks, not bytes still in the kernel:
+    elapsing blind can finish before the datagram is delivered, arming the
+    response timer after the advance — and the reply would then wait on a
+    frozen clock. So the send is awaited at the simulator (``_receive`` ran
+    and armed the timer) first, and only then is the timer fired.
+    """
+    before = received()
+    send()
+    await await_until(
+        lambda: received() > before,
+        timeout=2.0,
+        description=f"sim received {what}",
+    )
+    await clock.elapse(delay + 0.05)
+
+
+async def _recv_queued(ctrl, what: str) -> bytes:
+    """One reply, awaited as real loopback delivery after its timer fired."""
+    await await_until(
+        lambda: not ctrl.queue.empty(),
+        timeout=2.0,
+        description=what,
+    )
+    return await ctrl.recv()
+
+
+async def _control_roundtrip(
+    ctrl,
+    pkt: bytes,
+    radio,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
+) -> bytes:
+    """One control request/reply with ``response_delay`` driven past."""
+    await _send_and_arm(
+        received,
+        lambda: ctrl.send(pkt, radio.control_port),
+        clock,
+        delay,
+        "control request",
+    )
+    return await _recv_queued(ctrl, "control reply")
+
+
+async def _open_audio_after_elapse(
+    client,
+    radio,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
+) -> int:
+    """``_open_audio`` with the simulator's ``response_delay`` driven past."""
+    await _send_and_arm(
+        received,
+        lambda: client.send(_ayt(), radio.audio_port),
+        clock,
+        delay,
+        "audio AYT",
+    )
+    iah = await _recv_queued(client, "audio IAH")
+    assert struct.unpack_from("<H", iah, 4)[0] == _PT_I_AM_HERE
+    await _send_and_arm(
+        received,
+        lambda: client.send(_audio_openclose(seq=0), radio.audio_port),
+        clock,
+        delay,
+        "audio OpenClose",
+    )
+    return struct.unpack_from("<I", iah, 8)[0]
+
+
+async def _stream_tx_frame_after_elapse(
+    radio,
+    payload: bytes,
+    clock: VirtualClock,
+    delay: float,
+    received: Callable[[], int],
+) -> None:
+    """``_stream_tx_frame`` with the simulator's ``response_delay`` driven past."""
+    client = await _udp()
+    try:
+        radio_id = await _open_audio_after_elapse(client, radio, clock, delay, received)
+        before = len(radio.audio_tx_frames)
+        await _send_and_arm(
+            received,
+            lambda: client.send(_tx_audio(1, 0, payload, radio_id), radio.audio_port),
+            clock,
+            delay,
+            "TX audio frame",
+        )
+        await await_until(
+            lambda: len(radio.audio_tx_frames) > before,
+            timeout=2.0,
+            description="tx frame sunk",
+        )
     finally:
         client.close()
 
@@ -476,8 +611,9 @@ async def test_audio_tx_capture_reports_the_learned_tx_format() -> None:
 
 
 @pytest.mark.parametrize("response_delay", [0.0, 0.05])
+@pytest.mark.timeout(30)
 async def test_audio_tx_capture_spanning_a_format_change_is_flagged(
-    response_delay: float,
+    virtual_clock: VirtualClock, response_delay: float
 ) -> None:
     """A capture spanning a TX-format change (the client renegotiates its
     conninfo mid-capture) cannot be labeled with one sample rate: the JSON
@@ -486,24 +622,44 @@ async def test_audio_tx_capture_spanning_a_format_change_is_flagged(
     async with _stack() as s:
         radio = s.inner.backend.radio
         radio.response_delay = response_delay
+        received = _receive_counter(radio)
         ctrl = await _udp()
         try:
-            ctrl.send(_login(), radio.control_port)
-            await ctrl.recv()
-            ctrl.send(
-                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
-                radio.control_port,
+            await _control_roundtrip(
+                ctrl, _login(), radio, virtual_clock, response_delay, received
             )
-            await ctrl.recv()
-            await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            await _control_roundtrip(
+                ctrl,
+                _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=48000),
+                radio,
+                virtual_clock,
+                response_delay,
+                received,
+            )
+            await _stream_tx_frame_after_elapse(
+                radio,
+                bytes(range(256)) * 2,
+                virtual_clock,
+                response_delay,
+                received,
+            )
             assert len(radio.audio_tx_frames) == 1
             # Mid-capture the client renegotiates: a fresh conninfo at 16 kHz.
-            ctrl.send(
+            await _control_roundtrip(
+                ctrl,
                 _conninfo_tx_format(tx_codec=0x04, tx_sample_rate=16000),
-                radio.control_port,
+                radio,
+                virtual_clock,
+                response_delay,
+                received,
             )
-            await ctrl.recv()
-            await _stream_tx_frame(radio, bytes(range(256)) * 2)
+            await _stream_tx_frame_after_elapse(
+                radio,
+                bytes(range(256)) * 2,
+                virtual_clock,
+                response_delay,
+                received,
+            )
             assert len(radio.audio_tx_frames) == 2
         finally:
             ctrl.close()
@@ -899,24 +1055,26 @@ async def test_ftx1_vanish_is_visible_until_an_explicit_reappear() -> None:
         assert (await (await s.client.get("/state")).json())["vanished"] is False
 
 
-async def test_ftx1_scheduled_reappear_fires_and_is_traced() -> None:
-    # Wait for the condition with a deadline; do not assert the transient
-    # vanished state, which a loaded worker can legitimately miss.
+@pytest.mark.timeout(30)
+async def test_ftx1_scheduled_reappear_fires_and_is_traced(
+    virtual_clock: VirtualClock,
+) -> None:
+    # The reappear timer is loop.call_later: the virtual clock drives it, so
+    # there is no wall-clock wait and no poll. The transient vanished state
+    # is still not asserted: it exists only between the vanish event and the
+    # driven timer.
     async with _stack("--radio", "ftx1") as s:
         resp = await s.client.post(
             "/event", json={"event": "usb_vanish", "for_s": 0.05}
         )
         assert resp.status == 200
 
-        async def _reappeared() -> None:
-            while True:
-                state = await (await s.client.get("/state")).json()
-                names = [rec["name"] for rec in s.inner.trace.snapshot(0)["events"]]
-                if not state["vanished"] and "usb_reappear" in names:
-                    return
-                await asyncio.sleep(0.01)
+        await virtual_clock.elapse(0.5)
 
-        await asyncio.wait_for(_reappeared(), 5)
+        state = await (await s.client.get("/state")).json()
+        assert state["vanished"] is False
+        names = [rec["name"] for rec in s.inner.trace.snapshot(0)["events"]]
+        assert "usb_reappear" in names
 
 
 def _socket_serial(url: str) -> serial.SerialBase:
@@ -1050,19 +1208,31 @@ async def _wire_identity(reader, writer, ident: bytes) -> bytes:
 
 
 async def _wait_trace_record(control: str, name: str) -> dict:
-    # Bounded poll (5 s, 10 ms ticks) of GET /trace for a *name* record.
-    async with ClientSession() as http:
+    # The child process owns its clock, so the parent cannot drive its
+    # timers: await the real trace event instead of sleeping on wall time.
+    # Each GET yields to the loop, so no pacing sleep is needed.
+    found: list[dict] = []
 
-        async def _poll() -> dict:
-            events: list[dict] = []
-            while not any(rec["name"] == name for rec in events):
-                events = _strict_loads(
-                    await (await http.get(f"{control}/trace")).text()
-                )["events"]
-                await asyncio.sleep(0.01)
-            return next(rec for rec in events if rec["name"] == name)
+    async def _poll() -> None:
+        async with ClientSession() as http:
+            while not found:
+                body = _strict_loads(await (await http.get(f"{control}/trace")).text())
+                found.extend(rec for rec in body["events"] if rec["name"] == name)
 
-        return await asyncio.wait_for(_poll(), 5.0)
+    poller = asyncio.create_task(_poll())
+    try:
+        await await_until(
+            lambda: len(found) > 0,
+            timeout=5.0,
+            description=f"trace record {name!r}",
+        )
+    except BaseException:
+        poller.cancel()
+        with suppress(asyncio.CancelledError):
+            await poller
+        raise
+    await poller
+    return found[0]
 
 
 async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
@@ -1108,7 +1278,12 @@ async def test_subprocess_serial_end_to_end(tmp_path: Path) -> None:
                 assert (await resp.json())["error"] == "unsupported"
 
         proc.send_signal(signal.SIGTERM)
-        assert await asyncio.wait_for(proc.wait(), 10) == 0
+        await await_until(
+            lambda: proc.returncode is not None,
+            timeout=10.0,
+            description="sim subprocess exit",
+        )
+        assert await proc.wait() == 0
     finally:
         await _kill_if_alive(proc)
 
