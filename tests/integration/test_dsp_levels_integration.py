@@ -492,8 +492,17 @@ class TestNrLevel:
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_SUB) == 200
 
-    async def test_nr_level_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_nr_level_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """NR level 0 round-trips correctly."""
+        # NR starts at 0: move away first so the 0-wait proves delivery.
+        await dsp_radio.set_nr_level(100, receiver=RECEIVER_MAIN)
+        await await_until(
+            lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 100,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NR level 100 on MAIN",
+        )
         await dsp_radio.set_nr_level(0, receiver=RECEIVER_MAIN)
         await await_until(
             lambda: dsp_mock._nr_level[RECEIVER_MAIN] == 0,
@@ -502,7 +511,9 @@ class TestNrLevel:
         )
         assert await dsp_radio.get_nr_level(receiver=RECEIVER_MAIN) == 0
 
-    async def test_nr_level_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_nr_level_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """NR level 255 round-trips correctly."""
         await dsp_radio.set_nr_level(255, receiver=RECEIVER_MAIN)
         await await_until(
@@ -576,7 +587,9 @@ class TestPbtInner:
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_SUB) == 200
 
-    async def test_pbt_inner_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_inner_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """PBT Inner 0 round-trips correctly."""
         await dsp_radio.set_pbt_inner(0, receiver=RECEIVER_MAIN)
         await await_until(
@@ -586,7 +599,9 @@ class TestPbtInner:
         )
         assert await dsp_radio.get_pbt_inner(receiver=RECEIVER_MAIN) == 0
 
-    async def test_pbt_inner_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_inner_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """PBT Inner 255 round-trips correctly."""
         await dsp_radio.set_pbt_inner(255, receiver=RECEIVER_MAIN)
         await await_until(
@@ -660,7 +675,9 @@ class TestPbtOuter:
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 100
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_SUB) == 200
 
-    async def test_pbt_outer_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_outer_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """PBT Outer 0 round-trips correctly."""
         await dsp_radio.set_pbt_outer(0, receiver=RECEIVER_MAIN)
         await await_until(
@@ -670,7 +687,9 @@ class TestPbtOuter:
         )
         assert await dsp_radio.get_pbt_outer(receiver=RECEIVER_MAIN) == 0
 
-    async def test_pbt_outer_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_pbt_outer_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """PBT Outer 255 round-trips correctly."""
         await dsp_radio.set_pbt_outer(255, receiver=RECEIVER_MAIN)
         await await_until(
@@ -744,8 +763,17 @@ class TestNbLevel:
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 80
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_SUB) == 160
 
-    async def test_nb_level_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_nb_level_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """NB level 0 round-trips correctly."""
+        # NB starts at 0: move away first so the 0-wait proves delivery.
+        await dsp_radio.set_nb_level(80, receiver=RECEIVER_MAIN)
+        await await_until(
+            lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 80,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving NB level 80 on MAIN",
+        )
         await dsp_radio.set_nb_level(0, receiver=RECEIVER_MAIN)
         await await_until(
             lambda: dsp_mock._nb_level[RECEIVER_MAIN] == 0,
@@ -754,7 +782,9 @@ class TestNbLevel:
         )
         assert await dsp_radio.get_nb_level(receiver=RECEIVER_MAIN) == 0
 
-    async def test_nb_level_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_nb_level_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """NB level 255 round-trips correctly."""
         await dsp_radio.set_nb_level(255, receiver=RECEIVER_MAIN)
         await await_until(
@@ -828,7 +858,9 @@ class TestDigiSelShift:
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 50
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_SUB) == 210
 
-    async def test_digisel_shift_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_digisel_shift_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """DIGI-SEL shift 0 round-trips correctly."""
         await dsp_radio.set_digisel_shift(0, receiver=RECEIVER_MAIN)
         await await_until(
@@ -838,7 +870,9 @@ class TestDigiSelShift:
         )
         assert await dsp_radio.get_digisel_shift(receiver=RECEIVER_MAIN) == 0
 
-    async def test_digisel_shift_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_digisel_shift_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """DIGI-SEL shift 255 round-trips correctly."""
         await dsp_radio.set_digisel_shift(255, receiver=RECEIVER_MAIN)
         await await_until(
@@ -913,7 +947,9 @@ class TestAgcTimeConstant:
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 5
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_SUB) == 10
 
-    async def test_agc_time_constant_boundary_min(self, dsp_radio: IcomRadio) -> None:
+    async def test_agc_time_constant_boundary_min(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """AGC time constant 0 round-trips correctly."""
         await dsp_radio.set_agc_time_constant(0, receiver=RECEIVER_MAIN)
         await await_until(
@@ -923,7 +959,9 @@ class TestAgcTimeConstant:
         )
         assert await dsp_radio.get_agc_time_constant(receiver=RECEIVER_MAIN) == 0
 
-    async def test_agc_time_constant_boundary_max(self, dsp_radio: IcomRadio) -> None:
+    async def test_agc_time_constant_boundary_max(
+        self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
+    ) -> None:
         """AGC time constant 13 round-trips correctly."""
         await dsp_radio.set_agc_time_constant(13, receiver=RECEIVER_MAIN)
         await await_until(
@@ -1007,6 +1045,13 @@ class TestFilterShape:
         self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
     ) -> None:
         """MAIN and SUB filter shapes are independent."""
+        # SUB starts at SHARP: move it away first so the SHARP-wait proves delivery.
+        await dsp_radio.set_filter_shape(FilterShape.SOFT, receiver=RECEIVER_SUB)
+        await await_until(
+            lambda: dsp_mock._filter_shape[RECEIVER_SUB] == int(FilterShape.SOFT),
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving filter shape SOFT on SUB",
+        )
         await dsp_radio.set_filter_shape(FilterShape.SOFT, receiver=RECEIVER_MAIN)
         await dsp_radio.set_filter_shape(FilterShape.SHARP, receiver=RECEIVER_SUB)
         await await_until(
@@ -1160,6 +1205,13 @@ class TestAfMute:
         self, dsp_radio: IcomRadio, dsp_mock: DspLevelsMockRadio
     ) -> None:
         """MAIN and SUB AF mute states are independent."""
+        # SUB starts unmuted: mute it first so the unmute-wait proves delivery.
+        await dsp_radio.set_af_mute(True, receiver=RECEIVER_SUB)
+        await await_until(
+            lambda: dsp_mock._af_mute[RECEIVER_SUB] is True,
+            timeout=_DELIVERY_TIMEOUT_S,
+            description="mock receiving AF mute on for SUB",
+        )
         await dsp_radio.set_af_mute(True, receiver=RECEIVER_MAIN)
         await dsp_radio.set_af_mute(False, receiver=RECEIVER_SUB)
         await await_until(
