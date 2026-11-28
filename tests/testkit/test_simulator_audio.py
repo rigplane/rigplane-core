@@ -290,28 +290,34 @@ async def _collect_audio_virtual(
 ) -> list[tuple[float, bytes]]:
     """Collect one burst per 20 ms of virtual time as (arrival, packet).
 
-    Arrivals are stamped with the virtual clock: each ``elapse`` step
-    fires exactly one burst deterministically, so cadence assertions
-    read the stream's schedule instead of loopback timing. Only
-    loopback delivery is awaited on real time, with the exact sent
-    count from ``audio_rx_frames_sent`` — never a guess.
+    Each ``elapse`` step fires exactly one burst deterministically; the
+    packets that step emitted are awaited (loopback delivery is a real
+    event — ``elapse`` settles the loop's own callbacks, not bytes still
+    in the kernel) and stamped with the post-step virtual time before
+    the next step advances. Cadence assertions therefore read the
+    stream's schedule instead of loopback timing. Only delivery is
+    awaited on real time, with the exact sent count from
+    ``audio_rx_frames_sent`` — never a guess.
     """
+    out: list[tuple[float, bytes]] = []
     base = server.audio_rx_frames_sent
     steps = max(1, round(seconds / _AUDIO_BURST_PERIOD_S))
     for _ in range(steps):
         await clock.elapse(_AUDIO_BURST_PERIOD_S)
-    want = server.audio_rx_frames_sent - base
-    await await_until(
-        lambda: client.queue.qsize() >= want,
-        timeout=5.0,
-        description=f"{want} RX burst datagrams of loopback delivery",
-    )
-    out: list[tuple[float, bytes]] = []
-    while True:
-        try:
-            out.append((clock.now, client.queue.get_nowait()))
-        except asyncio.QueueEmpty:
-            return out
+        want = server.audio_rx_frames_sent - base - len(out)
+        if want > 0:
+            await await_until(
+                lambda: client.queue.qsize() >= want,
+                timeout=2.0,
+                description=f"{want} RX burst datagrams of loopback delivery",
+            )
+        stamp = clock.now
+        while True:
+            try:
+                out.append((stamp, client.queue.get_nowait()))
+            except asyncio.QueueEmpty:
+                break
+    return out
 
 
 def _rx_frames(
@@ -392,7 +398,7 @@ async def _await_client_seq(server: MockIcomRadio) -> int:
     """
     await await_until(
         lambda: server.audio_last_client_seq is not None,
-        timeout=5.0,
+        timeout=2.0,
         description="the audio open to register its tracked seq",
     )
     assert server.audio_last_client_seq is not None
@@ -404,9 +410,34 @@ async def _await_client_seq_value(server: MockIcomRadio, value: int) -> None:
     the client's datagram takes a loop tick; a fixed sleep would hope)."""
     await await_until(
         lambda: server.audio_last_client_seq == value,
-        timeout=5.0,
+        timeout=2.0,
         description=f"the audio client seq to reach {value}",
     )
+
+
+async def _await_rx_stop(server: MockIcomRadio, timeout: float = 2.0) -> int:
+    """Wait until ``audio_rx_frames_sent`` stops advancing; return the value.
+
+    Real-time form, kept for the silence-expiry test that stays in
+    ``realtime_baseline.txt`` (its window is measured on the real clock):
+    a running stream advances the counter every burst (three packets per
+    20 ms), so two equal samples a burst period apart mean the stream
+    stopped. A mutation that keeps the stream running after the stop keeps
+    the counter moving and times this out, failing the test.
+    """
+    deadline = time.monotonic() + timeout
+    previous = server.audio_rx_frames_sent
+    while True:
+        await asyncio.sleep(0.03)
+        current = server.audio_rx_frames_sent
+        if current == previous:
+            await asyncio.sleep(0.03)
+            if server.audio_rx_frames_sent == current:
+                return int(current)
+        previous = current
+        assert time.monotonic() < deadline, (
+            f"RX counter kept advancing past the stop: {current}"
+        )
 
 
 async def _assert_rx_stopped(
@@ -666,17 +697,20 @@ async def test_tx_sink_records_client_frames_and_numbering(
     """DATA frames land in ``audio_tx_frames``; tracked numbering follows
     every type-0 packet (idle/OpenClose included), per session."""
     radio_id = await _open_audio(client, server)
+    t0 = time.monotonic()
     client.send(_idle(seq=1), server.audio_port)
     client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
     client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
     await _await_client_seq_value(server, 3)  # every datagram was processed
+    t1 = time.monotonic()
 
     assert server.audio_last_client_seq == 3
     assert len(server.audio_tx_frames) == 2  # idle/OpenClose are not frames
     first, second = server.audio_tx_frames
     assert (first.seq, first.inner_seq, first.payload_len) == (2, 0, 1364)
     assert (second.seq, second.inner_seq, second.payload_len) == (3, 1, 556)
-    assert first.received_at <= second.received_at  # recorded in arrival order
+    assert t0 <= first.received_at <= t1
+    assert t0 <= second.received_at <= t1
 
 
 async def test_no_retransmit_requests_from_radio_despite_client_gap(
@@ -841,15 +875,17 @@ async def test_tx_sink_records_production_frames_until_the_session_ends(
     try:
         await _claim(server, ctrl)
         radio_id = await _open_audio(client, server)
+        t0 = time.monotonic()
         client.send(_tx_audio(2, 0, bytes(1364), radio_id), server.audio_port)
         client.send(_tx_audio(3, 1, bytes(556), radio_id), server.audio_port)
         await _await_client_seq_value(server, 3)  # both frames were processed
+        t1 = time.monotonic()
 
         assert len(server.audio_tx_frames) == 2
         first, second = server.audio_tx_frames
         assert (first.seq, first.inner_seq, first.payload_len) == (2, 0, 1364)
         assert (second.seq, second.inner_seq, second.payload_len) == (3, 1, 556)
-        assert first.received_at <= second.received_at  # arrival order
+        assert all(t0 <= f.received_at <= t1 for f in (first, second))
         assert server.audio_last_client_seq == 3
 
         # Session end (token remove): frames sent afterwards are recorded
@@ -1252,9 +1288,7 @@ async def test_reopen_from_new_address_retargets_rx(
 ) -> None:
     """A re-open from a new client address retargets the RX stream there."""
     await _open_audio(client, server)
-    assert _rx_frames(
-        await _collect_audio_virtual(virtual_clock, client, server, 0.1)
-    )
+    assert _rx_frames(await _collect_audio_virtual(virtual_clock, client, server, 0.1))
 
     moved = await _udp()
     try:
@@ -1372,9 +1406,7 @@ async def test_audio_openclose_close_stops_rx(
 ) -> None:
     """Audio-port OpenClose(close) stops the RX stream."""
     await _open_audio(client, server)
-    assert _rx_frames(
-        await _collect_audio_virtual(virtual_clock, client, server, 0.1)
-    )
+    assert _rx_frames(await _collect_audio_virtual(virtual_clock, client, server, 0.1))
 
     client.send(_audio_openclose(seq=1, open_stream=False), server.audio_port)
     await _assert_rx_stopped(virtual_clock, server, client)
@@ -1476,5 +1508,10 @@ async def test_rx_counter_counts_only_sent_packets(
 
     # Reboot characterization: the session end stops the stream before the
     # dark window, so nothing is emitted there to (mis)count either.
+    # Real-time form (this test stays in the baseline): wait for the
+    # counter to freeze, drain, then assert the quiet window.
     server.reboot(at=0.0, down_for=0.3)
-    await _assert_rx_stopped(server, client)
+    frozen_after_reboot = await _await_rx_stop(server)
+    await _drain(client)
+    await client.expect_silence(0.1)
+    assert server.audio_rx_frames_sent == frozen_after_reboot
