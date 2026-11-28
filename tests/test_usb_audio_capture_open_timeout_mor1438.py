@@ -37,8 +37,12 @@ import threading
 import pytest
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
-from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
-from rigplane.testing.timing import await_until
+from rigplane.audio.usb_driver import (
+    AudioCaptureOpenTimeoutError,
+    UsbAudioDriver,
+    bounded_portaudio_pool,
+)
+from rigplane.testing.timing import VirtualClock, await_until, virtual_clock
 
 from _portaudio_pool_helpers import drain_pool
 
@@ -84,6 +88,23 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     ]
 
 
+async def _settle_shared_pool() -> None:
+    """Wait until the module-singleton pool has settled every tracked operation.
+
+    Virtual-clock replacement for :func:`drain_pool` (MOR-4075): ``drain_pool``
+    parks on ``asyncio.sleep``, a virtual timer nobody advances here, so it
+    would hang to the watchdog. Pool completions arrive from real worker
+    threads, so this waits on the real event with ``await_until`` instead of
+    advancing the clock. The ``inflight``-zero guarantee is the same one
+    ``drain_pool`` documents (the uncount callback is registered first).
+    """
+    await await_until(
+        lambda: bounded_portaudio_pool.inflight == 0,
+        timeout=5.0,
+        description="PortAudio pool to drain",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the fake-backend paths off real CoreAudio (macOS test hosts).
@@ -97,71 +118,118 @@ def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.timeout(10)
+@virtual_clock(inline_threads=False)
 async def test_rx_open_timeout_keeps_event_loop_free(
-    caplog: pytest.LogCaptureFixture,
+    clock: VirtualClock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A stuck RX open must not stall other coroutines on the same loop."""
+    """A stuck RX open must not stall other coroutines on the same loop.
+
+    Virtual-clock (MOR-4075): the ticker parks on virtual timers fired by
+    ``clock.elapse`` instead of wall-clock sleeps, and the capture-open bound
+    fires when the clock passes it. The worker thread stays blocked on
+    ``gate`` in real time throughout; ``inline_threads=False`` keeps it that
+    way (a blocking gate inlined onto the loop thread would wedge the loop).
+    """
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     driver, backend = _make_driver()
     backend.block_rx_open = gate.wait  # blocks a WORKER thread, never the loop
 
     progressed = 0
-    stop = asyncio.Event()
 
     async def _ticker() -> None:
         nonlocal progressed
-        while not stop.is_set():
+        while True:
+            await asyncio.sleep(0.005)  # virtual timer, fired by clock.elapse
             progressed += 1
-            await asyncio.sleep(0.005)
 
+    open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
     ticker = asyncio.create_task(_ticker())
+    timeout_warnings: list[logging.LogRecord] = []
     try:
+        # Real event: the open reached the pool worker. ``open_rx`` runs on
+        # the loop thread in the same yield-free stretch as the bounded wait,
+        # so an armed timeout is guaranteed once the stream exists.
+        await await_until(
+            lambda: len(backend.rx_streams) >= 1,
+            timeout=5.0,
+            description="background open to arm",
+        )
+        await clock.elapse(0.03)
+        assert progressed >= 3, (
+            "event loop should keep making progress while the open is stuck"
+        )
+        await clock.elapse(_TEST_TIMEOUT_S)
         with pytest.raises(AudioCaptureOpenTimeoutError):
-            await driver.start_rx(lambda _frame: None)
+            await open_task
+        # Snapshot while the worker is still blocked on ``gate``: releasing
+        # it lets the abandoned open complete, and the late-handle close
+        # logs a SECOND warning (usb_driver.abandon_open) during the settle
+        # below -- reading caplog after that would see both (review round 2).
+        timeout_warnings = list(_warnings(caplog))
     finally:
-        stop.set()
-        await ticker
+        if not ticker.done():
+            ticker.cancel()
+        if not open_task.done():
+            open_task.cancel()
+        gate.set()  # release the stuck background open so the thread can exit
+        await asyncio.gather(open_task, ticker, return_exceptions=True)
+        await _settle_shared_pool()
 
-    assert progressed >= 3, (
-        "event loop should keep making progress while the open is stuck"
-    )
     assert driver.rx_running is False
 
-    warnings = _warnings(caplog)
-    assert len(warnings) == 1, "exactly one actionable warning on timeout"
-    message = warnings[0].getMessage()
+    assert len(timeout_warnings) == 1, "exactly one actionable warning on timeout"
+    message = timeout_warnings[0].getMessage()
     assert "MOR-1420" in message
     assert "consent" in message.lower()
 
-    gate.set()  # release the stuck background open so the thread can exit
-    await drain_pool()
-
 
 @pytest.mark.timeout(10)
+@virtual_clock(inline_threads=False)
 async def test_rx_open_late_return_closes_handle_not_leaked(
-    caplog: pytest.LogCaptureFixture,
+    clock: VirtualClock, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A background open that finishes AFTER the timeout must be closed."""
+    """A background open that finishes AFTER the timeout must be closed.
+
+    Virtual-clock (MOR-4075): the bound fires on ``clock.elapse``; the late
+    handle's arrival and its off-loop close are real worker-thread events
+    awaited with ``await_until``.
+    """
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     driver, backend = _make_driver()
     backend.block_rx_open = gate.wait
 
-    with pytest.raises(AudioCaptureOpenTimeoutError):
-        await driver.start_rx(lambda _frame: None)
+    open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
+    try:
+        # Real event: the open reached the pool worker (same yield-free
+        # stretch argument as the loop-free test above).
+        await await_until(
+            lambda: len(backend.rx_streams) >= 1,
+            timeout=5.0,
+            description="background open to arm",
+        )
+        await clock.elapse(_TEST_TIMEOUT_S + 0.05)
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await open_task
+    finally:
+        if not open_task.done():
+            open_task.cancel()
+        await asyncio.gather(open_task, return_exceptions=True)
 
     late_stream = backend.rx_streams[-1]
     assert late_stream.stopped_count == 0
 
     gate.set()  # let the abandoned background open finally complete
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if late_stream.stopped_count:
-            break
+    await await_until(
+        lambda: late_stream.stopped_count,
+        timeout=5.0,
+        description="late handle to be closed",
+    )
 
     assert late_stream.started_count == 1
     assert late_stream.stopped_count == 1, "late handle must be closed, not leaked"
+    await _settle_shared_pool()
 
 
 @pytest.mark.timeout(10)
@@ -328,7 +396,8 @@ async def test_rx_open_cancelled_mid_open_closes_late_handle_and_recovers() -> N
 
 
 @pytest.mark.timeout(10)
-async def test_late_close_runs_off_the_loop_thread() -> None:
+@virtual_clock(inline_threads=False)
+async def test_late_close_runs_off_the_loop_thread(clock: VirtualClock) -> None:
     """F2: closing an abandoned handle must not block the loop either.
 
     A real ``stream.stop()`` is the same kind of synchronous
@@ -337,27 +406,46 @@ async def test_late_close_runs_off_the_loop_thread() -> None:
     close actually executes on a DIFFERENT thread than the one running
     this test's event loop (a stronger, more direct proof than timing
     heuristics).
+
+    Virtual-clock (MOR-4075): the bound fires on ``clock.elapse``; the late
+    handle's close is a real worker-thread event awaited with ``await_until``.
     """
     gate = threading.Event()
     driver, backend = _make_driver()
     backend.block_rx_open = gate.wait
     loop_thread_ident = threading.get_ident()
 
-    with pytest.raises(AudioCaptureOpenTimeoutError):
-        await driver.start_rx(lambda _frame: None)
+    open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
+    try:
+        # Real event: the open reached the pool worker (same yield-free
+        # stretch argument as the loop-free test above).
+        await await_until(
+            lambda: len(backend.rx_streams) >= 1,
+            timeout=5.0,
+            description="background open to arm",
+        )
+        await clock.elapse(_TEST_TIMEOUT_S + 0.05)
+        with pytest.raises(AudioCaptureOpenTimeoutError):
+            await open_task
+    finally:
+        if not open_task.done():
+            open_task.cancel()
+        await asyncio.gather(open_task, return_exceptions=True)
 
     late_stream = backend.rx_streams[-1]
     gate.set()
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if late_stream.stopped_count:
-            break
+    await await_until(
+        lambda: late_stream.stopped_count,
+        timeout=5.0,
+        description="late handle to be closed",
+    )
 
     assert late_stream.stopped_count == 1
     assert late_stream.stop_thread_ident is not None
     assert late_stream.stop_thread_ident != loop_thread_ident, (
         "late close must run off the event-loop thread"
     )
+    await _settle_shared_pool()
 
 
 @pytest.mark.timeout(10)
@@ -422,8 +510,11 @@ async def test_timeout_warning_reports_sub_second_timeout_with_one_decimal(
 
 
 @pytest.mark.timeout(15)
+@virtual_clock(inline_threads=False)
 async def test_pool_saturation_fails_fast_instead_of_queuing(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    clock: VirtualClock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rigplane.audio import usb_driver
 
@@ -456,9 +547,20 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
     backend.block_rx_open = gate.wait
 
     try:
-        for driver in drivers[:-1]:
+        for position, driver in enumerate(drivers[:-1], start=1):
+            open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
+            # Real event: this driver's open reached a pool worker. Each
+            # driver opens a distinct device, so ``open_rx`` runs on the loop
+            # thread in the same yield-free stretch as that open's bounded
+            # wait -- an armed timeout is guaranteed once the stream exists.
+            await await_until(
+                lambda: len(backend.rx_streams) == position,
+                timeout=5.0,
+                description="wedged open to arm",
+            )
+            await clock.elapse(_TEST_TIMEOUT_S + 0.05)
             with pytest.raises(AudioCaptureOpenTimeoutError):
-                await driver.start_rx(lambda _frame: None)
+                await open_task
 
         wedged = list(backend.rx_streams)
         assert len(wedged) == capacity
@@ -491,12 +593,14 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         # never started) handle; the stronger invariant now is that no
         # additional handle exists.
         gate.set()
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + 10.0
-        while loop.time() < deadline:
-            if all(s.stopped_count for s in wedged):
-                break
-            await asyncio.sleep(0.005)
+        # Real event: every wedged worker finished its open and the
+        # abandoned-handle closes landed (no virtual timer is involved in
+        # the close path, so the clock stays put).
+        await await_until(
+            lambda: all(s.stopped_count for s in wedged),
+            timeout=10.0,
+            description="wedged opens to close their late handles",
+        )
 
         assert all(s.stopped_count for s in wedged), (
             "pool never drained -- the wedged opens' handles were not closed, "
@@ -509,15 +613,18 @@ async def test_pool_saturation_fails_fast_instead_of_queuing(
         )
     finally:
         gate.set()  # release every stuck worker so the pool can drain
-        async with asyncio.timeout(5):
-            while pool.inflight:
-                await asyncio.sleep(0.005)
+        await await_until(
+            lambda: pool.inflight == 0,
+            timeout=5.0,
+            description="pool to drain",
+        )
         pool._executor.shutdown(wait=True)
 
 
 @pytest.mark.timeout(10)
+@virtual_clock(inline_threads=False)
 async def test_abandoned_open_that_later_fails_is_logged(
-    caplog: pytest.LogCaptureFixture,
+    clock: VirtualClock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Item 2: a late-resolving abandoned open must log its exception.
 
@@ -537,20 +644,37 @@ async def test_abandoned_open_that_later_fails_is_logged(
     driver, backend = _make_driver()
     backend.block_rx_open = _block_then_fail
 
+    open_task = asyncio.create_task(driver.start_rx(lambda _frame: None))
     try:
+        # Real event: the open reached the pool worker (same yield-free
+        # stretch argument as the loop-free test above). The bound itself
+        # fires on ``clock.elapse``.
+        await await_until(
+            lambda: len(backend.rx_streams) >= 1,
+            timeout=5.0,
+            description="background open to arm",
+        )
+        await clock.elapse(_TEST_TIMEOUT_S + 0.05)
         with pytest.raises(AudioCaptureOpenTimeoutError):
-            await driver.start_rx(lambda _frame: None)
+            await open_task
     finally:
-        # MUST run even if the assertion above fails: releases the
+        if not open_task.done():
+            open_task.cancel()
+        await asyncio.gather(open_task, return_exceptions=True)
+        # MUST run even if an assertion above fails: releases the
         # non-daemon worker thread blocked in _block_then_fail so it
         # cannot wedge process exit.
         gate.set()
 
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        warnings = _warnings(caplog)
-        if any("late device init failure" in r.getMessage() for r in warnings):
-            break
+    # Real event: the abandoned open failed on its worker and the loop-side
+    # done-callback logged it.
+    await await_until(
+        lambda: any(
+            "late device init failure" in r.getMessage() for r in _warnings(caplog)
+        ),
+        timeout=5.0,
+        description="late open failure to be logged",
+    )
 
     warnings = _warnings(caplog)
     matches = [r for r in warnings if "late device init failure" in r.getMessage()]
@@ -559,11 +683,13 @@ async def test_abandoned_open_that_later_fails_is_logged(
         f"{[r.getMessage() for r in warnings]}"
     )
     assert matches[0].exc_info is not None, "exception traceback should be attached"
+    await _settle_shared_pool()
 
 
 @pytest.mark.timeout(10)
+@virtual_clock(inline_threads=False)
 async def test_duplex_open_routes_off_loop_and_times_out(
-    caplog: pytest.LogCaptureFixture,
+    clock: VirtualClock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Item 4: start_duplex must get the SAME off-loop bounded-open treatment.
 
@@ -575,33 +701,47 @@ async def test_duplex_open_routes_off_loop_and_times_out(
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     driver, backend = _make_driver()
-    # Bounded even in the not-yet-fixed case: a direct (on-loop) call would
-    # otherwise block this test's entire event loop for as long as the gate
-    # stays unset. Once routed off-loop, the driver's own capture-open
-    # timeout (0.05s) fires long before this 1s bound is reached.
-    backend.block_duplex_open = lambda: gate.wait(timeout=1.0)
+    # Blocked until the explicit ``gate.set()`` in ``finally``: no thread
+    # timeout literal here -- the realtime guard (MOR-4075) flags those and
+    # the virtual clock does not advance them, so a 1 s self-release would
+    # race the driver's 0.05 s virtual bound. Backstop against a regressed
+    # on-loop open (which would wedge the loop with the gate unset) is the
+    # file-wide 10 s pytest timeout, not a real-time wait.
+    backend.block_duplex_open = gate.wait
 
     progressed = 0
-    stop = asyncio.Event()
 
     async def _ticker() -> None:
         nonlocal progressed
-        while not stop.is_set():
+        while True:
+            await asyncio.sleep(0.005)  # virtual timer, fired by clock.elapse
             progressed += 1
-            await asyncio.sleep(0.005)
 
+    open_task = asyncio.create_task(driver.start_duplex(lambda _frame: None))
     ticker = asyncio.create_task(_ticker())
     try:
+        # Real event: the duplex open reached the pool worker (same
+        # yield-free stretch argument as the RX loop-free test above).
+        await await_until(
+            lambda: len(backend.duplex_streams) >= 1,
+            timeout=5.0,
+            description="background duplex open to arm",
+        )
+        await clock.elapse(0.03)
+        assert progressed >= 3, (
+            "event loop should keep making progress while the duplex open is stuck"
+        )
+        await clock.elapse(_TEST_TIMEOUT_S)
         with pytest.raises(AudioCaptureOpenTimeoutError):
-            await driver.start_duplex(lambda _frame: None)
+            await open_task
     finally:
-        stop.set()
-        await ticker
+        if not ticker.done():
+            ticker.cancel()
+        if not open_task.done():
+            open_task.cancel()
         gate.set()
-        await drain_pool()
+        await asyncio.gather(open_task, ticker, return_exceptions=True)
+        await _settle_shared_pool()
 
-    assert progressed >= 3, (
-        "event loop should keep making progress while the duplex open is stuck"
-    )
     assert driver.rx_running is False
     assert driver.tx_running is False
