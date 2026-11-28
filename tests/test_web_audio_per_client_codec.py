@@ -10,7 +10,6 @@ get per-client codecs.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import struct
 from typing import Any
@@ -18,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from rigplane.audio_bus import AudioBus
 from rigplane.radio_protocol import AudioCapable
+from rigplane.testing.timing import await_until
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster, AudioHandler
 from rigplane.web.protocol import (
@@ -64,11 +64,19 @@ class _FakeTranscoder:
         return b"opus-frame"
 
 
-async def _inject(bus: AudioBus, payload: bytes = PCM_PAYLOAD) -> None:
+async def _inject(bus: AudioBus, *queues: Any, payload: bytes = PCM_PAYLOAD) -> None:
+    """Deliver one radio packet, then wait for the relay fan-out to land.
+
+    ``bus._on_opus_packet`` hands the packet to the broadcaster's relay
+    task synchronously; the relay fans out onto each client's queue on a
+    later loop turn. The wait is on that real delivery event (frames
+    landing in the given client queues), never on wall time.
+    """
     pkt = MagicMock()
     pkt.data = payload
     bus._on_opus_packet(pkt)
-    await asyncio.sleep(0.1)
+    for queue in queues:
+        assert await await_until(lambda: not queue.empty())
 
 
 class TestPerClientEgressCodec:
@@ -92,7 +100,7 @@ class TestPerClientEgressCodec:
         ):
             await h_pcm._start_rx(preferred_rx_codec=AUDIO_CODEC_PCM16)
             await h_opus._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-            await _inject(bus)
+            await _inject(bus, h_pcm._frame_queue, h_opus._frame_queue)
 
         f_pcm = h_pcm._frame_queue.get_nowait()
         f_opus = h_opus._frame_queue.get_nowait()
@@ -121,7 +129,7 @@ class TestPerClientEgressCodec:
         broadcaster = AudioBroadcaster(radio)
         handler = AudioHandler(MagicMock(spec=WebSocketConnection), radio, broadcaster)
         await handler._start_rx()
-        await _inject(bus)
+        await _inject(bus, handler._frame_queue)
 
         frame = handler._frame_queue.get_nowait()
         expected = encode_audio_frame(
@@ -147,7 +155,7 @@ class TestPerClientEgressCodec:
             return_value=_FakeTranscoder(),
         ):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-            await _inject(bus)
+            await _inject(bus, handler._frame_queue)
 
         assert tap_frames == [PCM_PAYLOAD]
         bridge_pkt = bridge_sub.get_nowait()
@@ -166,7 +174,7 @@ class TestPerClientEgressCodec:
             return_value=_FakeTranscoder(),
         ):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-            await _inject(bus)
+            await _inject(bus, handler._frame_queue)
         assert len(broadcaster._client_opus_transcoders) == 1
 
         await broadcaster.unsubscribe(handler._frame_queue)
@@ -183,7 +191,7 @@ class TestPerClientEgressCodec:
             return_value=_FakeTranscoder(),
         ):
             await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_OPUS)
-            await _inject(bus)
+            await _inject(bus, handler._frame_queue)
         assert len(broadcaster._client_opus_transcoders) == 1
 
         ws.is_alive.return_value = False
@@ -200,7 +208,7 @@ class TestPerClientEgressCodec:
         handler = AudioHandler(_make_ws(), radio, broadcaster)
         await handler._start_rx(preferred_rx_codec=AUDIO_CODEC_PCM16)
         opus_payload = b"\x42" * 120
-        await _inject(bus, opus_payload)
+        await _inject(bus, handler._frame_queue, payload=opus_payload)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_OPUS
@@ -253,7 +261,7 @@ class TestAudioFormatAck:
         ws.send_text = AsyncMock(side_effect=RuntimeError("legacy client"))
         handler = AudioHandler(ws, radio, broadcaster)
         await handler._start_rx()
-        await _inject(bus)
+        await _inject(bus, handler._frame_queue)
 
         frame = handler._frame_queue.get_nowait()
         assert frame[1] == AUDIO_CODEC_PCM16
