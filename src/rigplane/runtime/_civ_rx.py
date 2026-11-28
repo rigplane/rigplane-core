@@ -70,6 +70,7 @@ from rigplane.core.exceptions import (
     TimeoutError,
 )
 from rigplane.core.transport import IcomTransport
+from rigplane.core.serial_health import SerialResponse
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -2167,10 +2168,14 @@ class CivRuntime:
                         self._remember_raw_received_frame_bytes(frame, frame_bytes)
                         self.deliver_raw_civ(frame_bytes)
                         try:
+                            response_kwargs: dict[str, Any] = {}
+                            if isinstance(pkt, SerialResponse):
+                                response_kwargs["record_response"] = pkt.record_response
                             await self._route_civ_frame(
                                 frame,
                                 generation=source_generation,
                                 store_provider_generation=store_provider_generation,
+                                **response_kwargs,
                             )
                         except Exception:
                             logger.exception(
@@ -2189,6 +2194,7 @@ class CivRuntime:
         *,
         generation: int,
         store_provider_generation: int | None = None,
+        record_response: Callable[[], None] | None = None,
     ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
         if is_directed_ptt_reply(frame, self._host._radio_addr):
@@ -2215,6 +2221,8 @@ class CivRuntime:
             self._host._scope_activity_event.set()
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                if record_response is not None:
+                    record_response()
                 self._stamp_liveness()
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
@@ -2246,6 +2254,7 @@ class CivRuntime:
                 frame,
                 source_generation=generation,
                 store_provider_generation=store_provider_generation,
+                record_response=record_response,
             )
             return
 
@@ -2259,7 +2268,15 @@ class CivRuntime:
                 frame,
                 source_generation=generation,
                 store_provider_generation=store_provider_generation,
+                record_response=record_response,
             )
+        if (
+            event.type in (CivEventType.ACK, CivEventType.NAK)
+            and frame.sub is None
+            and not frame.data
+            and record_response is not None
+        ):
+            record_response()
         claimed: _CivDataTransaction | None = None
         transport = self._host._civ_transport
         if self._host._civ_request_tracker.resolve(
@@ -2351,6 +2368,7 @@ class CivRuntime:
         *,
         source_generation: int | None = None,
         store_provider_generation: int | None = None,
+        record_response: Callable[[], None] | None = None,
     ) -> None:
         """Best-effort update of state cache from an incoming CI-V frame."""
         self._apply_state_store_observations(
@@ -2360,6 +2378,7 @@ class CivRuntime:
                 if store_provider_generation is None
                 else store_provider_generation
             ),
+            record_response=record_response,
         )
 
         host = self._host
@@ -2534,6 +2553,7 @@ class CivRuntime:
         frame: CivFrame,
         *,
         generation: int | None = None,
+        record_response: Callable[[], None] | None = None,
     ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
@@ -2550,6 +2570,8 @@ class CivRuntime:
                 and store_provider_generation
                 == self._host._state_store.provider_generation
             ):
+                if record_response is not None:
+                    record_response()
                 self._stamp_liveness(notify=True)
             return
         try:
@@ -2585,6 +2607,8 @@ class CivRuntime:
             and store_provider_generation == self._host._state_store.provider_generation
         )
         if qualifies_liveness:
+            if record_response is not None:
+                record_response()
             self._stamp_liveness(notify=not observations)
         observations = tuple(
             _replace_dataclass(

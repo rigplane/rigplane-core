@@ -79,7 +79,7 @@ class _FakeRadio:
         self.capabilities = caps  # may be None or a set
         self.connected = connected
         self.radio_ready = radio_ready_flag
-        self.control_connected = False
+        self.control_connected = connected is True
         # X6100: resolves (must not raise) but contributes zero VFO tags
         # (swap/equal codes all None), so it doesn't perturb capability
         # comparisons keyed off the fake's own declared .capabilities.
@@ -631,6 +631,27 @@ def test_radio_health_classifies_ready_radio() -> None:
     assert health["likelyCause"] == "unknown"
 
 
+def test_radio_health_control_failure_overrides_stale_ready() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    radio.control_connected = False
+    radio.serial_reconnects_total = 0
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
+
+
+def test_lan_health_does_not_infer_serial_failure_from_control_connection() -> None:
+    radio = _FakeRadio(connected=True, radio_ready_flag=True)
+    radio.control_connected = False
+
+    health = classify_radio_health(radio, now_monotonic=100.0)
+
+    assert health["radioLink"] == "connected"
+    assert health["readiness"] == "ready"
+
+
 def test_radio_health_classifies_network_loss_separately_from_server_loss() -> None:
     radio = _FakeRadio(connected=False, radio_ready_flag=False)
     radio.conn_state = "reconnecting"
@@ -680,34 +701,37 @@ def test_radio_health_reports_not_responding_for_silent_serial_link() -> None:
     assert health["likelyCause"] == "radio_not_responding"
 
 
-def test_radio_health_unknown_link_with_serial_evidence_is_not_responding() -> None:
-    """MOR-4654 round 1 (P2): a conn_state-less serial backend, transport down.
-
-    A Yaesu-shaped radio (no ``conn_state``, down transport) after a real
-    session — episodes counted or an answered identity on record — is a
-    silent radio, not ``unknown``. A radio nobody reached yet (no
-    episodes, no identity) stays ``unknown``.
-    """
+@pytest.mark.parametrize("episodes", [0, 2])
+@pytest.mark.parametrize("identity_status", ["verified", "unverified"])
+def test_radio_health_known_serial_session_reconnects_after_control_failure(
+    episodes: int, identity_status: str
+) -> None:
     from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 
     down = _FakeRadio(connected=False, radio_ready_flag=False)
-    down.serial_reconnects_total = 2
+    down.control_connected = False
+    down.serial_reconnects_total = episodes
     down.connection_identity = RadioIdentity(
-        status=RadioIdentityStatus.VERIFIED,
+        status=RadioIdentityStatus(identity_status),
         expected_model="FTX-1",
         answered_model="FTX-1",
         answered_id="0840",
     )
 
     health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
+    assert health["radioLink"] == "reconnecting"
+    assert health["likelyCause"] == "radio_not_responding"
+    assert health["readiness"] == "recovering"
+
+
+def test_radio_health_unknown_link_with_serial_evidence_is_not_responding() -> None:
+    down = _FakeRadio(connected=False, radio_ready_flag=False)
+    down.serial_reconnects_total = 2
+
+    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
     assert health["radioLink"] == "unknown"
     assert health["likelyCause"] == "radio_not_responding"
     assert health["readiness"] == "stalled"
-
-    # The answered identity alone (no counted episode yet) is evidence too.
-    down.serial_reconnects_total = 0
-    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
-    assert health["likelyCause"] == "radio_not_responding"
 
     # Never reached: no episodes, no identity — still unknown.
     fresh = _FakeRadio(connected=False, radio_ready_flag=False)
@@ -715,6 +739,7 @@ def test_radio_health_unknown_link_with_serial_evidence_is_not_responding() -> N
     health = classify_radio_health(fresh, server_reachable=True, now_monotonic=100.0)
     assert health["radioLink"] == "unknown"
     assert health["likelyCause"] == "unknown"
+    assert health["readiness"] == "stalled"
 
 
 def test_radio_health_keeps_network_lost_when_host_unreachable() -> None:
@@ -909,6 +934,34 @@ def test_public_state_projection_uses_snapshot_revisions_and_meter_values() -> N
     assert payload["freshnessRevision"] == 2
     assert payload["main"]["freqHz"] == 14_074_000
     assert payload["main"]["sMeter"] == 42
+
+
+@pytest.mark.parametrize("stored", [False, True])
+@pytest.mark.parametrize("live", [False, True, None, "no-radio"])
+def test_live_control_connection_overrides_stored_boolean(
+    stored: bool, live: bool | str | None
+) -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.apply(
+        _observation(
+            FieldPath.parse("connection.connection.control_connected"),
+            stored,
+            at=clock.now(),
+        )
+    )
+    radio = _FakeRadio()
+    radio.control_connected = live
+
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(),
+        radio=None if live == "no-radio" else radio,
+        receiver_count=1,
+    )
+
+    assert payload["connection"]["controlConnected"] is (
+        live if isinstance(live, bool) else stored
+    )
 
 
 def test_tx_target_missing_is_explicit_in_both_public_producers() -> None:

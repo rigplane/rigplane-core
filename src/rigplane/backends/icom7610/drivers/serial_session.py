@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
+from ....core.serial_health import SerialLinkHealth, SerialResponse
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -137,8 +138,14 @@ class SerialCivTransport:
     #: lost (MOR-4209; the LAN contract is ``IcomTransport.ordered_ingress``).
     ordered_ingress: ClassVar[bool] = True
 
-    def __init__(self, civ_link: _LifecycleCivLink) -> None:
+    def __init__(
+        self,
+        civ_link: _LifecycleCivLink,
+        *,
+        link_health: SerialLinkHealth | None = None,
+    ) -> None:
         self._civ_link = civ_link
+        self._link_health = link_health
         self.my_id = _CLIENT_ID
         self.remote_id = _RADIO_ID
         self.send_seq = 0
@@ -206,7 +213,7 @@ class SerialCivTransport:
         if not self._packet_queue.empty():
             return self._packet_queue.get_nowait()
 
-        if not self.connected:
+        if not getattr(self._civ_link, "io_available", self.connected):
             # ``self._civ_link.receive`` returns ``None`` with no ``await``
             # at all once the link is disconnected, so calling into it here
             # would raise below without ever yielding to the event loop.
@@ -215,6 +222,8 @@ class SerialCivTransport:
             await asyncio.sleep(timeout)
             raise asyncio.TimeoutError()
 
+        health = self._link_health
+        health_generation = health.generation if health is not None else None
         try:
             frame = await self._civ_link.receive(timeout=timeout)
         except Exception as exc:
@@ -226,7 +235,17 @@ class SerialCivTransport:
         self._udp_error_count = 0
         self.rx_packet_count += 1
         self.ping_seq = (self.ping_seq + 1) & 0xFFFF
-        return _wrap_civ_frame(bytes(frame), seq=self.ping_seq)
+        packet = _wrap_civ_frame(bytes(frame), seq=self.ping_seq)
+        if isinstance(frame, SerialResponse):
+            return SerialResponse(packet, frame.record_response)
+        if health is not None:
+
+            def record_response() -> None:
+                if self.connected and health.generation == health_generation:
+                    health.record_response()
+
+            return SerialResponse(packet, record_response)
+        return packet
 
     async def disconnect(self) -> None:
         await self._civ_link.disconnect()
@@ -236,11 +255,17 @@ class SerialCivTransport:
 class SerialSessionDriver(SessionDriver):
     """Serial session lifecycle driver for shared IC-7610 core."""
 
-    def __init__(self, civ_link: _LifecycleCivLink) -> None:
+    def __init__(
+        self,
+        civ_link: _LifecycleCivLink,
+        *,
+        link_health: SerialLinkHealth | None = None,
+    ) -> None:
         self._civ_link = civ_link
+        self._link_health = link_health
         self._connected = False
         self._control_transport = SerialControlTransport()
-        self._civ_transport = SerialCivTransport(civ_link)
+        self._civ_transport = SerialCivTransport(civ_link, link_health=link_health)
 
     @property
     def control_transport(self) -> SerialControlTransport:
@@ -266,7 +291,14 @@ class SerialSessionDriver(SessionDriver):
         if self.connected:
             return
         self._control_transport = SerialControlTransport()
-        self._civ_transport = SerialCivTransport(self._civ_link)
+        self._civ_transport = SerialCivTransport(
+            self._civ_link, link_health=self._link_health
+        )
+        if (
+            self._link_health is not None
+            and getattr(self._civ_link, "_link_health", None) is not self._link_health
+        ):
+            self._link_health.record_open()
         await self._civ_link.connect()
         self._control_transport.mark_connected()
         self._connected = True

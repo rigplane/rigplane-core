@@ -42,6 +42,7 @@ from typing import Any
 
 from ...core._optional_deps import _require_pyserial_asyncio
 from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
+from ...core.serial_health import SerialLinkHealth
 from ...core.serial_open import open_serial_port
 
 __all__ = [
@@ -166,10 +167,17 @@ class CatQueryResponse(str):
     """A normal CAT reply retaining the currency of its wire exchange."""
 
     is_current: Callable[[], bool]
+    record_response: Callable[[], None]
 
-    def __new__(cls, response: str, is_current: Callable[[], bool]) -> CatQueryResponse:
+    def __new__(
+        cls,
+        response: str,
+        is_current: Callable[[], bool],
+        record_response: Callable[[], None],
+    ) -> CatQueryResponse:
         reply = super().__new__(cls, response)
         reply.is_current = is_current
+        reply.record_response = record_response
         return reply
 
 
@@ -213,6 +221,7 @@ class YaesuCatTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
+        self._link_health = SerialLinkHealth()
         self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
@@ -226,6 +235,11 @@ class YaesuCatTransport:
 
     @property
     def connected(self) -> bool:
+        return self.io_available and self._link_health.responding
+
+    @property
+    def io_available(self) -> bool:
+        """An open stream can carry recovery reads and safety releases."""
         return self._connected
 
     @property
@@ -248,7 +262,9 @@ class YaesuCatTransport:
     async def connect(self) -> None:
         """Open serial connection."""
         if self._connected:
-            return
+            if not self._link_health.io_failed:
+                return
+            await self.close()
         self.last_valid_frame_monotonic = None
 
         try:
@@ -269,6 +285,7 @@ class YaesuCatTransport:
                 stopbits=1,
             )
             self._connected = True
+            self._link_health.record_open()
             self._stats.record_port_open()
             logger.info("CAT serial port opened: %s", self._device)
         except Exception as exc:
@@ -384,12 +401,15 @@ class YaesuCatTransport:
 
         encoded = command.encode("ascii")
         self._require_write_currency(is_current)
+        writer = self._writer
         try:
-            self._writer.write(encoded)
+            writer.write(encoded)
             if on_committed is not None:
                 on_committed()
-            await self._writer.drain()
+            await writer.drain()
         except Exception as exc:
+            if self._writer is writer:
+                self._link_health.record_failure()
             self._stats.record_error(f"write failed: {exc}")
             raise CatTransportError(f"Write failed: {exc}") from exc
 
@@ -413,9 +433,10 @@ class YaesuCatTransport:
         if timeout is None:
             timeout = self._timeout
 
+        reader = self._reader
         try:
             line_bytes = await asyncio.wait_for(
-                self._reader.readuntil(b";"),
+                reader.readuntil(b";"),
                 timeout=timeout,
             )
             # Classify before decoding: a byte >= 0x80 would otherwise raise
@@ -432,6 +453,8 @@ class YaesuCatTransport:
         except CatGarbledFrameError:
             raise
         except Exception as exc:
+            if self._reader is reader:
+                self._link_health.record_failure()
             self._stats.record_error(f"read failed: {exc}")
             raise CatTransportError(f"Read failed: {exc}") from exc
 
@@ -503,8 +526,11 @@ class YaesuCatTransport:
         return drained
 
     def _maybe_reconnect_needed(self) -> bool:
-        """Check if consecutive errors warrant a reconnect."""
-        return self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
+        """Retry failed I/O or the existing consecutive-error threshold."""
+        return (
+            self._link_health.io_failed
+            or self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
+        )
 
     # ── Public API (all acquire exchange gate) ────────────────────────
 
@@ -588,17 +614,25 @@ class YaesuCatTransport:
             await self.flush_rx()
             writer = self._writer
             reconnects = self._stats.reconnects
+            health_generation = self._link_health.generation
             capture = self._capture_provider_generation
             generation = None if capture is None else capture()
 
             def response_is_current() -> bool:
                 return (
-                    self.connected
+                    self.io_available
                     and self._writer is writer
                     and self._stats.reconnects == reconnects
                     and self._capture_provider_generation is capture
                     and (capture is None or capture() == generation)
                 )
+
+            def record_response() -> None:
+                if (
+                    response_is_current()
+                    and self._link_health.generation == health_generation
+                ):
+                    self._link_health.record_response()
 
             await self._raw_write(command, is_current=is_current)
             self._stats.queries += 1
@@ -624,6 +658,14 @@ class YaesuCatTransport:
                 try:
                     response = await self.readline(timeout=timeout)
                 except CatTimeoutError as exc:
+                    if response_is_current():
+                        self._link_health.observe_poll(
+                            now=time.monotonic(),
+                            pending=False,
+                            timeout_delta=1,
+                            answer_window=timeout,
+                            watchdog_interval=0.0,
+                        )
                     # Silence after *command* — name it, so a caller counting
                     # unanswered reads (MOR-2757) can name it back.
                     raise CatTimeoutError(str(exc), command=command) from exc
@@ -655,7 +697,7 @@ class YaesuCatTransport:
 
                 # ── Match! ──
                 self._stats.record_success()
-                return CatQueryResponse(response, response_is_current)
+                return CatQueryResponse(response, response_is_current, record_response)
 
             # Exhausted all attempts
             self._stats.record_error(f"no match for {command}")

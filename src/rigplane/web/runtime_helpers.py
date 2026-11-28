@@ -993,9 +993,23 @@ def classify_radio_health(
         }
 
     connected = _bool_attr(radio, "connected")
-    ready = radio_ready(radio)
+    control_connected = _bool_attr(radio, "control_connected", default=True)
+    serial_control_failed = (
+        _serial_link_episodes(radio) is not None and not control_connected
+    )
+    ready = radio_ready(radio) and not serial_control_failed
     conn_state = _conn_state_value(radio)
     if conn_state in {"connecting", "reconnecting"}:
+        radio_link = "reconnecting"
+    elif serial_control_failed and (
+        connected
+        or conn_state == "connected"
+        or (
+            conn_state is None
+            and getattr(radio, "connection_identity", None) is not None
+            and _serial_link_loss_evidence(radio)
+        )
+    ):
         radio_link = "reconnecting"
     elif connected or conn_state == "connected":
         radio_link = "connected"
@@ -1673,14 +1687,14 @@ def _build_public_state_payload_from_dict(
         stored_ready if isinstance(stored_ready, bool) else radio_ready(radio)
     )
     runtime_control_connected = (
-        getattr(radio, "control_connected", False) if radio else False
+        getattr(radio, "control_connected", None) if radio else None
     )
     raw_control_connected = state.get("control_connected")
     state["control_connected"] = (
-        raw_control_connected
-        if isinstance(raw_control_connected, bool)
-        else runtime_control_connected
+        runtime_control_connected
         if isinstance(runtime_control_connected, bool)
+        else raw_control_connected
+        if isinstance(raw_control_connected, bool)
         else False
     )
     state["revision"] = revision

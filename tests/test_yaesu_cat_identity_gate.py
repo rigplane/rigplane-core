@@ -72,6 +72,10 @@ class FakeCatTransport:
         self.baudrate = 38400
         self.timeout = 1.0
 
+    @property
+    def io_available(self) -> bool:
+        return self.connected
+
     def bind_provider_generation(self, _capture: Callable[[], int]) -> None:
         """Accept the poller's binding; scripted exchanges resolve inline."""
 

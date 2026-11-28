@@ -441,7 +441,7 @@ class YaesuCatRadio:
         """
         if (
             self._connection_identity is not None
-            and self._transport.connected
+            and self._transport.io_available
             and self._identity_permits_commands()
         ):
             return
@@ -502,7 +502,7 @@ class YaesuCatRadio:
         if generation != self._identity_generation:
             return
         if answered is None:
-            if not self._transport.connected:
+            if not self._identity_stream_available():
                 # No live port exists to hold — the open did not survive
                 # the probe. This connect must not report success.
                 self._connection_identity = None
@@ -547,6 +547,9 @@ class YaesuCatRadio:
         await self._audio_driver.stop_tx()
         async with self._serial_open_lock:
             await self._transport.close()
+        health = getattr(self._transport, "_link_health", None)
+        if health is not None:
+            health.end_session()
 
     async def __aenter__(self) -> "YaesuCatRadio":
         await self.connect()
@@ -651,11 +654,17 @@ class YaesuCatRadio:
         task = self._identity_reread_task
         return task is not None and not task.done()
 
+    def _identity_stream_available(self) -> bool:
+        health = getattr(self._transport, "_link_health", None)
+        return self._transport.io_available and not (
+            health is not None and health.io_failed
+        )
+
     def _identity_hold_owns_open_link(self) -> bool:
         """Whether the identity phase owns the live open port."""
         return (
             self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         )
 
@@ -699,7 +708,7 @@ class YaesuCatRadio:
                 start=start,
                 retune=transport.set_baudrate,
                 heard_at=heard_at,
-                usable=lambda: not retired() and transport.connected,
+                usable=lambda: not retired() and self._identity_stream_available(),
             )
             if found is not None and answered is not None:
                 logger.info(
@@ -1469,7 +1478,7 @@ class YaesuCatRadio:
         return spec
 
     def _require_connected(self) -> None:
-        if not self.connected:
+        if not self._transport.io_available or not self._identity_permits_commands():
             raise RadioConnectionError("Radio not connected — call connect() first")
 
     async def _query(
@@ -1547,6 +1556,8 @@ class YaesuCatRadio:
                 RepeaterShiftDirection(int(result["shift"]))
             elif cmd_name == "get_tuner":
                 _decode_atu_response(result)
+            elif cmd_name == "get_ptt":
+                self._interpret_ptt_token(str(result["state"]), require_known=True)
         except (TypeError, ValueError):
             semantic_valid = False
         connection_current = (
@@ -1565,6 +1576,8 @@ class YaesuCatRadio:
             and semantic_valid
             and self._identity_generation == identity_generation
         ):
+            if isinstance(raw, CatQueryResponse):
+                raw.record_response()
             self._transport.last_valid_frame_monotonic = time.monotonic()
         return result
 
@@ -2099,7 +2112,7 @@ class YaesuCatRadio:
         if (
             identity is not None
             and self._identity_hold_status_held()
-            and self._transport.connected
+            and self._identity_stream_available()
             and self._identity_hold_has_owner()
         ):
             if on and identity.status is RadioIdentityStatus.NO_RESPONSE:
@@ -2298,7 +2311,7 @@ class YaesuCatRadio:
             state = await self.read_ptt_token(is_current=is_current, tier=tier)
         return self._interpret_ptt_token(state)
 
-    def _interpret_ptt_token(self, state: str) -> bool:
+    def _interpret_ptt_token(self, state: str, *, require_known: bool = False) -> bool:
         """Map a raw ``TX;`` token to a transmitting boolean (positive-RX rule).
 
         The one place this predicate is written: shared by :meth:`read_ptt`
@@ -2311,12 +2324,17 @@ class YaesuCatRadio:
         concern, BLOCKED-2).
         """
         policy = self.profile.tx_policy
-        if not policy.tx_state_map:
-            if state not in ("0", "1", "2"):
-                self._warn_ptt_unrecognised(state)
-            return state != "0"
-        if state not in policy.tx_state_map:
+        known = (
+            state in policy.tx_state_map
+            if policy.tx_state_map
+            else state in ("0", "1", "2")
+        )
+        if not known:
             self._warn_ptt_unrecognised(state)
+            if require_known:
+                raise ValueError(f"Unrecognised CAT PTT state: {state!r}")
+        if not policy.tx_state_map:
+            return state != "0"
         return not policy.is_receiving(state)
 
     async def get_ptt(self) -> bool:

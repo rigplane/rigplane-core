@@ -21,6 +21,10 @@ LEVELS = ("set_af_level", "set_rf_gain", "set_squelch")
 class CatSink:
     connected = True
 
+    @property
+    def io_available(self):
+        return self.connected
+
     def __init__(self):
         self.writes = []
 
@@ -46,6 +50,12 @@ def icom(config=None):
     return CoreRadio(
         "127.0.0.1", profile=(config or load_rig(RIGS / "ic7300.toml")).to_profile()
     )
+
+
+def test_yaesu_sink_has_open_cat_stream():
+    radio = yaesu()
+    assert radio._transport.io_available is True
+    assert radio.connected is True
 
 
 @pytest.mark.parametrize("command", LEVELS)

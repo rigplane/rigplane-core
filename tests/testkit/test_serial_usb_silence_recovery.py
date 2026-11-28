@@ -234,16 +234,7 @@ async def test_usb_silence_then_answers_recovers_without_restart(model: str) -> 
 
 @pytest.mark.asyncio
 async def test_yaesu_transport_down_after_session_is_not_responding() -> None:
-    """MOR-4654 round 1 (P2): the conn_state-less serial sibling.
-
-    Yaesu CAT has no explicit connection state after an established
-    session drops (the bench shape: the USB device is gone), so the
-    link reads ``unknown``. The shared serial-family classifier must
-    still name the silent radio (``radio_not_responding``), never
-    ``unknown``. The loss episode is counted by the real transport
-    recovery primitive (the poller's own ``transport.reconnect()``),
-    not hand-set; the answered identity is the real connect's.
-    """
+    """An answered serial identity survives loss as reconnecting/not responding."""
     fake = FakeCatRadio()
     await fake.start()
     try:
@@ -262,20 +253,20 @@ async def test_yaesu_transport_down_after_session_is_not_responding() -> None:
         assert radio.serial_reconnects_total >= 1
 
         health = classify_radio_health(radio)
-        assert health["radioLink"] == "unknown"
+        assert health["radioLink"] == "reconnecting"
         assert health["likelyCause"] == "radio_not_responding", (
             f"down Yaesu link surfaced as {health['likelyCause']!r}: "
             "the shared serial-family verdict must cover conn_state-less backends"
         )
-        assert health["readiness"] == "stalled"
+        assert health["readiness"] == "recovering"
         assert WebServer(radio)._build_radio_health()["likelyCause"] == (  # noqa: SLF001
             "radio_not_responding"
         )
         served = await _served_station_status(WebServer(radio))
         served_health = served["station"]["health"]
-        assert served_health["radioLink"] == "unknown"
+        assert served_health["radioLink"] == "reconnecting"
         assert served_health["likelyCause"] == "radio_not_responding"
-        assert served_health["readiness"] == "stalled"
+        assert served_health["readiness"] == "recovering"
     finally:
         with contextlib.suppress(Exception):
             await radio.disconnect()
