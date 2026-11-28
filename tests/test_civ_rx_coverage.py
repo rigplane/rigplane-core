@@ -1180,6 +1180,196 @@ async def test_request_recovery_now_preempts_a_recovery_tail(
                     pass
 
 
+# ---------------------------------------------------------------------------
+# MOR-4938 R8 — a FULL recovery request arriving while a SOFT attempt is in
+# flight is dropped; the watchdog escalates later.
+#
+# Code path: ``CivRuntime.request_recovery_now`` /
+# ``CivRuntime._watchdog_recover`` in ``src/rigplane/runtime/_civ_rx.py``.
+# Every notice recovery carries ``full_reconnect_reason`` (it escalates);
+# the watchdog's own patience handoff spawns soft (``None``). While a soft
+# recovery task is still re-establishing the session,
+# ``request_recovery_now`` refuses the notice as "still re-establishing"
+# and returns False. The soft run then finishes dataless, remembers the
+# epoch (MOR-2625), and the next watchdog handoff escalates to a full
+# reconnect (control-session release first).
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class _R8SoftInFlight:
+    """Arms for the R8 probe: a dataless session with a parked SOFT attempt."""
+
+    order: list[str]
+    cleanup_entered: asyncio.Event
+    cleanup_release: asyncio.Event
+    released_at: list[float] = dataclasses.field(default_factory=list)
+    requested_at: float = 0.0
+    reason: str = "radio reported the LAN session free (conninfo busy=0)"
+
+
+def _arm_r8_soft_in_flight(
+    radio: IcomRadio,
+    clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _R8SoftInFlight:
+    """Arm a CONNECTED-but-dataless session and park a SOFT recovery in it.
+
+    The mock transport never advances ``rx_packet_count`` and no payload
+    ever arrives, so this is the MOR-2625 dataless case: the soft run
+    re-establishes the session without restoring data and remembers the
+    epoch. ``_force_cleanup_civ`` / ``soft_reconnect`` / ``release`` /
+    ``_send_open_close`` are stubs (the attempt legs); the watchdog loop,
+    the handoff, and the escalation decision stay real and run on the
+    shared virtual clock.
+    """
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_recovering = False
+    radio._civ_stream_ready = False
+    radio._civ_epoch = 7
+    radio._civ_runtime._soft_recovery_epoch = None
+    radio._civ_runtime._reconnect_task = None
+    radio._civ_runtime._recovery_cleaned_task = None
+    radio._civ_runtime._pending_replacement = None
+    radio._last_civ_data_received = clock() - 100.0
+    radio._civ_transport.rx_packet_count = 0
+    arm = _R8SoftInFlight(
+        order=[],
+        cleanup_entered=asyncio.Event(),
+        cleanup_release=asyncio.Event(),
+    )
+
+    async def fake_cleanup() -> None:
+        arm.order.append("cleanup")
+        if not arm.cleanup_entered.is_set():
+            # First run: hold the SOFT attempt open in ``_force_cleanup_civ``
+            # (before any state flip), so a FULL request lands mid-attempt.
+            arm.cleanup_entered.set()
+            await arm.cleanup_release.wait()
+        # Mirror ``IcomRadio._force_cleanup_civ`` with a dead control
+        # session (the fixture's mock transport has no UDP endpoint).
+        radio._conn_state = RadioConnectionState.DISCONNECTED
+
+    async def fake_soft_reconnect() -> None:
+        arm.order.append("soft")
+        # Mirror a dataless recovery: the session comes back CONNECTED
+        # but no CI-V payload ever arrives (MOR-2625).
+        radio._conn_state = RadioConnectionState.CONNECTED
+
+    async def fake_release() -> None:
+        arm.order.append("release")
+        arm.released_at.append(clock())
+
+    clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(radio, "_force_cleanup_civ", fake_cleanup)
+    monkeypatch.setattr(radio, "soft_reconnect", fake_soft_reconnect)
+    monkeypatch.setattr(radio._control_phase, "release", fake_release)
+    monkeypatch.setattr(radio, "_send_open_close", AsyncMock())
+    return arm
+
+
+@pytest.mark.timeout(60)  # type: ignore[untyped-decorator]
+async def test_r8_full_request_dropped_while_soft_in_flight_pins_delay(
+    radio: IcomRadio,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R8 probe: pin the CURRENT drop-then-late-escalation behavior.
+
+    A FULL notice recovery arriving while the SOFT attempt is still in
+    ``_force_cleanup_civ`` is refused ("still re-establishing") and the
+    escalation to a full reconnect lands only on the next watchdog
+    handoff, ~19 virtual seconds after the request: 10.0 s of in-flight
+    soft attempt (held open here event-driven and modelled with one
+    explicit ``elapse``; with the mock-timed lifecycle attempt the leg
+    itself takes ~10 s) plus the watchdog leg — four 1.0 s redetect ticks
+    past the 2.0 s silence timeout and the 5.0 s silent patience
+    (``_SILENT_OPENCLOSE_DEADLINE``, taken because the remembered
+    ``_soft_recovery_epoch`` matches). The release records the escalation
+    instant; the test pins the totals, not wall time.
+    """
+    arm = _arm_r8_soft_in_flight(radio, virtual_clock, monkeypatch)
+    with caplog.at_level("INFO"):
+        soft = radio._civ_runtime._spawn_recovery_task()
+        await arm.cleanup_entered.wait()
+        assert not soft.done(), "the SOFT attempt must be in flight"
+        arm.requested_at = virtual_clock()
+        honoured = radio._civ_runtime.request_recovery_now(arm.reason)
+        assert honoured is False, (
+            "R8 CURRENT behavior: the FULL request is dropped while the "
+            "SOFT attempt is still re-establishing the session"
+        )
+        assert radio._civ_runtime._reconnect_task is soft
+        await virtual_clock.elapse(10.0)
+        arm.cleanup_release.set()
+        await soft
+        assert arm.order == ["cleanup", "soft"]
+        assert radio._conn_state is RadioConnectionState.CONNECTED
+        assert radio._civ_runtime._reconnect_task is None
+        done_at = virtual_clock()
+        assert radio._civ_runtime._soft_recovery_epoch == 7
+
+        radio._civ_runtime.start_data_watchdog()
+        await virtual_clock.elapse(30.0)
+        # The handed-off recovery escalated, finished, and cleared its slot.
+        assert radio._civ_runtime._reconnect_task is None
+
+    assert arm.order == ["cleanup", "soft", "cleanup", "release", "soft"]
+    assert radio._ctrl_transport.remote_id == 0
+    assert radio._civ_runtime._soft_recovery_epoch is None
+    ignored = [
+        r
+        for r in caplog.records
+        if "still re-establishing" in r.getMessage() and arm.reason in r.getMessage()
+    ]
+    assert len(ignored) == 1
+    assert not any("restarting the recovery" in r.getMessage() for r in caplog.records)
+    escalated = [
+        r
+        for r in caplog.records
+        if "soft reconnect restored no data, escalating to full reconnect"
+        in r.getMessage()
+    ]
+    assert len(escalated) == 1, (
+        "the escalation must come from the watchdog's epoch match, "
+        "not from the dropped notice"
+    )
+    assert arm.released_at == pytest.approx([arm.requested_at + 19.0], abs=0.2)
+    assert arm.released_at == pytest.approx([done_at + 9.0], abs=0.2)
+
+
+@pytest.mark.timeout(60)  # type: ignore[untyped-decorator]
+@pytest.mark.xfail(strict=True, reason="MOR-4938 R8")  # type: ignore[untyped-decorator]
+async def test_r8_full_request_honoured_promptly(
+    radio: IcomRadio,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R8 desired behavior: a FULL request preempts an in-flight SOFT one.
+
+    Today ``request_recovery_now`` returns False while the SOFT attempt is
+    still re-establishing the session, so this fails (expected). When R8 is
+    fixed and the FULL request is honoured at once, this XPASSes under
+    ``strict`` and forces the marker (and the delay pin above) to be
+    revisited.
+    """
+    arm = _arm_r8_soft_in_flight(radio, virtual_clock, monkeypatch)
+    soft = radio._civ_runtime._spawn_recovery_task()
+    try:
+        await arm.cleanup_entered.wait()
+        assert not soft.done(), "the SOFT attempt must be in flight"
+        honoured = radio._civ_runtime.request_recovery_now(arm.reason)
+        assert honoured, (
+            "MOR-4938 R8: a FULL recovery request arriving while a SOFT "
+            "attempt is in flight must be honoured promptly instead of "
+            "being dropped until the watchdog escalates"
+        )
+    finally:
+        arm.cleanup_release.set()
+        await soft
+
+
 @dataclasses.dataclass
 class _PreemptRaceArm:
     order: list[str]
